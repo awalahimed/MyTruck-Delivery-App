@@ -2,7 +2,7 @@
   "expo": {
     "name": "MyTruck Delivery",
     "slug": "ebhan",
-    "owner": "delivery-app-7",
+    "owner": "ebbanufs-team",
     "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -79,7 +79,7 @@
       },
       "gebetaMapsApiKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjb21wYW55bmFtZSI6IkViYW51ZiIsImRlc2NyaXB0aW9uIjoiYTIxYzYwNjAtOWQwYS00NmNjLWFhMzAtZDVlNmQ2YTQwOTcxIiwiaWQiOiJkNDcxMzMyYy1lNDgzLTQ0OTMtOTljMC1kODZkYmNkZGJlNzciLCJpc3N1ZWRfYXQiOjE3OTMxODAwMzksImlzc3VlciI6Imh0dHBzOi8vbWFwYXBpLmdlYmV0YS5hcHAiLCJqd3RfaWQiOiIwIiwic2NvcGVzIjpbIk1BVFJJWCIsIk9NTSIsIlRJTEUiLCJESVJFQ1RJT04iLCJUU1MiLCJWUlAiLCJUUkFDS0lOR19IVFRQIiwiVFJBQ0tJTkdfU09DS0VUIiwiR0VPQ09ESU5HIiwiUkVWRVJTRUdFT0NPRElORyIsIk1BVENISU5HIl0sInVzZXJuYW1lIjoiZWJvbyJ9.NJf5_FfrImpjoa4uQ96fodYwv81X5p4oLd37qmVYVz8",
       "eas": {
-        "projectId": "d216e155-64b5-4f33-a76f-986998aa3960"
+        "projectId": "788f32a3-bd67-44ab-aba4-1a52ba3b844e"
       }
     }
   }
