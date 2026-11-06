@@ -1,0 +1,22 @@
+{
+  "id": "FEAT-005",
+  "type": "chore",
+  "description": "EAS build verification. Run npx expo config introspect to confirm the full codebase is syntactically valid, then trigger the EAS preview build and capture the build URL. This is the final FEAT and depends on all previous FEATs being committed.",
+  "status": "pending",
+  "steps": [
+    "1. From c:\\Users\\user\\Music\\MyTruck-Production-Structured\\apps\\customer-app, run: npx expo config --type introspect 2>&1. Confirm the output does not contain 'Error' or 'SyntaxError'. If errors exist, fix them before proceeding.",
+    "2. Run the EAS preview build: npx eas-cli build --platform android --profile preview --non-interactive 2>&1. Capture the full output. The build URL appears in a line like 'Build details: https://expo.dev/accounts/...' or 'Build URL: https://...'. Record this URL in this FEAT's findings field.",
+    "3. Update this FEAT's status to 'completed' and record the build URL in findings."
+  ],
+  "acceptance_criteria": [
+    "npx expo config --type introspect exits cleanly (no Error/SyntaxError in output).",
+    "npx eas-cli build --platform android --profile preview --non-interactive starts the build and outputs a build URL.",
+    "Build URL is recorded in this FEAT's findings."
+  ],
+  "verification": [
+    "cd c:\\Users\\user\\Music\\MyTruck-Production-Structured\\apps\\customer-app && npx expo config --type introspect 2>&1 | Select-Object -First 30",
+    "cd c:\\Users\\user\\Music\\MyTruck-Production-Structured\\apps\\customer-app && npx eas-cli build --platform android --profile preview --non-interactive 2>&1"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

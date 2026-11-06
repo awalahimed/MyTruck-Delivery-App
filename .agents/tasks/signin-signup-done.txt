@@ -1,0 +1,34 @@
+SignIn.js and SignUp.js rebuilt with premium design matching WelcomeScreen.
+
+Changes applied
+---------------
+SignIn.js
+  - White background SafeAreaView, StatusBar style="dark"
+  - MyTruck icon.png logo (60x60, centered, marginTop 40)
+  - "Welcome Back" bold 28px #0B2A26, "Sign in to continue" gray 14px subtitle
+  - Phone, Password, OTP input rows: #F1F5F9 background, borderRadius 14, height 52, #179B83 icons
+  - Password show/hide toggle (showPassword state added)
+  - OTP row visible only when otpSent is true
+  - Error text color #EF4444
+  - "Sign In" primary button: #179B83, borderRadius 30, height 52, disabled opacity 0.6
+  - Divider with "or" text
+  - "Register your shop or restaurant" outlined button (borderColor #179B83, borderRadius 30, height 48)
+  - "Don't have an account? Sign Up" footer — "Sign Up" in #F47721 orange
+  - All auth logic preserved: normalizePhone, validatePassword, onSignIn, otpSent/otpCode state,
+    signInUser/refreshProfile/beginOtpFlow/cancelOtpFlow/completeOtpFlow, all error handling
+  - Converted from Tailwind/NativeWind classes to StyleSheet (consistent with WelcomeScreen)
+
+SignUp.js
+  - White background SafeAreaView, StatusBar style="dark"
+  - MyTruck icon.png logo (60x60, centered, marginTop 40)
+  - "Create Account" bold 28px #0B2A26, "Join MyTruck today" gray subtitle
+  - Phone, Password input rows matching SignIn style
+  - Password show/hide toggle (showPassword state added)
+  - Password error text color #EF4444
+  - "Create Account" primary button: #179B83, borderRadius 30, height 52, disabled opacity 0.6
+  - "Already have an account? Sign In" footer — "Sign In" in #F47721 orange
+  - All auth logic preserved: onSignUp, createUser/beginOtpFlow/cancelOtpFlow/completeOtpFlow,
+    busy state, error handling, navigation to "User Details" and "SignIn"
+  - Converted from Tailwind/NativeWind classes to StyleSheet
+
+Completed: signin-signup-done

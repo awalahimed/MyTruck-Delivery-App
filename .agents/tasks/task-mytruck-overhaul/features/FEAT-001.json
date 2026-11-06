@@ -1,0 +1,29 @@
+{
+  "id": "FEAT-001",
+  "type": "fix",
+  "description": "Phase 1 bug fixes across components and screens. Fix all broken buttons and interactions, replace Google Maps provider with Gebeta UrlTile maps, and fix the RestaurantDetails createAsyncThunk-inside-component crash. These are independent file-level fixes that must land first because all subsequent FEATs depend on a working, navigable app.",
+  "status": "pending",
+  "steps": [
+    "1. components/CategoryCard.js — Add onPress prop to the component signature. Call it inside the Pressable: <Pressable onPress={onPress} ...>. Default onPress to a no-op (() => {}) so existing usages without onPress don't crash.",
+    "2. components/Categories.js — Add a selectedCategory state (useState(null)). Attempt to fetch from Firestore 'categories' collection with getDocs on mount; fall back to the existing hardcoded array if the query fails or returns empty. Pass an onPress handler to each CategoryCard: onPress={() => setSelectedCategory(title)}. Accept an optional onCategorySelect prop and call it with the category title so Home.js can receive the selection. If no Firestore categories exist the hardcoded list is shown unchanged.",
+    "3. components/FeaturedRow.js — Wrap the ArrowRightIcon in a TouchableOpacity. The onPress should call navigation.navigate('Home') for now (a full list page does not exist yet; navigating home is the safe no-crash fallback). Import useNavigation from '@react-navigation/native'. Keep the existing restaurant load logic unchanged.",
+    "4. screens/OptionsScreen.js — Add onPress={() => navigation.goBack()} to the back-button Pressable (currently has a commented-out onPress). No other changes.",
+    "5. screens/ProfileScreen.js — (a) Add Platform to the existing react-native import. (b) Import Constants from 'expo-constants' (already in node_modules). (c) Replace the MapView provider='google' with MapView (no provider prop). Add a UrlTile child component with urlTemplate={'https://mapapi.gebeta.app/api/v1/route/tile/{z}/{x}/{y}/?apiKey=' + (Constants.expoConfig?.extra?.gebetaMapsApiKey || '')}. Import UrlTile from 'react-native-maps'. The Marker and all other MapView props stay the same.",
+    "6. screens/RestaurantDetails.js — (a) Remove the createAsyncThunk import and the setRestaurantAsync call inside useEffect. (b) In its place, write a plain async function fetchRestaurant() directly in useEffect: call getDoc(doc(db,'restaurants',restaurantUid)), if snap exists call setRestaurantInfo(items) and dispatch(setRestaurant({id,name,rating,address,description,image,lat,lng,minDeliveryTime,maxDeliveryTime})). (c) Fix onPress={navigation.goBack} → onPress={() => navigation.goBack()} on the back button TouchableOpacity. Remove the createAsyncThunk import entirely.",
+    "7. screens/Home.js — (a) Import Constants from 'expo-constants'. (b) In the Modal, replace <MapView provider='google' showsUserLocation /> with <MapView showsUserLocation><UrlTile urlTemplate={'https://mapapi.gebeta.app/api/v1/route/tile/{z}/{x}/{y}/?apiKey='+(Constants.expoConfig?.extra?.gebetaMapsApiKey||'')} /></MapView>. Import UrlTile from 'react-native-maps'. The modal open/close logic stays the same.",
+    "8. screens/UserDetails.js — (a) Import Constants from 'expo-constants'. (b) Replace the MapView provider='google' with MapView (no provider). Add UrlTile child with the same gebeta urlTemplate as above. Import UrlTile from 'react-native-maps'. All other props (showsUserLocation, initialRegion, Marker) stay the same."
+  ],
+  "acceptance_criteria": [
+    "Tapping a CategoryCard no longer does nothing — onPress fires without crashing.",
+    "The back button in OptionsScreen navigates back.",
+    "RestaurantDetails loads without a 'createAsyncThunk cannot be called inside a reducer' or similar runtime error.",
+    "The back button arrow in RestaurantDetails navigates back (navigation.goBack() is called).",
+    "ProfileScreen, Home modal, and UserDetails all render MapView without requiring Google Maps API key (uses Gebeta UrlTile).",
+    "npx expo config --type introspect completes without Error or SyntaxError."
+  ],
+  "verification": [
+    "cd c:\\Users\\user\\Music\\MyTruck-Production-Structured\\apps\\customer-app && npx expo config --type introspect 2>&1 | Select-Object -First 30"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

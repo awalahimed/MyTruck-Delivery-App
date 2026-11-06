@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Role-based navigation and customer bottom tab navigator. This FEAT updates RootNavigator to route driver/admin roles to their own screens, installs @react-navigation/bottom-tabs, and replaces the flat AppStack with a tab-navigator-rooted customer experience. Depends on FEAT-001 being committed (app must be in a buildable state). DriverDashboard and AdminDashboard screen stubs are created here so RootNavigator can import them; they will be fully implemented in FEAT-003.",
+  "status": "pending",
+  "steps": [
+    "1. Install @react-navigation/bottom-tabs — run from c:\\Users\\user\\Music\\MyTruck-Production-Structured\\apps\\customer-app: npm install @react-navigation/bottom-tabs --legacy-peer-deps. Confirm node_modules/@react-navigation/bottom-tabs exists before continuing.",
+    "2. Create screens/DriverDashboard.js — minimal stub only (needed for RootNavigator import). Render a SafeAreaView with a centered Text 'Driver Dashboard — coming soon'. Export default DriverDashboard.",
+    "3. Create screens/AdminDashboard.js — minimal stub only. Render a SafeAreaView with a centered Text 'Admin Dashboard — coming soon'. Export default AdminDashboard.",
+    "4. navigation/RootNavigator.js — Add imports: import DriverDashboard from '../screens/DriverDashboard' and import AdminDashboard from '../screens/AdminDashboard'. Update the role routing logic after the PhoneVerificationGate check: if (dbUser.role === 'superadmin') return <AdminDashboard />; if (dbUser.role === 'driver') return <DriverDashboard />; if (['pendingSeller','shop','restaurant'].includes(dbUser.role)) return <SellerHome />; return <AppStack />; (customer default). Keep all existing checks (authLoading, !user, otpFlowInProgress, !dbUser, phoneVerified) unchanged and in their existing order.",
+    "5. Create navigation/CustomerTabNavigator.js — Use createBottomTabNavigator from '@react-navigation/bottom-tabs'. Four tabs: (a) Home tab — component: Home, icon: MaterialCommunityIcons 'home' (size 24). (b) Orders tab — component: OrderDetailsScreen, icon: MaterialCommunityIcons 'receipt' (size 24). (c) Cart tab — component: BasketScreen, icon: MaterialCommunityIcons 'shopping' (size 24). Add a badge on the Cart tab showing the basket item count from useSelector(selectBasketItems).length — use tabBarBadge prop, hide badge when count is 0 by setting it to undefined. (d) Profile tab — component: OptionsScreen, icon: MaterialCommunityIcons 'account' (size 24). Tab bar style: backgroundColor white, activeTintColor '#179B83', inactiveTintColor '#94A3B8'. The tab navigator must be wrapped in its own component so it can use hooks (useSelector for basket count). Import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons'. Import screens: Home from '../screens/Home', OrderDetailsScreen from '../screens/OrderDetailsScreen', BasketScreen from '../screens/BasketScreen', OptionsScreen from '../screens/OptionsScreen'. Import selectBasketItems from '../features/basketSlice'.",
+    "6. navigation/AppStack.js — Replace the Home screen as the first/root stack screen with CustomerTabNavigator. Import CustomerTabNavigator from './CustomerTabNavigator'. Change: <Stack.Screen name='Home' component={Home} ... /> to <Stack.Screen name='Home' component={CustomerTabNavigator} options={{ headerShown: false }} />. All other stack screens (Restaurant, Basket, Options, Profile, ProductDelivery, PreparingOrderScreen, Order Details) remain in the stack. Remove the now-redundant standalone Basket, Options imports only if they are no longer used as stack screens — keep them as stack screens for modal/direct navigation from other screens."
+  ],
+  "acceptance_criteria": [
+    "node_modules/@react-navigation/bottom-tabs exists after npm install.",
+    "A customer-role user sees four bottom tabs: Home, Orders, Cart, Profile.",
+    "Cart tab shows a badge with basket item count when items exist.",
+    "A driver-role user sees DriverDashboard screen (stub) instead of the tab navigator.",
+    "A superadmin-role user sees AdminDashboard screen (stub).",
+    "npx expo config --type introspect completes without error."
+  ],
+  "verification": [
+    "cd c:\\Users\\user\\Music\\MyTruck-Production-Structured\\apps\\customer-app && npx expo config --type introspect 2>&1 | Select-Object -First 30"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

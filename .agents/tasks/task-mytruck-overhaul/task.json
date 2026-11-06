@@ -1,0 +1,13 @@
+{
+  "task_id": "task-mytruck-overhaul",
+  "task_description": "Complete MyTruck Delivery app overhaul: fix all broken interactions, replace Google Maps with Gebeta tile maps, add role-based navigation (customer/seller/driver/admin), build bottom tab navigator for customers, build full SellerHome dashboard, create DriverDashboard and AdminDashboard screens, and apply premium UI polish to RestaurantCard, RestaurantItem, Home, and empty/loading states across all screens.",
+  "status": "pending",
+  "feature_order": [
+    "FEAT-001",
+    "FEAT-002",
+    "FEAT-003",
+    "FEAT-004",
+    "FEAT-005"
+  ],
+  "blocked_reason": null
+}

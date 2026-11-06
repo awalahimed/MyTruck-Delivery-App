@@ -1,0 +1,1 @@
+Home.js rebuilt with teal status bar, location header (map-marker + two-line text + circular green ChevronDown button), promo banner (dark/green split), service shortcuts (Food/Shops/Packages), and Top Restaurants section header; all data logic, Search, Categories, FeaturedRow, RestaurantItem, and location modal preserved.

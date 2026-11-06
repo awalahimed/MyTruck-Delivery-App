@@ -1,0 +1,1646 @@
+import React, { useMemo, useState, useEffect } from "react";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  Image,
+  ScrollView,
+  Alert,
+  TextInput,
+  ActivityIndicator,
+  StyleSheet,
+  Platform,
+  Linking,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
+import { useNavigation } from "@react-navigation/native";
+import { useSelector, useDispatch } from "react-redux";
+import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
+import {
+  PlusIcon,
+  MinusIcon,
+  TrashIcon,
+  MapPinIcon,
+  TagIcon,
+  ChevronRightIcon,
+  MagnifyingGlassIcon,
+} from "react-native-heroicons/outline";
+import {
+  addToBasket,
+  removeFromBasket,
+  removeMerchantFromBasket,
+  clearBasket,
+  selectBasketItems,
+  selectBasketTotal,
+  selectBasketByMerchant,
+} from "../features/basketSlice";
+import { selectUser, setUser } from "../features/userSlice";
+import { UserAuth } from "../contexts/AuthContext";
+import { app, db } from "../firebase";
+import { presentLocalNotification } from "../services/notificationService";
+import {
+  collection,
+  doc,
+  serverTimestamp,
+  writeBatch,
+  onSnapshot,
+  updateDoc,
+} from "firebase/firestore";
+import DeliveryLocationModal from "../components/DeliveryLocationModal";
+import BackButton from "../components/ui/BackButton";
+import { isWithinEthiopia } from "../utils/mapService";
+import {
+  getItemDiscountInfo,
+  calculateDeliveryQuote,
+  calculateOrderFinancials,
+  FAR_DISTANCE_NOTICE,
+  isFarDistance,
+} from "../utils/pricing";
+
+const TEAL = "#179B83";
+const DARK = "#0B2A26";
+const ORANGE = "#F47721";
+const BG = "#F5FAF9";
+
+const formatETB = (amount) => {
+  const num = Number(amount) || 0;
+  return `ETB ${num.toFixed(2)}`;
+};
+
+// Image component with error fallback — handles Firebase Storage, CDN, and missing URLs
+function CartItemImage({ uri, style }) {
+  const [errored, setErrored] = useState(false);
+  const FALLBACK = "https://placehold.co/100x100/179B83/FFFFFF?text=🍔";
+  const src = !errored && uri && uri.startsWith("http") ? uri : FALLBACK;
+  return (
+    <Image
+      source={{ uri: src }}
+      style={style}
+      resizeMode="cover"
+      onError={() => setErrored(true)}
+    />
+  );
+}
+
+export default function BasketScreen() {
+  const navigation = useNavigation();
+  const dispatch = useDispatch();
+  const items = useSelector(selectBasketItems) || [];
+  const rawMerchantGroups = useSelector(selectBasketByMerchant) || [];
+  const reduxUser = useSelector(selectUser);
+  const { user, dbUser } = UserAuth();
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [paymentInitializing, setPaymentInitializing] = useState(false); // prevents empty-cart flash
+  const [paymentMethod, setPaymentMethod] = useState("CHAPA");
+  const [promoCode, setPromoCode] = useState("");
+  const [appliedPromo, setAppliedPromo] = useState(null);
+  const [promoError, setPromoError] = useState("");
+  const [deliveryModalVisible, setDeliveryModalVisible] = useState(false);
+  const [cartSearch, setCartSearch] = useState("");
+  const [selectedMerchantIds, setSelectedMerchantIds] = useState([]);
+
+  // Payment configuration from Super Admin Settings
+  const [paymentConfig, setPaymentConfig] = useState({
+    chapaEnabled: true,
+    telebirrEnabled: false,
+    cbeBirrEnabled: false,
+    codEnabled: false,
+  });
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "platformSettings", "config"), (snap) => {
+      if (snap.exists()) {
+        const d = snap.data();
+        setPaymentConfig({
+          chapaEnabled: d.chapaEnabled !== false,
+          telebirrEnabled: d.telebirrEnabled === true,
+          cbeBirrEnabled: d.cbeBirrEnabled === true,
+          codEnabled: d.codEnabled === true,
+        });
+      }
+    });
+    return unsub;
+  }, []);
+
+  // Initialize selected merchants with all present in cart
+  useEffect(() => {
+    if (rawMerchantGroups.length > 0) {
+      setSelectedMerchantIds((prev) => {
+        const currentIds = rawMerchantGroups.map((g) => g.merchantId);
+        // Retain previous choices if still valid, or default to select all
+        if (prev.length === 0) return currentIds;
+        const valid = prev.filter((id) => currentIds.includes(id));
+        return valid.length > 0 ? valid : currentIds;
+      });
+    } else {
+      setSelectedMerchantIds([]);
+    }
+  }, [rawMerchantGroups.length]);
+
+  // Address
+  const currentAddress =
+    reduxUser?.address || dbUser?.address || "My Location, Ethiopia";
+  const currentCoords = {
+    latitude:
+      reduxUser?.latitude && isWithinEthiopia(reduxUser.latitude, reduxUser.longitude)
+        ? reduxUser.latitude
+        : dbUser?.latitude && isWithinEthiopia(dbUser.latitude, dbUser.longitude)
+        ? dbUser.latitude
+        : 8.9806,
+    longitude:
+      reduxUser?.longitude && isWithinEthiopia(reduxUser.latitude, reduxUser.longitude)
+        ? reduxUser.longitude
+        : dbUser?.longitude && isWithinEthiopia(dbUser.latitude, dbUser.longitude)
+        ? dbUser.longitude
+        : 38.7578,
+  };
+
+  // Filter merchant groups and items by search query
+  const merchantGroups = useMemo(() => {
+    const q = cartSearch.trim().toLowerCase();
+    if (!q) return rawMerchantGroups;
+    return rawMerchantGroups
+      .map((group) => {
+        const matchesMerchant = group.merchantName.toLowerCase().includes(q);
+        const matchedItems = group.items.filter((it) =>
+          it.name?.toLowerCase().includes(q)
+        );
+        if (matchesMerchant) return group;
+        if (matchedItems.length > 0) {
+          const subtotal = matchedItems.reduce(
+            (sum, it) => sum + Number(it.price || 0),
+            0
+          );
+          return { ...group, items: matchedItems, subtotal };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }, [rawMerchantGroups, cartSearch]);
+
+  // Selected groups calculation
+  const selectedGroups = useMemo(() => {
+    return rawMerchantGroups.filter((g) =>
+      selectedMerchantIds.includes(g.merchantId)
+    );
+  }, [rawMerchantGroups, selectedMerchantIds]);
+
+  const selectedSubtotal = useMemo(() => {
+    return selectedGroups.reduce((sum, g) => sum + g.subtotal, 0);
+  }, [selectedGroups]);
+
+  // Authoritative delivery and service fees — 25 ETB/km, minimum 50 ETB
+  const deliveryQuotes = selectedGroups.map((g) =>
+    calculateDeliveryQuote(
+      { latitude: g.merchantLat, longitude: g.merchantLng, city: g.merchantCity },
+      { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
+    )
+  );
+
+  const deliveryFee = deliveryQuotes.reduce((acc, q) => acc + (q.deliveryFee || 50), 0) || (selectedGroups.length * 50);
+  const totalDistanceKm = deliveryQuotes.reduce((acc, q) => acc + (q.distanceKm || 2), 0);
+
+  const serviceFee = selectedGroups.length > 0 ? 15 : 0;
+
+  const discountAmount = useMemo(() => {
+    if (!appliedPromo) return 0;
+    if (appliedPromo.type === "percent") {
+      return (selectedSubtotal * appliedPromo.value) / 100;
+    }
+    if (appliedPromo.type === "fixed") {
+      return Math.min(selectedSubtotal, appliedPromo.value);
+    }
+    return 0;
+  }, [appliedPromo, selectedSubtotal]);
+
+  const merchantDiscountSavings = useMemo(() => {
+    let savings = 0;
+    for (const g of selectedGroups) {
+      for (const it of (g.items || [])) {
+        const info = getItemDiscountInfo(it);
+        savings += info.savingsAmount;
+      }
+    }
+    return Number(savings.toFixed(2));
+  }, [selectedGroups]);
+
+
+  const finalPayable = Math.max(
+    0,
+    selectedSubtotal + deliveryFee + serviceFee - discountAmount
+  );
+
+  const toggleMerchantSelection = (merchantId) => {
+    setSelectedMerchantIds((prev) =>
+      prev.includes(merchantId)
+        ? prev.filter((id) => id !== merchantId)
+        : [...prev, merchantId]
+    );
+  };
+
+  const handleSelectAll = () => {
+    setSelectedMerchantIds(rawMerchantGroups.map((g) => g.merchantId));
+  };
+
+  const handleDeselectAll = () => {
+    setSelectedMerchantIds([]);
+  };
+
+  const handleApplyPromo = () => {
+    setPromoError("");
+    const clean = promoCode.trim().toUpperCase();
+    if (!clean) return;
+
+    if (clean === "MYTRUCK20") {
+      setAppliedPromo({ code: "MYTRUCK20", type: "percent", value: 20 });
+    } else if (clean === "WELCOME" || clean === "WELCOME50") {
+      setAppliedPromo({ code: clean, type: "fixed", value: 50 });
+    } else if (clean === "FREESHIP") {
+      setAppliedPromo({ code: "FREESHIP", type: "fixed", value: deliveryFee });
+    } else {
+      setPromoError("Invalid promo code. Try 'MYTRUCK20' or 'WELCOME'");
+    }
+  };
+
+  const handleClearBasketConfirm = () => {
+    Alert.alert(
+      "Clear Cart",
+      "Are you sure you want to remove all items from your cart?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear Cart",
+          style: "destructive",
+          onPress: () => {
+            dispatch(clearBasket());
+            setAppliedPromo(null);
+          },
+        },
+      ]
+    );
+  };
+
+  const handleConfirmLocation = (loc) => {
+    dispatch(
+      setUser({
+        ...(reduxUser || {}),
+        address: loc.address,
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+      })
+    );
+  };
+
+  // Group items inside a single merchant
+  const groupItemsInMerchant = (itemsList) => {
+    const map = {};
+    for (const item of (itemsList || [])) {
+      if (!item || !item.id) continue;
+      if (!map[item.id]) {
+        map[item.id] = { item, quantity: 0, totalPrice: 0 };
+      }
+      map[item.id].quantity += 1;
+      map[item.id].totalPrice += Number(item.price || 0);
+    }
+    return map ? Object.values(map) : [];
+  };
+
+  // Multi-merchant Grouped Checkout
+  const handlePlaceOrder = async () => {
+    if (!user?.uid) {
+      Alert.alert(
+        "Sign In Required",
+        "Please sign in or create an account to place your order."
+      );
+      return;
+    }
+    if (selectedGroups.length === 0) {
+      Alert.alert(
+        "No Orders Selected",
+        "Please select at least one restaurant or shop order to purchase."
+      );
+      return;
+    }
+    if (isSubmitting || paymentInitializing) return;
+
+    // ─── STEP 0: Enforce maximum delivery distance ─────────────────────────
+    for (const group of selectedGroups) {
+      const quote = calculateDeliveryQuote(
+        { latitude: group.merchantLat, longitude: group.merchantLng, city: group.merchantCity },
+        { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
+      );
+      if (quote.distanceKm > 15) {
+        Alert.alert("Far Delivery Distance", FAR_DISTANCE_NOTICE);
+        return;
+      }
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      // ─── STEP 1: For CHAPA – initialize payment FIRST (before creating orders) ──
+      if (paymentMethod === "CHAPA") {
+        setPaymentInitializing(true); // blocks empty-cart flash
+
+        const txRef = `MT${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+        const rawPhone = String(dbUser?.phoneNumber || user?.phoneNumber || "").replace(/\D/g, "");
+        const cleanPhone10 = rawPhone.startsWith("251")
+          ? "0" + rawPhone.slice(3)
+          : rawPhone.startsWith("0") ? rawPhone : "0" + rawPhone;
+        let chapaEmail = String(user?.email || dbUser?.email || "").trim().toLowerCase();
+        if (!chapaEmail || !chapaEmail.includes("@") || chapaEmail.endsWith(".local") || chapaEmail.endsWith(".et")) {
+          chapaEmail = cleanPhone10.length >= 9 ? `customer${cleanPhone10}@gmail.com` : "customer@gmail.com";
+        }
+
+        const totalAmount = selectedGroups.reduce((acc, g) => {
+          const q = calculateDeliveryQuote(
+            { latitude: g.merchantLat, longitude: g.merchantLng, city: g.merchantCity },
+            { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
+          );
+          const groupSub = g.items.reduce((sum, item) => sum + (Number(item.price) || 0), 0);
+          return acc + groupSub + (q.deliveryFee || 50) + 15; // subtotal + delivery + service fee
+        }, 0);
+
+        let checkoutUrl = null;
+        try {
+          const chapaRes = await fetch("https://api.chapa.co/v1/transaction/initialize", {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer CHASECK-dbFWramaIJgWjktanzUXhw9SMHhiTW6j",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              amount: String(Number(totalAmount || 100).toFixed(2)),
+              currency: "ETB",
+              tx_ref: txRef,
+              email: chapaEmail,
+              first_name: String(dbUser?.fullName || user?.displayName || "Customer").split(" ")[0] || "Customer",
+              last_name: String(dbUser?.fullName || user?.displayName || "User").split(" ")[1] || "Client",
+              phone_number: cleanPhone10.length === 10 ? cleanPhone10 : "0911000000",
+              return_url: "https://checkout.chapa.co/checkout/payment-receipt",
+              customization: {
+                title: "MyTruck Delivery",
+                description: `Payment for ${selectedGroups.map(g => g.merchantName).join(", ")}`,
+              },
+            }),
+          });
+          const chapaData = await chapaRes.json().catch(() => ({}));
+          checkoutUrl = chapaData?.data?.checkout_url;
+
+          // Retry without customization if failed
+          if (!checkoutUrl) {
+            const retryRes = await fetch("https://api.chapa.co/v1/transaction/initialize", {
+              method: "POST",
+              headers: {
+                Authorization: "Bearer CHASECK-dbFWramaIJgWjktanzUXhw9SMHhiTW6j",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                amount: String(Number(totalAmount || 100).toFixed(2)),
+                currency: "ETB",
+                tx_ref: txRef,
+                email: chapaEmail,
+                first_name: "Customer",
+                last_name: "User",
+                phone_number: cleanPhone10.length === 10 ? cleanPhone10 : "0911000000",
+                return_url: "https://checkout.chapa.co/checkout/payment-receipt",
+              }),
+            });
+            const retryData = await retryRes.json().catch(() => ({}));
+            checkoutUrl = retryData?.data?.checkout_url;
+          }
+        } catch (initErr) {
+          console.warn("Chapa init error:", initErr?.message);
+        }
+
+        if (!checkoutUrl) {
+          setPaymentInitializing(false);
+          setIsSubmitting(false);
+          Alert.alert(
+            "Payment Unavailable",
+            "Could not initialize the payment. Please check your connection and try again.",
+            [{ text: "Retry", onPress: handlePlaceOrder }, { text: "Cancel", style: "cancel" }]
+          );
+          return;
+        }
+
+        // ─── STEP 2: Chapa initialized — NOW create orders with AWAITING_PAYMENT status ──
+        const createdOrderIds = [];
+        const batch = writeBatch(db);
+
+        for (const group of selectedGroups) {
+          const orderRef = doc(collection(db, "orders"));
+          const orderId = orderRef.id;
+          createdOrderIds.push(orderId);
+
+          const dishesInGroup = groupItemsInMerchant(group.items);
+          let origSubtotal = 0, discSubtotal = 0, totalDiscAmount = 0, merchantBaseSubtotal = 0;
+
+          for (const gd of dishesInGroup) {
+            const itemOrig = Number(gd.item.originalPrice || gd.item.price || 0);
+            const itemDisc = Number(gd.item.price || gd.item.discountedPrice || 0);
+            const mBase = Number(gd.item.merchantBasePrice != null ? gd.item.merchantBasePrice : gd.item.price || 0);
+            origSubtotal += itemOrig * gd.quantity;
+            discSubtotal += itemDisc * gd.quantity;
+            merchantBaseSubtotal += mBase * gd.quantity;
+            if (itemOrig > itemDisc) totalDiscAmount += (itemOrig - itemDisc) * gd.quantity;
+          }
+
+          const groupSubtotal = Number(discSubtotal.toFixed(2));
+          const quote = calculateDeliveryQuote(
+            { latitude: group.merchantLat, longitude: group.merchantLng, city: group.merchantCity },
+            { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
+          );
+          const fin = calculateOrderFinancials({
+            subtotal: groupSubtotal,
+            deliveryFee: quote.deliveryFee || 50,
+            serviceFee: 15,
+            deliveryCommissionPercent: 20,
+          });
+
+          const deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
+          const custFullName = String(dbUser?.fullName || user.displayName || "Customer").trim();
+          const custPhone = String(dbUser?.phoneNumber || user.phoneNumber || "").trim();
+          const nameParts = custFullName.split(" ");
+
+          batch.set(orderRef, {
+            orderId,
+            userId: user.uid,
+            customerName: custFullName,
+            customerPhone: custPhone,
+            userPhoneNumber: custPhone,
+            phone: custPhone,
+            userFirstName: nameParts[0] || "Customer",
+            userLastName: nameParts.slice(1).join(" ") || "",
+            userAddress: currentAddress,
+            customerEmail: user.email || dbUser?.email || "",
+            restaurantId: group.merchantId,
+            restaurantName: group.merchantName,
+            restaurantAddress: group.merchantAddress || group.merchantName || "Ethiopia",
+            restaurantPhone: group.merchantPhone || "",
+            restaurantLat: Number(group.merchantLat || 8.992),
+            restaurantLng: Number(group.merchantLng || 38.752),
+            pickupAddress: group.merchantAddress || group.merchantName || "Ethiopia",
+            pickupCoords: { latitude: Number(group.merchantLat || 8.992), longitude: Number(group.merchantLng || 38.752) },
+            sellerType: group.sellerType || "restaurant",
+            deliveryAddress: currentAddress,
+            dropoffAddress: currentAddress,
+            deliveryCoords: currentCoords,
+            dropoffCoords: currentCoords,
+            deliveryLat: Number(currentCoords?.latitude) || 8.9806,
+            deliveryLng: Number(currentCoords?.longitude) || 38.7578,
+            deliveryDistanceKm: quote.distanceKm,
+            deliveryEtaMinutes: quote.etaMinutes,
+            isIntercity: quote.isIntercity,
+            // AWAITING_PAYMENT: order exists but NOT yet forwarded to restaurant
+            status: "AWAITING_PAYMENT",
+            paymentMethod,
+            paymentStatus: "UNPAID",
+            paymentInitiatedAt: serverTimestamp(),
+            chapaMerchantReference: txRef,
+            chapaCheckoutUrl: checkoutUrl,
+            subtotal: fin.subtotal,
+            originalSubtotal: Number(origSubtotal.toFixed(2)),
+            discountedSubtotal: fin.subtotal,
+            merchantBaseSubtotal: Number(merchantBaseSubtotal.toFixed(2)),
+            totalDiscountAmount: Number(totalDiscAmount.toFixed(2)),
+            hasMerchantDiscount: totalDiscAmount > 0,
+            customerSavings: Number(totalDiscAmount.toFixed(2)),
+            deliveryFee: fin.deliveryFee,
+            serviceFee: fin.serviceFee,
+            total: fin.total,
+            currency: "ETB",
+            restaurantEarnings: fin.restaurantEarnings,
+            deliveryCommissionPercent: fin.deliveryCommissionPercent,
+            deliveryCommission: fin.deliveryCommission,
+            companyProfit: fin.companyProfit,
+            driverEarnings: fin.driverEarnings,
+            totalOwedOut: fin.totalOwedOut,
+            deliveryOtp,
+            itemsCount: group.items.length,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+
+          for (const gd of dishesInGroup) {
+            const info = getItemDiscountInfo(gd.item);
+            const itemRef = doc(collection(db, "orderDishes"));
+            batch.set(itemRef, {
+              orderId,
+              dishId: gd.item.dishId || gd.item.id,
+              name: gd.item.name || "Item",
+              price: info.customerSellingPrice,
+              merchantBasePrice: Number(gd.item.merchantBasePrice != null ? gd.item.merchantBasePrice : gd.item.price || 0),
+              originalPrice: info.customerOriginalPrice,
+              discountedPrice: info.customerSellingPrice,
+              hasDiscount: true,
+              discountPercent: info.discountPercent,
+              unitDiscount: info.savingsAmount,
+              quantity: gd.quantity,
+              totalPrice: Number((info.customerSellingPrice * gd.quantity).toFixed(2)),
+              totalOriginalPrice: Number((info.customerOriginalPrice * gd.quantity).toFixed(2)),
+              image: gd.item.image || gd.item.imgUrl || gd.item.photo || "",
+              createdAt: serverTimestamp(),
+            });
+          }
+        }
+
+        await batch.commit();
+
+        // ─── STEP 3: Clear basket AFTER navigation to prevent empty-cart flash ──
+        // Navigate first with a brief loading state, THEN clear basket
+        navigation.replace("PreparingOrderScreen", {
+          orderId: createdOrderIds[0],
+          orderIds: createdOrderIds,
+          paymentPending: true,
+          autoLaunchChapa: true,
+          initialCheckoutUrl: checkoutUrl,
+          txRef,
+        });
+
+        // Clear basket after navigation (slight delay ensures screen has mounted)
+        setTimeout(() => {
+          for (const group of selectedGroups) {
+            dispatch(removeMerchantFromBasket(group.merchantId));
+          }
+        }, 800);
+
+        setPaymentInitializing(false);
+        return;
+      }
+
+      // ─── COD / Other payment methods ──────────────────────────────────────
+      const createdOrderIds = [];
+      const batch = writeBatch(db);
+
+      for (const group of selectedGroups) {
+        const orderRef = doc(collection(db, "orders"));
+        const orderId = orderRef.id;
+        createdOrderIds.push(orderId);
+
+        const dishesInGroup = groupItemsInMerchant(group.items);
+        let origSubtotal = 0, discSubtotal = 0, totalDiscAmount = 0, merchantBaseSubtotal = 0;
+        for (const gd of dishesInGroup) {
+          const itemOrig = Number(gd.item.originalPrice || gd.item.price || 0);
+          const itemDisc = Number(gd.item.price || gd.item.discountedPrice || 0);
+          const mBase = Number(gd.item.merchantBasePrice != null ? gd.item.merchantBasePrice : gd.item.price || 0);
+          origSubtotal += itemOrig * gd.quantity;
+          discSubtotal += itemDisc * gd.quantity;
+          merchantBaseSubtotal += mBase * gd.quantity;
+          if (itemOrig > itemDisc) totalDiscAmount += (itemOrig - itemDisc) * gd.quantity;
+        }
+
+        const groupSubtotal = Number(discSubtotal.toFixed(2));
+        const quote = calculateDeliveryQuote(
+          { latitude: group.merchantLat, longitude: group.merchantLng, city: group.merchantCity },
+          { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
+        );
+        const fin = calculateOrderFinancials({
+          subtotal: groupSubtotal,
+          deliveryFee: quote.deliveryFee || 50,
+          serviceFee: 15,
+          deliveryCommissionPercent: 20,
+        });
+
+        const deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
+        const custFullName = String(dbUser?.fullName || user.displayName || "Customer").trim();
+        const custPhone = String(dbUser?.phoneNumber || user.phoneNumber || "").trim();
+        const nameParts = custFullName.split(" ");
+
+        batch.set(orderRef, {
+          orderId,
+          userId: user.uid,
+          customerName: custFullName,
+          customerPhone: custPhone,
+          userPhoneNumber: custPhone,
+          phone: custPhone,
+          userFirstName: nameParts[0] || "Customer",
+          userLastName: nameParts.slice(1).join(" ") || "",
+          userAddress: currentAddress,
+          customerEmail: user.email || dbUser?.email || "",
+          restaurantId: group.merchantId,
+          restaurantName: group.merchantName,
+          restaurantAddress: group.merchantAddress || group.merchantName || "Ethiopia",
+          restaurantPhone: group.merchantPhone || "",
+          restaurantLat: Number(group.merchantLat || 8.992),
+          restaurantLng: Number(group.merchantLng || 38.752),
+          pickupAddress: group.merchantAddress || group.merchantName || "Ethiopia",
+          pickupCoords: { latitude: Number(group.merchantLat || 8.992), longitude: Number(group.merchantLng || 38.752) },
+          sellerType: group.sellerType || "restaurant",
+          deliveryAddress: currentAddress,
+          dropoffAddress: currentAddress,
+          deliveryCoords: currentCoords,
+          dropoffCoords: currentCoords,
+          deliveryLat: Number(currentCoords?.latitude) || 8.9806,
+          deliveryLng: Number(currentCoords?.longitude) || 38.7578,
+          deliveryDistanceKm: quote.distanceKm,
+          deliveryEtaMinutes: quote.etaMinutes,
+          isIntercity: quote.isIntercity,
+          status: "PENDING",
+          paymentMethod,
+          paymentStatus: "PENDING",
+          subtotal: fin.subtotal,
+          originalSubtotal: Number(origSubtotal.toFixed(2)),
+          merchantBaseSubtotal: Number(merchantBaseSubtotal.toFixed(2)),
+          totalDiscountAmount: Number(totalDiscAmount.toFixed(2)),
+          hasMerchantDiscount: totalDiscAmount > 0,
+          deliveryFee: fin.deliveryFee,
+          serviceFee: fin.serviceFee,
+          total: fin.total,
+          currency: "ETB",
+          restaurantEarnings: fin.restaurantEarnings,
+          deliveryCommissionPercent: fin.deliveryCommissionPercent,
+          deliveryCommission: fin.deliveryCommission,
+          companyProfit: fin.companyProfit,
+          driverEarnings: fin.driverEarnings,
+          totalOwedOut: fin.totalOwedOut,
+          deliveryOtp,
+          itemsCount: group.items.length,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+        for (const gd of dishesInGroup) {
+          const info = getItemDiscountInfo(gd.item);
+          const itemRef = doc(collection(db, "orderDishes"));
+          batch.set(itemRef, {
+            orderId,
+            dishId: gd.item.dishId || gd.item.id,
+            name: gd.item.name || "Item",
+            price: info.customerSellingPrice,
+            merchantBasePrice: Number(gd.item.merchantBasePrice != null ? gd.item.merchantBasePrice : gd.item.price || 0),
+            originalPrice: info.customerOriginalPrice,
+            discountedPrice: info.customerSellingPrice,
+            hasDiscount: true,
+            discountPercent: info.discountPercent,
+            unitDiscount: info.savingsAmount,
+            quantity: gd.quantity,
+            totalPrice: Number((info.customerSellingPrice * gd.quantity).toFixed(2)),
+            image: gd.item.image || gd.item.imgUrl || gd.item.photo || "",
+            createdAt: serverTimestamp(),
+          });
+        }
+      }
+
+      await batch.commit();
+
+      // COD: notify restaurant now (payment is on delivery)
+      presentLocalNotification({
+        title: "Order Placed! 🍔",
+        body: `Order #${String(createdOrderIds[0]).slice(0, 8).toUpperCase()} submitted – Cash on Delivery.`,
+        data: { orderId: createdOrderIds[0], targetRoute: "TrackOrder" },
+        category: "orders",
+      }).catch(() => {});
+
+      navigation.replace("PreparingOrderScreen", {
+        orderId: createdOrderIds[0],
+        orderIds: createdOrderIds,
+      });
+
+      setTimeout(() => {
+        for (const group of selectedGroups) {
+          dispatch(removeMerchantFromBasket(group.merchantId));
+        }
+      }, 800);
+
+    } catch (error) {
+      console.error("Order submission failure:", error);
+      setPaymentInitializing(false);
+      Alert.alert(
+        "Could Not Place Order",
+        error.message || "Please check your network connection and try again."
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const allSelected =
+    rawMerchantGroups.length > 0 &&
+    selectedMerchantIds.length === rawMerchantGroups.length;
+
+  return (
+    <SafeAreaView style={s.safe} edges={["top"]}>
+      <StatusBar style="light" backgroundColor={TEAL} />
+
+      {/* Header */}
+      <View style={s.header}>
+        <BackButton fallbackRoute="HomeTab" iconColor="white" />
+        <View style={s.headerCenter}>
+          <Text style={s.headerTitle}>Shopping Cart</Text>
+          <Text style={s.headerSub}>
+            {rawMerchantGroups.length > 1
+              ? `${rawMerchantGroups.length} Merchant Orders`
+              : rawMerchantGroups[0]?.merchantName || "MyTruck Delivery"}
+          </Text>
+        </View>
+        {items.length > 0 ? (
+          <TouchableOpacity
+            onPress={handleClearBasketConfirm}
+            style={s.clearBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            activeOpacity={0.8}
+            accessibilityLabel="Clear cart"
+          >
+            <MaterialCommunityIcons name="trash-can-outline" size={15} color="white" style={{ marginRight: 4 }} />
+            <Text style={s.clearBtnTxt}>Clear</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={{ width: 40 }} />
+        )}
+      </View>
+
+      {items.length === 0 ? (
+        /* Empty Cart State — only show if not in payment-init flow */
+        paymentInitializing ? (
+          <View style={s.emptyContainer}>
+            <ActivityIndicator size="large" color={TEAL} />
+            <Text style={[s.emptyTitle, { marginTop: 20, fontSize: 16 }]}>Preparing your secure payment...</Text>
+            <Text style={s.emptySub}>Please wait while we initialize your checkout session.</Text>
+          </View>
+        ) : (
+        <View style={s.emptyContainer}>
+          <View style={s.emptyIconCircle}>
+            <MaterialCommunityIcons name="cart-outline" size={60} color="#94A3B8" />
+          </View>
+          <Text style={s.emptyTitle}>Your cart is empty</Text>
+          <Text style={s.emptySub}>
+            Discover delicious meals, fresh groceries, and fast deliveries around you.
+          </Text>
+          <TouchableOpacity
+            style={s.browseBtn}
+            activeOpacity={0.88}
+            onPress={() => navigation.navigate("Restaurants")}
+          >
+            <Text style={s.browseBtnTxt}>Explore Restaurants</Text>
+          </TouchableOpacity>
+        </View>
+        )
+      ) : (
+        /* Active Cart Content */
+        <ScrollView
+          style={s.scroll}
+          contentContainerStyle={s.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Cart Item Search */}
+          <View style={s.searchWrap}>
+            <MagnifyingGlassIcon size={18} color="#64748B" />
+            <TextInput
+              style={s.searchInput}
+              placeholder="Search items or stores in your cart..."
+              placeholderTextColor="#94A3B8"
+              value={cartSearch}
+              onChangeText={setCartSearch}
+            />
+            {cartSearch ? (
+              <TouchableOpacity onPress={() => setCartSearch("")}>
+                <MaterialCommunityIcons name="close-circle" size={16} color="#94A3B8" />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+
+          {/* Selection Controls (Phase 8.3) */}
+          {rawMerchantGroups.length > 1 && (
+            <View style={s.selectionBar}>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <Text style={s.selectionLabel}>
+                  {selectedMerchantIds.length} of {rawMerchantGroups.length} orders selected
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={allSelected ? handleDeselectAll : handleSelectAll}
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              >
+                <Text style={s.toggleAllTxt}>
+                  {allSelected ? "Deselect All" : "Select All"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Multi-Restaurant Groups List (Phase 7 & 8) */}
+          {merchantGroups.map((group) => {
+            const isSelected = selectedMerchantIds.includes(group.merchantId);
+            const dishesInGroup = groupItemsInMerchant(group.items);
+
+            return (
+              <View
+                key={group.merchantId}
+                style={[
+                  s.merchantCard,
+                  isSelected ? s.merchantCardSelected : s.merchantCardUnselected,
+                ]}
+              >
+                {/* Merchant Card Header */}
+                <View style={s.merchantHeader}>
+                  <TouchableOpacity
+                    style={s.checkboxRow}
+                    activeOpacity={0.8}
+                    onPress={() => toggleMerchantSelection(group.merchantId)}
+                  >
+                    <MaterialCommunityIcons
+                      name={isSelected ? "checkbox-marked" : "checkbox-blank-outline"}
+                      size={22}
+                      color={isSelected ? TEAL : "#94A3B8"}
+                    />
+                    <View style={{ marginLeft: 8 }}>
+                      <Text style={s.merchantTitle} numberOfLines={1}>
+                        {group.merchantName}
+                      </Text>
+                      <Text style={s.merchantSub}>
+                        {group.sellerType === "shop" ? "Supermarket & Shop" : "Restaurant"} · {group.items.length} items
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    onPress={() => dispatch(removeMerchantFromBasket(group.merchantId))}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <TrashIcon size={16} color="#94A3B8" />
+                  </TouchableOpacity>
+                </View>
+
+                {(() => {
+                  const gQuote = calculateDeliveryQuote(
+                    { latitude: group.merchantLat, longitude: group.merchantLng },
+                    { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
+                  );
+                  if (gQuote.distanceKm > 15) {
+                    return (
+                      <View
+                        style={{
+                          backgroundColor: "#FEF2F2",
+                          borderColor: "#FECACA",
+                          borderWidth: 1,
+                          borderRadius: 8,
+                          padding: 8,
+                          marginHorizontal: 12,
+                          marginBottom: 10,
+                          flexDirection: "row",
+                          alignItems: "center",
+                        }}
+                      >
+                        <MaterialCommunityIcons name="alert-circle-outline" size={18} color="#DC2626" />
+                        <Text style={{ fontSize: 11.5, color: "#991B1B", fontWeight: "600", marginLeft: 6, flex: 1 }}>
+                          {FAR_DISTANCE_NOTICE} ({gQuote.distanceKm} km)
+                        </Text>
+                      </View>
+                    );
+                  }
+                  return null;
+                })()}
+
+                {/* Items in this merchant */}
+                <View style={s.itemsContainer}>
+                  {dishesInGroup.map((gd, idx) => (
+                    <View
+                      key={gd.item.id || idx}
+                      style={[
+                        s.itemRow,
+                        idx !== dishesInGroup.length - 1 && s.itemDivider,
+                      ]}
+                    >
+                      <CartItemImage
+                        uri={gd.item.image || gd.item.imgUrl || gd.item.photo || gd.item.imageUrl || ""}
+                        style={s.itemImg}
+                      />                      <View style={s.itemInfo}>
+                        <Text style={s.itemName} numberOfLines={1}>
+                          {gd.item.name}
+                        </Text>
+                        {(() => {
+                          const info = getItemDiscountInfo(gd.item);
+                          return (
+                            <View style={{ flexDirection: "row", alignItems: "baseline", gap: 4 }}>
+                              <Text style={[s.itemUnitPrice, { color: "#E11D48", fontWeight: "700" }]}>
+                                {formatETB(info.customerSellingPrice)}
+                              </Text>
+                              <Text style={{ fontSize: 11, color: "#94A3B8", textDecorationLine: "line-through" }}>
+                                {formatETB(info.customerOriginalPrice)}
+                              </Text>
+                              <View style={{ backgroundColor: "#FEE2E2", paddingHorizontal: 3, paddingVertical: 1, borderRadius: 2 }}>
+                                <Text style={{ fontSize: 9, fontWeight: "800", color: "#E11D48" }}>
+                                  -{String(info.discountPercent ?? 0)}%
+                                </Text>
+                              </View>
+                            </View>
+                          );
+                        })()}
+                        <Text style={s.itemTotalPrice}>
+                          {formatETB(gd.totalPrice)}
+                        </Text>
+
+                      </View>
+
+                      {/* Quantity manipulation */}
+                      <View style={s.qtyControls}>
+                        <TouchableOpacity
+                          style={s.qtyBtn}
+                          onPress={() => dispatch(removeFromBasket({ id: gd.item.id }))}
+                          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                        >
+                          <MinusIcon size={13} color={TEAL} />
+                        </TouchableOpacity>
+
+                        <Text style={s.qtyTxt}>{gd.quantity}</Text>
+
+                        <TouchableOpacity
+                          style={s.qtyBtn}
+                          onPress={() => dispatch(addToBasket(gd.item))}
+                          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                        >
+                          <PlusIcon size={13} color={TEAL} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+
+                {/* Group Subtotal & Estimated Delivery Fee */}
+                <View style={s.groupFooter}>
+                  <View style={s.groupFooterRow}>
+                    <Text style={s.groupFooterLabel}>Order Subtotal</Text>
+                    <Text style={s.groupFooterVal}>{formatETB(group.subtotal)}</Text>
+                  </View>
+                  <View style={s.groupFooterRow}>
+                    <Text style={s.groupFooterLabel}>Delivery Fee</Text>
+                    <Text style={s.groupFooterVal}>ETB 50.00</Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })}
+
+          {/* Delivery Address Card */}
+          <View style={s.sectionCard}>
+            <View style={s.cardHeaderRow}>
+              <Text style={s.sectionHeading}>Deliver To</Text>
+              <TouchableOpacity
+                onPress={() => setDeliveryModalVisible(true)}
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              >
+                <Text style={s.changeLink}>Change</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={s.addressRow}
+              activeOpacity={0.8}
+              onPress={() => setDeliveryModalVisible(true)}
+            >
+              <View style={s.addressIconWrap}>
+                <MapPinIcon size={20} color={TEAL} />
+              </View>
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={s.addressTitle}>{currentAddress}</Text>
+                <Text style={s.addressSub}>Tap to change or adjust pin on map</Text>
+              </View>
+              <ChevronRightIcon size={18} color="#94A3B8" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Promo Code Card */}
+          <View style={s.sectionCard}>
+            <Text style={s.sectionHeading}>Promotions & Coupons</Text>
+            {appliedPromo ? (
+              <View style={s.appliedPromoCard}>
+                <View style={{ flexDirection: "row", alignItems: "center" }}>
+                  <TagIcon size={18} color="#166534" />
+                  <Text style={s.appliedPromoTxt}>Code "{appliedPromo.code}" applied</Text>
+                </View>
+                <TouchableOpacity onPress={() => setAppliedPromo(null)}>
+                  <Text style={s.removePromoTxt}>Remove</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={s.promoInputRow}>
+                <TextInput
+                  style={s.promoInput}
+                  placeholder="Enter code (e.g. MYTRUCK20)"
+                  placeholderTextColor="#94A3B8"
+                  value={promoCode}
+                  onChangeText={(t) => { setPromoCode(t); setPromoError(""); }}
+                  autoCapitalize="characters"
+                />
+                <TouchableOpacity
+                  style={[s.promoApplyBtn, !promoCode.trim() && { opacity: 0.5 }]}
+                  onPress={handleApplyPromo}
+                  disabled={!promoCode.trim()}
+                >
+                  <Text style={s.promoApplyBtnTxt}>Apply</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {promoError ? <Text style={s.promoErrorTxt}>{promoError}</Text> : null}
+          </View>
+
+          {/* Payment Method Selector - Chapa Exclusive */}
+          <View style={s.sectionCard}>
+            <Text style={s.sectionHeading}>Payment Method</Text>
+
+            {/* Chapa - Online Gateway */}
+            <View style={[s.paymentOption, s.paymentOptionActive]}>
+              <MaterialCommunityIcons
+                name="radiobox-marked"
+                size={22}
+                color={TEAL}
+              />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={s.paymentTitle}>Pay Online with Chapa</Text>
+                <Text style={s.paymentSub}>Telebirr, CBE Birr, Debit / Credit Card</Text>
+              </View>
+              <View style={s.paymentPill}>
+                <Text style={s.paymentPillTxt}>ACTIVE</Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Checkout Summary */}
+          <View style={s.sectionCard}>
+            <Text style={s.sectionHeading}>Checkout Summary</Text>
+            <View style={s.billRow}>
+              <Text style={s.billLabel}>Selected Merchants</Text>
+              <Text style={s.billVal}>{selectedGroups.length} store(s)</Text>
+            </View>
+            <View style={s.billRow}>
+              <Text style={s.billLabel}>Items Subtotal</Text>
+              <Text style={s.billVal}>{formatETB(selectedSubtotal)}</Text>
+            </View>
+
+            {/* Transparent distance-based delivery pricing */}
+            <View style={s.deliveryBreakdownCard}>
+              <View style={s.deliveryBreakdownRow}>
+                <MaterialCommunityIcons name="map-marker-distance" size={15} color="#179B83" />
+                <Text style={s.deliveryBreakdownLabel}>Delivery Distance</Text>
+                <Text style={s.deliveryBreakdownVal}>{totalDistanceKm.toFixed(1)} km</Text>
+              </View>
+              <View style={s.deliveryBreakdownRow}>
+                <MaterialCommunityIcons name="speedometer" size={15} color="#179B83" />
+                <Text style={s.deliveryBreakdownLabel}>Rate</Text>
+                <Text style={s.deliveryBreakdownVal}>25 ETB / km</Text>
+              </View>
+              <View style={[s.deliveryBreakdownRow, { borderTopWidth: 0.5, borderTopColor: "#CBD5E1", marginTop: 4, paddingTop: 6 }]}>
+                <MaterialCommunityIcons name="truck-fast" size={15} color="#0B2A26" />
+                <Text style={[s.deliveryBreakdownLabel, { fontWeight: "700", color: "#0B2A26" }]}>Delivery Fee</Text>
+                <Text style={[s.deliveryBreakdownVal, { fontWeight: "700", color: "#0B2A26" }]}>{formatETB(deliveryFee)}</Text>
+              </View>
+              {totalDistanceKm < 2 && (
+                <Text style={s.deliveryMinNote}>* Minimum delivery fee applies (50 ETB)</Text>
+              )}
+            </View>
+
+            <View style={s.billRow}>
+              <Text style={s.billLabel}>Platform Service Fee</Text>
+              <Text style={s.billVal}>{formatETB(serviceFee)}</Text>
+            </View>
+            {discountAmount > 0 ? (
+              <View style={s.billRow}>
+                <Text style={[s.billLabel, { color: "#166534" }]}>Discount Applied</Text>
+                <Text style={[s.billVal, { color: "#166534" }]}>-{formatETB(discountAmount)}</Text>
+              </View>
+            ) : null}
+            {merchantDiscountSavings > 0 ? (
+              <View style={s.billRow}>
+                <Text style={[s.billLabel, { color: "#E11D48", fontWeight: "600" }]}>Merchant Deals Savings</Text>
+                <Text style={[s.billVal, { color: "#E11D48", fontWeight: "700" }]}>-{formatETB(merchantDiscountSavings)}</Text>
+              </View>
+            ) : null}
+
+            <View style={s.billDivider} />
+
+            <View style={s.billRowTotal}>
+              <Text style={s.billTotalLabel}>Total Payable</Text>
+              <Text style={s.billTotalVal}>{formatETB(finalPayable)}</Text>
+            </View>
+          </View>
+
+          {/* Place Order CTA Card */}
+          <TouchableOpacity
+            style={[
+              s.placeOrderBtn,
+              (isSubmitting || selectedGroups.length === 0) && { opacity: 0.75 },
+            ]}
+            onPress={handlePlaceOrder}
+            disabled={isSubmitting || selectedGroups.length === 0}
+            activeOpacity={0.88}
+          >
+            {isSubmitting ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <View style={s.btnContentRow}>
+                <Text style={s.placeOrderBtnTxt}>
+                  {selectedGroups.length > 1
+                    ? `Checkout ${selectedGroups.length} Orders`
+                    : "Confirm & Place Order"}
+                </Text>
+                <Text style={s.placeOrderAmount}>{formatETB(finalPayable)}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </ScrollView>
+      )}
+
+      {/* Location Modal */}
+      {deliveryModalVisible ? (
+        <DeliveryLocationModal
+          visible={deliveryModalVisible}
+          onClose={() => setDeliveryModalVisible(false)}
+          initialLocation={{
+            address: currentAddress,
+            latitude: currentCoords.latitude,
+            longitude: currentCoords.longitude,
+          }}
+          onConfirmLocation={handleConfirmLocation}
+        />
+      ) : null}
+    </SafeAreaView>
+  );
+}
+
+const s = StyleSheet.create({
+  safe: {
+    flex: 1,
+    backgroundColor: BG,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    backgroundColor: TEAL,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    shadowColor: "#0B2A26",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  headerCenter: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#FFFFFF",
+  },
+  headerSub: {
+    fontSize: 12,
+    color: "rgba(255,255,255,0.85)",
+    marginTop: 2,
+  },
+  clearBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.22)",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  clearBtnTxt: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  emptyContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 32,
+  },
+  emptyIconCircle: {
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 20,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: DARK,
+    marginBottom: 8,
+  },
+  emptySub: {
+    fontSize: 13.5,
+    color: "#64748B",
+    textAlign: "center",
+    lineHeight: 20,
+    marginBottom: 24,
+  },
+  browseBtn: {
+    backgroundColor: TEAL,
+    paddingHorizontal: 28,
+    paddingVertical: 14,
+    borderRadius: 14,
+  },
+  browseBtnTxt: {
+    color: "#FFFFFF",
+    fontWeight: "800",
+    fontSize: 14,
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 40,
+  },
+  searchWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    height: 42,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  searchInput: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 13,
+    color: DARK,
+  },
+  selectionBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+    paddingHorizontal: 4,
+  },
+  selectionLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#64748B",
+  },
+  toggleAllTxt: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: TEAL,
+  },
+  merchantCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 14,
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+  },
+  merchantCardSelected: {
+    borderColor: TEAL,
+    backgroundColor: "#FFFFFF",
+  },
+  merchantCardUnselected: {
+    borderColor: "#E2E8F0",
+    backgroundColor: "#F8FAFC",
+    opacity: 0.7,
+  },
+  merchantHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+  },
+  checkboxRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+  merchantTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: DARK,
+  },
+  merchantSub: {
+    fontSize: 11,
+    color: "#64748B",
+    marginTop: 1,
+  },
+  itemsContainer: {
+    paddingTop: 8,
+  },
+  itemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+  },
+  itemDivider: {
+    borderBottomWidth: 1,
+    borderBottomColor: "#F8FAFC",
+  },
+  itemImg: {
+    width: 48,
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: "#F1F5F9",
+  },
+  itemInfo: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  itemName: {
+    fontSize: 13.5,
+    fontWeight: "700",
+    color: DARK,
+  },
+  itemUnitPrice: {
+    fontSize: 11,
+    color: "#64748B",
+    marginTop: 1,
+  },
+  itemTotalPrice: {
+    fontSize: 12.5,
+    fontWeight: "800",
+    color: TEAL,
+    marginTop: 2,
+  },
+  qtyControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F1F5F9",
+    borderRadius: 10,
+    padding: 4,
+  },
+  qtyBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  qtyTxt: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: DARK,
+    paddingHorizontal: 8,
+  },
+  groupFooter: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#F1F5F9",
+  },
+  groupFooterRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 3,
+  },
+  groupFooterLabel: {
+    fontSize: 11.5,
+    color: "#64748B",
+  },
+  groupFooterVal: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: DARK,
+  },
+  sectionCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  sectionHeading: {
+    fontSize: 14.5,
+    fontWeight: "800",
+    color: DARK,
+    marginBottom: 12,
+  },
+  cardHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  changeLink: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: TEAL,
+  },
+  addressRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F8FAFC",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  addressIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#E6F4F1",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  addressTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: DARK,
+  },
+  addressSub: {
+    fontSize: 11,
+    color: "#64748B",
+    marginTop: 1,
+  },
+  promoInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  promoInput: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 42,
+    fontSize: 13,
+    color: DARK,
+    fontWeight: "700",
+  },
+  promoApplyBtn: {
+    backgroundColor: TEAL,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 8,
+  },
+  promoApplyBtnTxt: {
+    color: "#FFFFFF",
+    fontWeight: "800",
+    fontSize: 13,
+  },
+  appliedPromoCard: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "#DCFCE7",
+    padding: 12,
+    borderRadius: 12,
+  },
+  appliedPromoTxt: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: "#166534",
+    marginLeft: 6,
+  },
+  removePromoTxt: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#EF4444",
+  },
+  promoErrorTxt: {
+    fontSize: 11,
+    color: "#EF4444",
+    marginTop: 6,
+    marginLeft: 2,
+  },
+  paymentOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+  },
+  paymentOptionActive: {
+    borderColor: TEAL,
+    backgroundColor: "#F5FAF9",
+  },
+  paymentTitle: {
+    fontSize: 13.5,
+    fontWeight: "700",
+    color: DARK,
+  },
+  paymentSub: {
+    fontSize: 11,
+    color: "#64748B",
+    marginTop: 2,
+  },
+  paymentPill: {
+    backgroundColor: "#DCFCE7",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  paymentPillTxt: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#166534",
+  },
+  billRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  billLabel: {
+    fontSize: 12.5,
+    color: "#64748B",
+  },
+  billVal: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: DARK,
+  },
+  billDivider: {
+    height: 1,
+    backgroundColor: "#F1F5F9",
+    marginVertical: 10,
+  },
+  // Distance-based delivery pricing breakdown card
+  deliveryBreakdownCard: {
+    backgroundColor: "#F0FDF9",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+  },
+  deliveryBreakdownRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 5,
+    gap: 6,
+  },
+  deliveryBreakdownLabel: {
+    flex: 1,
+    fontSize: 12.5,
+    color: "#0D7A5F",
+  },
+  deliveryBreakdownVal: {
+    fontSize: 13,
+    color: "#0D7A5F",
+    fontWeight: "600",
+  },
+  deliveryMinNote: {
+    fontSize: 10.5,
+    color: "#64748B",
+    fontStyle: "italic",
+    marginTop: 3,
+  },
+  billRowTotal: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  billTotalLabel: {
+    fontSize: 15,
+    fontWeight: "900",
+    color: DARK,
+  },
+  billTotalVal: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: TEAL,
+  },
+  placeOrderBtn: {
+    backgroundColor: TEAL,
+    borderRadius: 16,
+    paddingVertical: 15,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 4,
+  },
+  btnContentRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    width: "100%",
+  },
+  placeOrderBtnTxt: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  placeOrderAmount: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "900",
+  },
+});
+

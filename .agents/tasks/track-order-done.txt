@@ -1,0 +1,37 @@
+PreparingOrderScreen.js rebuilt — track-order-done
+===================================================
+Date: 2025-07-12
+
+Changes made to screens/PreparingOrderScreen.js:
+
+1. Header — Row layout with ArrowLeftIcon (back), "Track Order" title centered,
+   MaterialCommunityIcons "close" (navigate Home). Matches reference exactly.
+
+2. Map section (height 250, outside ScrollView) —
+   - MapView with Gebeta UrlTile using Constants.expoConfig?.extra?.gebetaMapsApiKey
+   - Customer marker (home icon, #F47721) when userLatitude/userLongitude present
+   - Restaurant marker (store icon, #179B83) when restaurantLat/restaurantLng present
+   - Driver marker at midpoint of route (motorbike icon, #179B83)
+   - Dashed Polyline (strokeColor #179B83, strokeWidth 3, lineDashPattern [8,4])
+   - fitRegion() computes a padded region when both coordinates exist
+   - Falls back to Addis Ababa default region
+
+3. Status banner — #E8F8F5 background, map-marker icon, dynamic title + description
+   from STATUS_TITLES / STATUS_DESC maps.
+
+4. Driver card — Avatar (account-circle icon), driver name, star rating row,
+   phone (Linking.openURL) and message-outline action buttons.
+
+5. Order timeline — 5 stages with left connector line + circle, done/active/pending
+   states, Firestore timestamp formatting, "Estimated" fallback.
+
+6. Preserved from original:
+   - Firestore onSnapshot listener
+   - deliveryOtp state + auto-request useEffect (DRIVERPICKEDUP)
+   - OTP display card
+   - Chapa payment verify button + verifyChapaPayment function
+   - statusInfo + toneColors imports (kept for compatibility)
+   - Loading and error states (full-screen guards before main render)
+
+Structure: SafeAreaView > Header + MapView (fixed) + ScrollView (rest)
+All imports as specified in the rebuild prompt.

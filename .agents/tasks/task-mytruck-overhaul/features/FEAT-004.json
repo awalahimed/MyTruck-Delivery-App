@@ -1,0 +1,23 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Premium UI polish: RestaurantCard, RestaurantItem, and Home screen visual upgrades plus consistent empty/loading/pull-to-refresh states across OrderDetailsScreen. Independent of FEAT-003 (touches different files). Can be applied after FEAT-003 is committed.",
+  "status": "pending",
+  "steps": [
+    "1. components/RestaurantCard.js — Upgrade the card to premium treatment. Changes: (a) Increase image height from h-36 to h-44 (use style={{height:176}} to avoid NativeWind size ambiguity on RN 0.71). (b) Add Open/Closed status indicator: import the isRestaurantOpen helper — since RestaurantCard doesn't have opening hours, accept optional isOpen prop (boolean|undefined). When isOpen is defined, show a small pill badge overlaid on the image bottom-left: 'Open' in green (#179B83 bg, white text) or 'Closed' in gray (#64748B bg, white text). (c) Enhance the rating display: wrap StarIcon + rating text in a small pill with bg-[#E6F7F1] rounded-full px-2 py-0.5. (d) Add a delivery time badge: show minDeliveryTime-maxDeliveryTime min in a small gray pill next to the rating. (e) Show the genre as a pill with bg-[#FFF4EC] text-[#F47721] rounded-full. (f) Add a subtle shadow: use style={{shadowColor:'#000',shadowOffset:{width:0,height:2},shadowOpacity:0.07,shadowRadius:8,elevation:3}} on the outer Pressable. Keep the navigation.navigate('Restaurant', {id}) onPress.",
+    "2. components/RestaurantItem.js — Apply same premium treatment as RestaurantCard to the list-style item. (a) Increase image from h-36 w-36 to h-40 w-40. (b) Add the same Open/Closed pill overlay on the image. (c) Wrap the rating in a colored pill. (d) Add delivery time badge. (e) Genre pill with #FFF4EC / #F47721 colors. (f) Address text truncated to 1 line (numberOfLines=1). (g) Card shadow matching RestaurantCard.",
+    "3. screens/Home.js — Premium hero and section upgrades. (a) Hero banner is already present — ensure the accent bar (h-1.5 w-24 rounded-full bg-[#F47721]) is visible. (b) Service shortcuts row — add a pressed state: scale down slightly using Pressable style={({pressed}) => [{opacity: pressed ? 0.85 : 1}]}. (c) 'Explore all restaurants' section heading — bump font to text-2xl font-extrabold text-[#0B2A26]. (d) Pass the isOpen prop to RestaurantItem. Add a small open/close status helper at the top of Home.js (same logic as in RestaurantDetails.js: check openingTime, closingTime, isTemporarilyClosed). (e) Add a loading skeleton while restaurant list is fetching: while restaurant.length === 0 AND no error, show 3 skeleton placeholder views (View with bg-gray-200 h-20 rounded-2xl mb-3 opacity-50 animated via a simple blinking approach using Animated.loop + Animated.sequence on opacity — or simply show ActivityIndicator color='#179B83' centered below the section heading). Use ActivityIndicator for simplicity. (f) Pull-to-refresh: wrap the main ScrollView with a RefreshControl. onRefresh calls getResData() and getDishes() again. Use brand color #179B83 as the tint.",
+    "4. screens/OrderDetailsScreen.js — (a) Pull-to-refresh: the screen already uses onSnapshot (real-time), so pull-to-refresh just needs to call setLoading(true) briefly to show the indicator, then let onSnapshot naturally update. Implement onRefresh as: setLoading(true); setTimeout(() => setLoading(false), 800). Add RefreshControl with tintColor='#179B83'. (b) Empty state upgrade: replace the plain 'You have no orders' text with a proper empty state — MaterialCommunityIcons 'receipt-text-outline' size 64 color='#94A3B8', Text 'No orders yet', subtext 'Your order history will appear here.', and a 'Browse Restaurants' TouchableOpacity that navigates to Home. (c) Loading state: replace the plain loading text with ActivityIndicator size='large' color='#179B83' centered. (d) Error state already exists — keep it, just add a 'Try again' button that triggers re-subscription by toggling a retry counter state (useEffect dependency on retryCount)."
+  ],
+  "acceptance_criteria": [
+    "RestaurantCard and RestaurantItem display larger images, rating/time/genre pills, and a card shadow.",
+    "Home screen restaurant list shows ActivityIndicator while loading and supports pull-to-refresh.",
+    "OrderDetailsScreen has pull-to-refresh, a visual empty state with icon and 'Browse Restaurants' button, and an ActivityIndicator loading state.",
+    "npx expo config --type introspect completes without error."
+  ],
+  "verification": [
+    "cd c:\\Users\\user\\Music\\MyTruck-Production-Structured\\apps\\customer-app && npx expo config --type introspect 2>&1 | Select-Object -First 30"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

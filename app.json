@@ -1,0 +1,86 @@
+{
+  "expo": {
+    "name": "MyTruck Delivery",
+    "slug": "ebhan",
+    "owner": "delivery-app-7",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow $(MyTruck Delivery) to use your location."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#179B83",
+          "defaultChannel": "orders"
+        }
+      ],
+      [
+        "expo-image-picker"
+      ]
+    ],
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B2A26"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mytruck.delivery",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B2A26"
+      },
+      "package": "com.mytruck.delivery",
+      "versionCode": 1,
+      "softwareKeyboardLayoutMode": "pan",
+      "config": {
+        "googleMaps": {
+          "apiKey": "YOUR_RESTRICTED_GOOGLE_MAPS_ANDROID_API_KEY"
+        }
+      },
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "firebase": {
+        "apiKey": "AIzaSyDwOvj_4-Oc-jwWpw1yoNm7frhoBJuZhSo",
+        "authDomain": "mytruck-delivery.firebaseapp.com",
+        "projectId": "mytruck-delivery",
+        "storageBucket": "mytruck-delivery.firebasestorage.app",
+        "messagingSenderId": "62652685283",
+        "appId": "1:62652685283:web:f9ccb6844ba537eef75ed6",
+        "measurementId": "G-158S3N3L6Q"
+      },
+      "gebetaMapsApiKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjb21wYW55bmFtZSI6IkViYW51ZiIsImRlc2NyaXB0aW9uIjoiYTIxYzYwNjAtOWQwYS00NmNjLWFhMzAtZDVlNmQ2YTQwOTcxIiwiaWQiOiJkNDcxMzMyYy1lNDgzLTQ0OTMtOTljMC1kODZkYmNkZGJlNzciLCJpc3N1ZWRfYXQiOjE3OTMxODAwMzksImlzc3VlciI6Imh0dHBzOi8vbWFwYXBpLmdlYmV0YS5hcHAiLCJqd3RfaWQiOiIwIiwic2NvcGVzIjpbIk1BVFJJWCIsIk9NTSIsIlRJTEUiLCJESVJFQ1RJT04iLCJUU1MiLCJWUlAiLCJUUkFDS0lOR19IVFRQIiwiVFJBQ0tJTkdfU09DS0VUIiwiR0VPQ09ESU5HIiwiUkVWRVJTRUdFT0NPRElORyIsIk1BVENISU5HIl0sInVzZXJuYW1lIjoiZWJvbyJ9.NJf5_FfrImpjoa4uQ96fodYwv81X5p4oLd37qmVYVz8",
+      "eas": {
+        "projectId": "d216e155-64b5-4f33-a76f-986998aa3960"
+      }
+    }
+  }
+}
