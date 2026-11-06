@@ -185,7 +185,7 @@ export default function PreparingOrderScreen() {
         const chapaRes = await fetch("https://api.chapa.co/v1/transaction/initialize", {
           method: "POST",
           headers: {
-            Authorization: "Bearer CHASECK-dbFWramaIJgWjktanzUXhw9SMHhiTW6j",
+            Authorization: "Bearer CHASECK-2wQU2SzPeV7V9Pu2Mdb9gxNY2k9Jq5nQ",
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
@@ -211,7 +211,7 @@ export default function PreparingOrderScreen() {
           const retryRes = await fetch("https://api.chapa.co/v1/transaction/initialize", {
             method: "POST",
             headers: {
-              Authorization: "Bearer CHASECK-dbFWramaIJgWjktanzUXhw9SMHhiTW6j",
+              Authorization: "Bearer CHASECK-2wQU2SzPeV7V9Pu2Mdb9gxNY2k9Jq5nQ",
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
@@ -313,7 +313,7 @@ export default function PreparingOrderScreen() {
           const directRes = await fetch(
             `https://api.chapa.co/v1/transaction/verify/${encodeURIComponent(txRef)}`,
             {
-              headers: { Authorization: "Bearer CHASECK-dbFWramaIJgWjktanzUXhw9SMHhiTW6j" },
+              headers: { Authorization: "Bearer CHASECK-2wQU2SzPeV7V9Pu2Mdb9gxNY2k9Jq5nQ" },
             }
           );
           const directData = await directRes.json().catch(() => ({}));
