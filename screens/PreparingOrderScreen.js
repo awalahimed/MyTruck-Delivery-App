@@ -452,7 +452,7 @@ export default function PreparingOrderScreen() {
                 <View style={{ marginLeft: 8 }}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                     <Text style={s.metricVal}>{distVal} km</Text>
-                    {order?.isIntercity && (
+                    {Boolean(order?.isIntercity) && (
                       <View style={{ backgroundColor: "#EFF6FF", paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4 }}>
                         <Text style={{ fontSize: 9.5, fontWeight: "800", color: "#2563EB" }}>🛣️ INTERCITY</Text>
                       </View>

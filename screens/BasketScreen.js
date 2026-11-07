@@ -908,7 +908,8 @@ export default function BasketScreen() {
                       <CartItemImage
                         uri={gd.item.image || gd.item.imgUrl || gd.item.photo || gd.item.imageUrl || ""}
                         style={s.itemImg}
-                      />                      <View style={s.itemInfo}>
+                      />
+                      <View style={s.itemInfo}>
                         <Text style={s.itemName} numberOfLines={1}>
                           {gd.item.name}
                         </Text>

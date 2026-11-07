@@ -240,7 +240,7 @@ export default function OrderDetailsScreen() {
           </View>
         )}
 
-        {loadError && (
+        {Boolean(loadError) && (
           <View style={s.centerBox}>
             <MaterialCommunityIcons name="wifi-off" size={48} color="#CBD5E1" />
             <Text style={s.errorTitle}>Could not load orders</Text>
