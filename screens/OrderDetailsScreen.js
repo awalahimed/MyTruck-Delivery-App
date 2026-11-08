@@ -99,7 +99,17 @@ export default function OrderDetailsScreen() {
     let result = orders;
     if (activeFilter === "Active") {
       result = orders.filter((o) =>
-        ["PENDING", "ACCEPTED", "PREPARING", "READY", "DRIVERPICKEDUP"].includes(
+        [
+          "AWAITING_PAYMENT",
+          "PENDING",
+          "AWAITING_MERCHANT",
+          "MERCHANT_REJECTED",
+          "ACCEPTED",
+          "PREPARING",
+          "READY",
+          "DRIVERACCEPTED",
+          "DRIVERPICKEDUP",
+        ].includes(
           String(o.status || "").toUpperCase()
         )
       );
@@ -149,6 +159,18 @@ export default function OrderDetailsScreen() {
     }
     if (s === "PREPARING") {
       return { label: "Preparing", bg: "#FEF3C7", fg: "#B45309", icon: "chef-hat" };
+    }
+    if (s === "ACCEPTED") {
+      return { label: "Accepted", bg: "#DCFCE7", fg: "#15803D", icon: "check" };
+    }
+    if (s === "READY" || s === "DRIVERACCEPTED") {
+      return { label: s === "READY" ? "Ready for pickup" : "Driver assigned", bg: "#E0E7FF", fg: "#3730A3", icon: "motorbike" };
+    }
+    if (s === "AWAITING_PAYMENT") {
+      return { label: "Awaiting payment", bg: "#FEF3C7", fg: "#B45309", icon: "credit-card-clock-outline" };
+    }
+    if (s === "MERCHANT_REJECTED" || s === "AWAITING_MERCHANT") {
+      return { label: "Finding a store", bg: "#FFEDD5", fg: "#C2410C", icon: "store-search-outline" };
     }
     if (s === "CANCELLED") {
       return { label: "Cancelled", bg: "#FEE2E2", fg: "#B91C1C", icon: "close-circle" };

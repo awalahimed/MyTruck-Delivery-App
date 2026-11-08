@@ -38,7 +38,10 @@ import {
   setDoc,
   deleteDoc,
   runTransaction,
+  getDoc,
 } from "firebase/firestore";
+import DeliveryLocationModal from "../components/DeliveryLocationModal";
+import { notifyCustomer } from "../services/orderNotifications";
 import NotificationBell from "../components/ui/NotificationBell";
 import SmartImage from "../components/ui/SmartImage";
 
@@ -123,6 +126,13 @@ export default function SellerHome() {
 
   // Storefront Editable Profile State (Only 3 permitted fields)
   const [storeAddress, setStoreAddress] = useState(dbUser?.address || "");
+  // Store map location: used for delivery fees, distance limits and the driver's pickup point
+  const [storeCoords, setStoreCoords] = useState(
+    dbUser?.storeLatitude && dbUser?.storeLongitude
+      ? { latitude: Number(dbUser.storeLatitude), longitude: Number(dbUser.storeLongitude) }
+      : null
+  );
+  const [storeLocationModalVisible, setStoreLocationModalVisible] = useState(false);
   const [storeWorkingHours, setStoreWorkingHours] = useState(dbUser?.workingHours || "08:00 AM - 10:00 PM");
   const [storeLogoUri, setStoreLogoUri] = useState(dbUser?.image || dbUser?.profileImage || "");
   const [savingStorefront, setSavingStorefront] = useState(false);
@@ -147,6 +157,19 @@ export default function SellerHome() {
     dbUser?.approvalStatus === "APPROVED" ||
     dbUser?.status === "APPROVED" ||
     dbUser?.isApproved === true;
+
+  useEffect(() => {
+    if (!sellerId) return;
+    const col = isShop ? "shops" : "restaurants";
+    getDoc(doc(db, col, sellerId))
+      .then((snap) => {
+        const d = snap.exists() ? snap.data() : null;
+        const lat = Number(d?.latitude);
+        const lng = Number(d?.longitude);
+        if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0) setStoreCoords({ latitude: lat, longitude: lng });
+      })
+      .catch(() => {});
+  }, [sellerId, isShop]);
 
   // Intercept hardware back button to prevent app exit
   useEffect(() => {
@@ -207,10 +230,13 @@ export default function SellerHome() {
       setLoadingOrders(false);
       return;
     }
+    const storeIds = Array.from(
+      new Set([sellerId, merchantId, dbUser?.restaurantId, dbUser?.shopId, user?.uid].filter(Boolean).map(String))
+    ).slice(0, 10);
     const q = query(
       collection(db, "orders"),
-      where(sellerField, "==", sellerId),
-      limit(60)
+      where("restaurantId", "in", storeIds),
+      limit(100)
     );
     const unsub = onSnapshot(
       q,
@@ -236,7 +262,7 @@ export default function SellerHome() {
       }
     );
     return unsub;
-  }, [sellerId, sellerField]);
+  }, [sellerId, merchantId, dbUser?.restaurantId, dbUser?.shopId, user?.uid]);
 
   // Today's Stats & Authoritative Financial Calculations
   const stats = useMemo(() => {
@@ -360,7 +386,7 @@ export default function SellerHome() {
 
   const updateOrderStatus = async (orderId, newStatus) => {
     try {
-      await runTransaction(db, async (tx) => {
+      const updated = await runTransaction(db, async (tx) => {
         const ref = doc(db, "orders", orderId);
         const snap = await tx.get(ref);
         if (!snap.exists()) throw new Error("This order no longer exists.");
@@ -379,7 +405,16 @@ export default function SellerHome() {
           if (current.driverId) updates.status = "DRIVERACCEPTED";
         }
         tx.update(ref, updates);
+        return { id: snap.id, ...current, status: updates.status };
       });
+      const messages = {
+        ACCEPTED: ["Order Accepted ✅", `${updated.restaurantName || "The store"} accepted your order.`],
+        PREPARING: ["Preparing Your Order 👨‍🍳", "Your order is being prepared now."],
+        READY: ["Order Ready 📦", "Your order is packed and waiting for a driver."],
+        DRIVERACCEPTED: ["Order Ready 📦", "Your order is packed and your driver is on the way to pick it up."],
+      };
+      const msg = messages[updated.status];
+      if (msg) notifyCustomer(updated, msg[0], msg[1]);
     } catch (e) {
       Alert.alert("Update Error", e?.message || "Could not update order status.");
     }
@@ -512,10 +547,17 @@ export default function SellerHome() {
         profileImage: storeLogoUri || null,
         updatedAt: serverTimestamp(),
       };
-      await updateDoc(doc(db, "user", user.uid), updates);
+      await updateDoc(doc(db, "user", user.uid), {
+        ...updates,
+        ...(storeCoords ? { storeLatitude: storeCoords.latitude, storeLongitude: storeCoords.longitude } : {}),
+      });
       if (sellerId) {
         const col = isShop ? "shops" : "restaurants";
-        await setDoc(doc(db, col, sellerId), updates, { merge: true }).catch(() => {});
+        await setDoc(
+          doc(db, col, sellerId),
+          { ...updates, ...(storeCoords ? { latitude: storeCoords.latitude, longitude: storeCoords.longitude } : {}) },
+          { merge: true }
+        );
       }
       Alert.alert("Storefront Updated ✓", "Your address, operating hours, and storefront photo have been saved.");
     } catch (e) {
@@ -530,13 +572,29 @@ export default function SellerHome() {
     setIsRejectingBusy(true);
     try {
       const reason = merchantRejectReason.trim() || "Item out of stock or kitchen capacity reached";
-      await updateDoc(doc(db, "orders", rejectingOrder.id), {
-        status: "MERCHANT_REJECTED",
-        rejectedByMerchant: true,
-        merchantRejectionReason: reason,
-        rejectedAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      const declined = await runTransaction(db, async (tx) => {
+        const ref = doc(db, "orders", rejectingOrder.id);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error("This order no longer exists.");
+        const current = snap.data();
+        if (current.status === "CANCELLED") throw new Error("The customer already cancelled this order.");
+        if (!["PENDING", "AWAITING_MERCHANT"].includes(current.status)) {
+          throw new Error("Only new orders can be declined. Contact MyTruck support for accepted orders.");
+        }
+        tx.update(ref, {
+          status: "MERCHANT_REJECTED",
+          rejectedByMerchant: true,
+          merchantRejectionReason: reason,
+          rejectedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return { id: snap.id, ...current };
       });
+      notifyCustomer(
+        declined,
+        "Store Couldn't Take Your Order",
+        `${declined.restaurantName || "The store"} declined it (${reason}). We're finding another store — you can also cancel from the order screen.`
+      );
 
       // Dispatch alert to Super Admin for immediate reassignment
       try {
@@ -874,6 +932,18 @@ export default function SellerHome() {
         {/* TAB 1: KITCHEN & ORDERS QUEUE */}
         {activeTab === "orders" && (
           <View>
+            {!storeCoords && (
+              <TouchableOpacity
+                onPress={() => setActiveTab("profile")}
+                style={{ backgroundColor: "#FFF7ED", borderWidth: 1, borderColor: "#FDBA74", borderRadius: 12, padding: 12, marginBottom: 12 }}
+                activeOpacity={0.85}
+              >
+                <Text style={{ fontSize: 12.5, fontWeight: "800", color: "#9A3412" }}>📍 Your store location isn't set</Text>
+                <Text style={{ fontSize: 11.5, color: "#9A3412", marginTop: 2 }}>
+                  Drivers and delivery fees use an approximate point until you pin it. Tap to open Store Settings.
+                </Text>
+              </TouchableOpacity>
+            )}
             {/* Status Filter Chips */}
             <View style={s.filterScrollWrap}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.filterRow}>
@@ -1426,6 +1496,24 @@ export default function SellerHome() {
               />
 
               <TouchableOpacity
+                onPress={() => setStoreLocationModalVisible(true)}
+                style={{ flexDirection: "row", alignItems: "center", marginTop: 10, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: storeCoords ? "#A7F3D0" : "#FDBA74", backgroundColor: storeCoords ? "#ECFDF5" : "#FFF7ED" }}
+                activeOpacity={0.85}
+              >
+                <MaterialCommunityIcons name={storeCoords ? "map-marker-check" : "map-marker-alert"} size={20} color={storeCoords ? "#047857" : "#C2410C"} />
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={{ fontSize: 13, fontWeight: "800", color: storeCoords ? "#065F46" : "#9A3412" }}>
+                    {storeCoords ? "Store location pinned" : "Pin your store on the map"}
+                  </Text>
+                  <Text style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>
+                    {storeCoords
+                      ? `${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)} · tap to change, then Save`
+                      : "Required for correct delivery fees and so drivers find your pickup point"}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
                 style={[s.saveConfigBtn, { marginTop: 12, backgroundColor: TEAL, paddingVertical: 14, borderRadius: 12, alignItems: "center" }, savingStorefront && { opacity: 0.7 }]}
                 onPress={handleSaveStoreSettings}
                 disabled={savingStorefront}
@@ -1469,6 +1557,19 @@ export default function SellerHome() {
           </View>
         )}
       </ScrollView>
+
+      {storeLocationModalVisible ? (
+        <DeliveryLocationModal
+          visible={storeLocationModalVisible}
+          onClose={() => setStoreLocationModalVisible(false)}
+          initialLocation={storeCoords}
+          onConfirmLocation={(loc) => {
+            setStoreCoords({ latitude: Number(loc.latitude), longitude: Number(loc.longitude) });
+            if (!storeAddress.trim() && loc.address && loc.address !== "My Location, Ethiopia") setStoreAddress(loc.address);
+            Alert.alert("Location Selected", "Tap \"Save Storefront Changes\" to publish your store location.");
+          }}
+        />
+      ) : null}
 
       {/* Add / Edit Product Modal */}
       <Modal

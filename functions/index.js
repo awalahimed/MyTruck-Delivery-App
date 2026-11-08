@@ -204,6 +204,26 @@ exports.verifyChapaPayment = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (requ
   });
   await batch.commit();
 
+  // Tell each store about its newly paid order (same shape the app's NotificationContext reads)
+  await Promise.all(
+    linked.docs
+      .filter((d) => d.data().status === "AWAITING_PAYMENT" && d.data().merchantOwnerUid)
+      .map((d) =>
+        db.collection("notifications").add({
+          recipientUid: d.data().merchantOwnerUid,
+          type: "ORDER_UPDATE",
+          category: "ORDER",
+          title: "New Paid Order 🛎️",
+          body: `#${d.id.slice(0, 8).toUpperCase()} · ETB ${Number(d.data().total || 0).toFixed(2)} · paid with Chapa`,
+          data: { targetRoute: "SellerHome" },
+          priority: "HIGH",
+          isRead: false,
+          readAt: null,
+          createdAt: FieldValue.serverTimestamp(),
+        })
+      )
+  ).catch((e) => console.warn("merchant notify failed", e?.message));
+
   return { verified: true, paymentStatus: "PAID", txRef };
 });
 

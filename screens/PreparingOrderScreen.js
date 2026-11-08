@@ -23,6 +23,7 @@ import { ArrowLeftIcon, XMarkIcon } from "react-native-heroicons/outline";
 import { StarIcon } from "react-native-heroicons/solid";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { db, app } from "../firebase";
+import { notifyMerchant } from "../services/orderNotifications";
 import { MAP_TILE_URL, isWithinEthiopia } from "../utils/mapService";
 import BackButton from "../components/ui/BackButton";
 
@@ -113,14 +114,22 @@ export default function PreparingOrderScreen() {
   }, [orderId]);
 
   const handleCall = () => {
-    const phone = order?.driverPhone || "+251911223344";
+    const phone = order?.driverPhone;
+    if (!phone) {
+      Alert.alert("Contact Driver", "Your driver's phone number isn't available yet.");
+      return;
+    }
     Linking.openURL(`tel:${phone}`).catch(() => {
       Alert.alert("Contact Driver", `Call ${phone}`);
     });
   };
 
   const handleChat = () => {
-    const phone = order?.driverPhone || "+251911223344";
+    const phone = order?.driverPhone;
+    if (!phone) {
+      Alert.alert("Chat", "Your driver's phone number isn't available yet.");
+      return;
+    }
     const cleanPhone = phone.replace(/\D/g, "");
     Linking.openURL(`https://wa.me/${cleanPhone}`).catch(() => {
       Alert.alert("Chat", `Message ${phone}`);
@@ -163,8 +172,11 @@ export default function PreparingOrderScreen() {
           ...(paid ? { refundStatus: "REQUESTED", refundAmount: Number(o.total || 0) } : {}),
           updatedAt: serverTimestamp(),
         });
-        return { paid };
+        return { paid, storeSawIt: o.status !== "AWAITING_PAYMENT", order: { id: snap.id, ...o } };
       });
+      if (result.storeSawIt) {
+        notifyMerchant(result.order, "Order Cancelled ❌", "The customer cancelled this order before it was accepted. No action needed.");
+      }
       setChapaModalVisible(false);
       Alert.alert(
         "Order Cancelled",
@@ -466,28 +478,22 @@ export default function PreparingOrderScreen() {
           </View>
         </View>
 
-        {/* 4-digit Delivery Confirmation Code for Handover - Only shown after user pays successfully */}
-        {order?.paymentStatus === "PAID" && (
+        {/* 4-digit delivery PIN: shown once the store accepts, for Cash on Delivery and paid orders */}
+        {Boolean(order?.deliveryOtp) &&
+          (order?.paymentStatus === "PAID" || order?.paymentMethod !== "CHAPA") &&
+          ["ACCEPTED", "PREPARING", "READY", "DRIVERACCEPTED", "DRIVERPICKEDUP"].includes(order?.status) && (
           <View style={s.otpCard}>
             <View style={s.otpHeader}>
               <MaterialCommunityIcons name="shield-check" size={20} color={TEAL} />
               <Text style={s.otpTitle}>Delivery Confirmation PIN</Text>
             </View>
             <Text style={s.otpDesc}>
-              Share this 4-digit code with your driver upon arrival to securely confirm item handover.
+              {order?.paymentMethod === "CHAPA"
+                ? "Share this 4-digit code with your driver upon arrival to confirm the handover."
+                : `Pay ETB ${Number(order?.total || 0).toFixed(2)} in cash, then share this 4-digit code with your driver to confirm the handover.`}
             </Text>
             <View style={s.otpDigitsRow}>
-              {String(
-                order?.deliveryOtp != null
-                  ? order.deliveryOtp
-                  : (orderId
-                      ? Math.abs(
-                          String(orderId)
-                            .split("")
-                            .reduce((acc, c) => ((acc << 5) - acc) + c.charCodeAt(0), 0)
-                        ) % 9000 + 1000
-                      : "4821")
-              )
+              {String(order.deliveryOtp)
                 .slice(0, 4)
                 .split("")
                 .map((digit, i) => (
@@ -500,7 +506,7 @@ export default function PreparingOrderScreen() {
         )}
 
         {/* Unpaid Warning Banner if customer left checkout without paying */}
-        {order?.paymentMethod === "CHAPA" && order?.paymentStatus !== "PAID" && (
+        {order?.paymentMethod === "CHAPA" && order?.paymentStatus !== "PAID" && order?.status !== "CANCELLED" && (
           <View style={s.unpaidOrderBanner}>
             <View style={s.unpaidIconWrap}>
               <MaterialCommunityIcons name="credit-card-clock-outline" size={24} color="#B45309" />
@@ -605,13 +611,13 @@ export default function PreparingOrderScreen() {
             <View style={s.contactInfoRow}>
               <MaterialCommunityIcons name="phone-outline" size={14} color="#64748B" />
               <Text style={s.contactNonClickableTxt}>
-                {order?.customerPhone || order?.userPhoneNumber || "+251 91 100 0002"}
+                {order?.customerPhone || order?.userPhoneNumber || "—"}
               </Text>
             </View>
             <View style={[s.contactInfoRow, { marginTop: 4 }]}>
               <MaterialCommunityIcons name="whatsapp" size={14} color="#16A34A" />
               <Text style={s.contactNonClickableTxt}>
-                {order?.customerWhatsApp || order?.customerPhone || "+251 91 100 0002"}
+                {order?.customerWhatsApp || order?.customerPhone || "—"}
               </Text>
             </View>
           </View>
@@ -641,11 +647,11 @@ export default function PreparingOrderScreen() {
             />
             <View style={s.driverInfo}>
               <Text style={s.driverName}>
-                {order.driverName || "Alemu Tadesse"}
+                {order.driverName || "Your driver"}
               </Text>
               <View style={s.ratingRow}>
                 <StarIcon size={14} color="#FBBF24" />
-                <Text style={s.ratingText}>4.8 (1.2k) · {order.vehiclePlate || "Motorbike"}</Text>
+                <Text style={s.ratingText}>{`MyTruck driver · ${order.vehiclePlate || "Motorbike"}`}</Text>
               </View>
             </View>
 
@@ -891,7 +897,7 @@ export default function PreparingOrderScreen() {
                   order?.paymentStatus === "PAID" ? s.payBadgeTxtPaid : s.payBadgeTxtPending,
                 ]}
               >
-                {order?.paymentStatus === "PAID" ? "PAID ✓" : "UNPAID"}
+                {order?.paymentStatus === "PAID" ? "PAID ✓" : order?.paymentMethod === "CHAPA" ? "UNPAID" : "PAY ON DELIVERY"}
               </Text>
             </View>
           </View>

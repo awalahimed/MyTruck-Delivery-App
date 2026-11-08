@@ -146,17 +146,25 @@ export function calculateOrderFinancials({
   deliveryFee = 50,
   serviceFee = 15,
   deliveryCommissionPercent = 20,
+  merchantBaseSubtotal = null, // merchant's own prices; when given, the item markup is platform revenue
+  promoDiscount = 0,           // promo-code discount, absorbed by the platform
 } = {}) {
   const cleanSubtotal = Number((Number(subtotal) || 0).toFixed(2));
   const cleanDeliveryFee = Number((Number(deliveryFee) || 50).toFixed(2));
   const cleanServiceFee = Number((Number(serviceFee) != null ? Number(serviceFee) : 15).toFixed(2));
   const cleanCommPct = Number(deliveryCommissionPercent != null ? deliveryCommissionPercent : 20);
+  const cleanPromo = Math.max(0, Number((Number(promoDiscount) || 0).toFixed(2)));
 
-  // Total paid by customer
-  const total = Number((cleanSubtotal + cleanDeliveryFee + cleanServiceFee).toFixed(2));
+  // Total paid by customer (after any promo discount)
+  const total = Number(Math.max(0, cleanSubtotal + cleanDeliveryFee + cleanServiceFee - cleanPromo).toFixed(2));
 
-  // Restaurant gets 100% of their item sales
-  const restaurantEarnings = cleanSubtotal;
+  // Merchant gets its own listed (base) price; the platform keeps the customer markup.
+  // Legacy callers that pass no base subtotal keep the old "100% of subtotal" behaviour.
+  const hasBase = merchantBaseSubtotal != null && Number.isFinite(Number(merchantBaseSubtotal));
+  const restaurantEarnings = hasBase
+    ? Number(Math.min(cleanSubtotal, Math.max(0, Number(merchantBaseSubtotal))).toFixed(2))
+    : cleanSubtotal;
+  const platformItemMarkup = Number((cleanSubtotal - restaurantEarnings).toFixed(2));
 
   // Company takes 20% commission on the delivery fee
   const deliveryCommission = Number(((cleanDeliveryFee * cleanCommPct) / 100).toFixed(2));
@@ -164,8 +172,8 @@ export function calculateOrderFinancials({
   // Rider gets delivery fee minus 20% company cut
   const driverEarnings = Number((cleanDeliveryFee - deliveryCommission).toFixed(2));
 
-  // Company keeps service fee + delivery commission
-  const companyProfit = Number((cleanServiceFee + deliveryCommission).toFixed(2));
+  // Company keeps service fee + delivery commission + item markup, minus promo it funded
+  const companyProfit = Number((cleanServiceFee + deliveryCommission + platformItemMarkup - cleanPromo).toFixed(2));
 
   // Total amount company needs to transfer out (Restaurant + Driver)
   const totalOwedOut = Number((restaurantEarnings + driverEarnings).toFixed(2));
@@ -181,6 +189,8 @@ export function calculateOrderFinancials({
     deliveryCommissionPercent: cleanCommPct,
     deliveryCommission,
     restaurantEarnings,
+    platformItemMarkup,
+    promoDiscount: cleanPromo,
     driverEarnings,
     companyProfit,
     totalOwedOut,
@@ -245,6 +255,10 @@ export function aggregateFinancialMetrics(orders = [], driverPayouts = []) {
       deliveryFee,
       serviceFee,
       deliveryCommissionPercent: commPct,
+      // Only orders written with the current pricing rules carry platformItemMarkup;
+      // older orders keep the rules they were placed under.
+      merchantBaseSubtotal: o.platformItemMarkup != null ? o.merchantBaseSubtotal : null,
+      promoDiscount: o.promoDiscount || 0,
     });
 
     totalReceived += fin.total;

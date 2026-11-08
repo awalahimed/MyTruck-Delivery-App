@@ -37,6 +37,7 @@ import { ProductGridSkeleton } from "../components/ui/Skeleton";
 import { EmptyState, ErrorState } from "../components/ui/States";
 import { brand, useTheme } from "../theme/theme";
 import { money } from "../utils/format";
+import { getItemDiscountInfo } from "../utils/pricing";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -145,11 +146,17 @@ export default function ProductDeliveryScreen() {
       );
       return;
     }
+    // Same customer pricing as every other storefront (merchant price + platform markup)
+    const info = getItemDiscountInfo(product);
     dispatch(
       addToBasket({
         id: product.id,
+        dishId: product.id,
         name: product.name || "Product",
-        price: Number(product.price || 0),
+        price: info.customerSellingPrice,
+        merchantBasePrice: info.rawSellingPrice,
+        originalPrice: info.customerOriginalPrice,
+        discountedPrice: info.customerSellingPrice,
         restaurantId: product.shopId,
         restaurantName: product.shopName,
         restaurantImage: product.shopImage,
@@ -172,19 +179,10 @@ export default function ProductDeliveryScreen() {
       return;
     }
 
+    // Courier/package orders have no dispatch pipeline yet; never pretend one was created.
     Alert.alert(
-      "Courier Request Received",
-      `Package: ${packageType}\nFrom: ${pickupAddress}\nTo: ${dropoffAddress}\nEstimated Delivery Fee: ETB 120\n\nA driver will be dispatched to pick up your package.`,
-      [
-        {
-          text: "Confirm Order",
-          onPress: () => {
-            Alert.alert("Success!", "Package courier request submitted successfully!");
-            navigation.navigate("OrdersTab");
-          },
-        },
-        { text: "Cancel", style: "cancel" },
-      ]
+      "Package Delivery Coming Soon",
+      "Sending packages with a MyTruck driver isn't available in the app yet, so no request was created. You can still order from shops and restaurants."
     );
   };
 
@@ -222,7 +220,7 @@ export default function ProductDeliveryScreen() {
           }}
         >
           <Txt v="heading" tone="primary" style={{ fontWeight: "800", color: TEAL }}>
-            {money(item.price)}
+            {money(getItemDiscountInfo(item).customerSellingPrice)}
           </Txt>
           <PressableScale
             onPress={() => addProduct(item)}
@@ -548,7 +546,7 @@ export default function ProductDeliveryScreen() {
                   }}
                 >
                   <Txt v="title" tone="primary" style={{ fontWeight: "800", color: TEAL, marginRight: 14 }}>
-                    {money(selected.price)}
+                    {money(getItemDiscountInfo(selected).customerSellingPrice)}
                   </Txt>
                   <Button
                     title="Add to Cart"

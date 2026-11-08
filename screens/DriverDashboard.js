@@ -22,7 +22,6 @@ import * as Location from "expo-location";
 import * as ImagePicker from "expo-image-picker";
 import { UserAuth } from "../contexts/AuthContext";
 import { db, app } from "../firebase";
-import { getFunctions, httpsCallable } from "firebase/functions";
 import {
   collection,
   query,
@@ -40,6 +39,7 @@ import {
 } from "firebase/firestore";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import NotificationBell from "../components/ui/NotificationBell";
+import { notifyCustomer } from "../services/orderNotifications";
 import SmartImage from "../components/ui/SmartImage";
 
 const TEAL = "#179B83";
@@ -589,6 +589,12 @@ export default function DriverDashboard() {
         });
         return nextStatus;
       });
+      const claimed = rawOpenOrders.find((o) => o.id === orderId) || { id: orderId };
+      notifyCustomer(
+        claimed,
+        "Driver Assigned 🛵",
+        `${dbUser?.firstName || "Your driver"} will deliver your order${claimedStatus === "PREPARING" ? " as soon as it's ready" : ""}.`
+      );
       Alert.alert(
         "Order Accepted! 🚗",
         claimedStatus === "PREPARING"
@@ -619,27 +625,26 @@ export default function DriverDashboard() {
     }
   };
 
-  // Update order delivery status
+  // Pickup: only the assigned driver, only once the merchant has marked it ready
   const updateOrderStatus = async (orderId, newStatus) => {
+    if (newStatus !== "DRIVERPICKEDUP") return;
     try {
-      if (newStatus === "DRIVERPICKEDUP") {
-        try {
-          const fn = httpsCallable(getFunctions(app), "markOrderPickedUp");
-          await fn({ orderId });
-        } catch (fnErr) {
-          await updateDoc(doc(db, "orders", orderId), {
-            status: newStatus,
-            pickedUpAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        }
-      } else {
-        await updateDoc(doc(db, "orders", orderId), {
-          status: newStatus,
+      const picked = await runTransaction(db, async (tx) => {
+        const ref = doc(db, "orders", orderId);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error("Order not found.");
+        const o = snap.data();
+        if (o.driverId !== user.uid) throw new Error("This order is no longer assigned to you.");
+        if (o.status === "PREPARING") throw new Error("The merchant hasn't marked this order ready yet.");
+        if (!["READY", "DRIVERACCEPTED"].includes(o.status)) throw new Error("This order can't be picked up right now.");
+        tx.update(ref, {
+          status: "DRIVERPICKEDUP",
+          pickedUpAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-          ...(newStatus === "COMPLETE" ? { deliveredAt: serverTimestamp() } : {}),
         });
-      }
+        return { id: snap.id, ...o };
+      });
+      notifyCustomer(picked, "On the Way 🛵", "Your driver picked up your order and is heading to you. Have your delivery PIN ready.");
     } catch (e) {
       Alert.alert("Update Error", e?.message || "Could not update delivery status.");
     }
@@ -653,29 +658,57 @@ export default function DriverDashboard() {
 
   const handleVerifyOtpAndComplete = async () => {
     const clean = enteredOtp.trim();
-    if (!clean) {
+    if (!/^\d{4}$/.test(clean)) {
       setOtpError("Please enter the 4-digit PIN provided by customer.");
       return;
     }
+    if (!activeOrder?.id) return;
 
-    setOtpModalVisible(false);
     try {
-      try {
-        const fn = httpsCallable(getFunctions(app), "verifyDeliveryOtp");
-        await fn({ orderId: activeOrder.id, otp: clean, pin: clean });
-      } catch (fnErr) {
-        console.warn("verifyDeliveryOtp fallback to local validation:", fnErr?.message);
-        const expectedOtp = String(activeOrder?.deliveryOtp || "").trim();
-        if (expectedOtp && clean !== expectedOtp && clean !== "9999") {
-          Alert.alert("Invalid PIN", "Incorrect PIN. Please ask the customer to confirm their 4-digit code.");
-          return;
+      // PIN is checked against the live order inside the transaction; there is no bypass code.
+      const done = await runTransaction(db, async (tx) => {
+        const ref = doc(db, "orders", activeOrder.id);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error("Order not found.");
+        const o = snap.data();
+        if (o.driverId !== user.uid) throw new Error("This order is no longer assigned to you.");
+        if (o.status !== "DRIVERPICKEDUP") throw new Error("Confirm pickup before completing the delivery.");
+        const expected = String(o.deliveryOtp || "").trim();
+        if (!expected) throw new Error("This order has no delivery PIN. Contact MyTruck support to complete it.");
+        if (clean !== expected) {
+          const err = new Error("Incorrect PIN. Please ask the customer to confirm their 4-digit code.");
+          err.code = "BAD_PIN";
+          throw err;
         }
-        await updateOrderStatus(activeOrder.id, "COMPLETE");
-      }
-      Alert.alert("Delivery Finalized! 🎉", "Handover verified. Customer has been notified and earnings credited.");
+        const isCash = o.paymentMethod !== "CHAPA" && o.paymentStatus !== "PAID";
+        tx.update(ref, {
+          status: "COMPLETE",
+          deliveredAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          // Cash on Delivery: the driver collected the full order total at handover
+          ...(isCash
+            ? { paymentStatus: "PAID", cashCollected: true, cashCollectedAmount: Number(o.total || 0), paidAt: serverTimestamp() }
+            : {}),
+        });
+        return { id: snap.id, ...o, isCash };
+      });
+
+      setOtpModalVisible(false);
+      notifyCustomer(done, "Delivered 🎉", "Your order was delivered. Enjoy, and thanks for using MyTruck!");
+      Alert.alert(
+        "Delivery Finalized! 🎉",
+        done.isCash
+          ? `Handover verified. Cash collected: ETB ${Number(done.total || 0).toFixed(2)}.`
+          : "Handover verified. Earnings credited."
+      );
       setActiveTab("earnings");
       fetchEarnings();
     } catch (e) {
+      if (e?.code === "BAD_PIN") {
+        setOtpError(e.message);
+        return;
+      }
+      setOtpModalVisible(false);
       Alert.alert("Delivery Completion Error", e?.message || "Could not complete delivery.");
     }
   };
@@ -683,20 +716,36 @@ export default function DriverDashboard() {
   const handleRejectAssignment = async () => {
     if (!activeOrder?.id) return;
     try {
-      await updateDoc(doc(db, "orders", activeOrder.id), {
-        // Back to the merchant's current stage so the order re-enters dispatch
-        status: activeOrder.status === "PREPARING" ? "PREPARING" : "READY",
-        driverId: null,
-        declinedDriverIds: arrayUnion(user.uid),
-        driverRejectedAt: serverTimestamp(),
-        driverRejectReason: rejectReason,
-        updatedAt: serverTimestamp(),
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, "orders", activeOrder.id);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error("Order not found.");
+        const o = snap.data();
+        if (o.driverId !== user.uid) throw new Error("This order is no longer assigned to you.");
+        if (o.status === "DRIVERPICKEDUP") {
+          throw new Error("You already picked this order up. Please deliver it or contact MyTruck support.");
+        }
+        tx.update(ref, {
+          // Back to the merchant's current stage so the order re-enters dispatch
+          status: o.status === "PREPARING" ? "PREPARING" : "READY",
+          driverId: null,
+          driverName: null,
+          driverPhone: null,
+          driverLat: null,
+          driverLng: null,
+          driverAcceptedAt: null,
+          declinedDriverIds: arrayUnion(user.uid),
+          driverRejectedAt: serverTimestamp(),
+          driverRejectReason: rejectReason,
+          updatedAt: serverTimestamp(),
+        });
       });
       setRejectModalVisible(false);
+      notifyCustomer(activeOrder, "Finding a New Driver", "Your previous driver couldn't make it. We're assigning another driver now.");
       Alert.alert("Assignment Released", "The order has been returned to the available dispatch queue.");
       setActiveTab("available");
-      fetchAvailable();
     } catch (e) {
+      setRejectModalVisible(false);
       Alert.alert("Error", e?.message || "Could not release order.");
     }
   };
@@ -1195,7 +1244,7 @@ export default function DriverDashboard() {
                           <Text style={s.paymentStatusBadgeTxt}>
                             {activeOrder.paymentStatus === "PAID"
                               ? "PAID ONLINE"
-                              : `COD: Collect ETB ${Number(activeOrder.subtotal || activeOrder.total || 0).toFixed(0)}`}
+                              : `COD: Collect ETB ${Number(activeOrder.total || 0).toFixed(2)}`}
                           </Text>
                         </View>
                       </View>

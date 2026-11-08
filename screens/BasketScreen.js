@@ -43,11 +43,13 @@ import { presentLocalNotification } from "../services/notificationService";
 import {
   collection,
   doc,
+  getDoc,
   serverTimestamp,
   writeBatch,
   onSnapshot,
   updateDoc,
 } from "firebase/firestore";
+import { notifyMerchant } from "../services/orderNotifications";
 import DeliveryLocationModal from "../components/DeliveryLocationModal";
 import BackButton from "../components/ui/BackButton";
 import { isWithinEthiopia } from "../utils/mapService";
@@ -147,6 +149,65 @@ export default function BasketScreen() {
     }
   }, [rawMerchantGroups.length]);
 
+  // ── Authoritative store details ───────────────────────────────────────
+  // Basket items only carry the store id; name, address, phone, owner and
+  // map location come from the store's own record so the order, delivery fee
+  // and driver pickup point are correct.
+  const [merchantInfo, setMerchantInfo] = useState({});
+  const merchantKey = rawMerchantGroups.map((g) => `${g.sellerType}:${g.merchantId}`).join("|");
+  useEffect(() => {
+    let alive = true;
+    const missing = rawMerchantGroups.filter((g) => !merchantInfo[g.merchantId]);
+    if (missing.length === 0) return undefined;
+    (async () => {
+      const found = {};
+      await Promise.all(
+        missing.map(async (g) => {
+          const lookIn = g.sellerType === "shop" ? ["shops", "restaurants"] : ["restaurants", "shops"];
+          for (const col of lookIn) {
+            try {
+              const snap = await getDoc(doc(db, col, String(g.merchantId)));
+              if (snap.exists()) {
+                found[g.merchantId] = { ...snap.data(), _collection: col };
+                return;
+              }
+            } catch (_) {}
+          }
+          found[g.merchantId] = { _missing: true };
+        })
+      );
+      if (alive) setMerchantInfo((prev) => ({ ...prev, ...found }));
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [merchantKey]);
+
+  const resolveGroup = (g) => {
+    const m = merchantInfo[g.merchantId];
+    if (!m || m._missing) return { ...g, hasStoreLocation: false };
+    const lat = Number(m.latitude ?? m.lat ?? m.location?.latitude);
+    const lng = Number(m.longitude ?? m.lng ?? m.location?.longitude);
+    const hasStoreLocation = Number.isFinite(lat) && Number.isFinite(lng) && isWithinEthiopia(lat, lng);
+    return {
+      ...g,
+      merchantName: m.name || m.businessName || g.merchantName,
+      merchantAddress: m.address || g.merchantAddress,
+      merchantPhone: m.phone || m.phoneNumber || g.merchantPhone,
+      merchantCity: m.city || g.merchantCity,
+      merchantLat: hasStoreLocation ? lat : g.merchantLat,
+      merchantLng: hasStoreLocation ? lng : g.merchantLng,
+      merchantOwnerUid: m.ownerUid || null,
+      merchantImage: m.image || m.logoUrl || null,
+      sellerType: m._collection === "shops" ? "shop" : g.sellerType,
+      hasStoreLocation,
+    };
+  };
+  const resolvedMerchantGroups = useMemo(
+    () => rawMerchantGroups.map(resolveGroup),
+    [rawMerchantGroups, merchantInfo]
+  );
+
   // Address
   const currentAddress =
     reduxUser?.address || dbUser?.address || "My Location, Ethiopia";
@@ -165,11 +226,17 @@ export default function BasketScreen() {
         : 38.7578,
   };
 
+  // A real delivery location must be chosen; the fallback above is only for display
+  const hasDeliveryLocation = Boolean(
+    (reduxUser?.latitude && isWithinEthiopia(reduxUser.latitude, reduxUser.longitude)) ||
+      (dbUser?.latitude && isWithinEthiopia(dbUser.latitude, dbUser.longitude))
+  );
+
   // Filter merchant groups and items by search query
   const merchantGroups = useMemo(() => {
     const q = cartSearch.trim().toLowerCase();
-    if (!q) return rawMerchantGroups;
-    return rawMerchantGroups
+    if (!q) return resolvedMerchantGroups;
+    return resolvedMerchantGroups
       .map((group) => {
         const matchesMerchant = group.merchantName.toLowerCase().includes(q);
         const matchedItems = group.items.filter((it) =>
@@ -186,14 +253,14 @@ export default function BasketScreen() {
         return null;
       })
       .filter(Boolean);
-  }, [rawMerchantGroups, cartSearch]);
+  }, [resolvedMerchantGroups, cartSearch]);
 
   // Selected groups calculation
   const selectedGroups = useMemo(() => {
-    return rawMerchantGroups.filter((g) =>
+    return resolvedMerchantGroups.filter((g) =>
       selectedMerchantIds.includes(g.merchantId)
     );
-  }, [rawMerchantGroups, selectedMerchantIds]);
+  }, [resolvedMerchantGroups, selectedMerchantIds]);
 
   const selectedSubtotal = useMemo(() => {
     return selectedGroups.reduce((sum, g) => sum + g.subtotal, 0);
@@ -210,7 +277,8 @@ export default function BasketScreen() {
   const deliveryFee = deliveryQuotes.reduce((acc, q) => acc + (q.deliveryFee || 50), 0) || (selectedGroups.length * 50);
   const totalDistanceKm = deliveryQuotes.reduce((acc, q) => acc + (q.distanceKm || 2), 0);
 
-  const serviceFee = selectedGroups.length > 0 ? 15 : 0;
+  // Each store becomes its own order, and each order carries the 15 ETB service fee
+  const serviceFee = 15 * selectedGroups.length;
 
   const discountAmount = useMemo(() => {
     if (!appliedPromo) return 0;
@@ -227,8 +295,9 @@ export default function BasketScreen() {
     let savings = 0;
     for (const g of selectedGroups) {
       for (const it of (g.items || [])) {
-        const info = getItemDiscountInfo(it);
-        savings += info.savingsAmount;
+        // Basket items already hold customer prices — don't run them through the markup again
+        const sell = Number(it.price || 0);
+        savings += Math.max(0, Number(it.originalPrice || sell) - sell);
       }
     }
     return Number(savings.toFixed(2));
@@ -315,6 +384,174 @@ export default function BasketScreen() {
     return map ? Object.values(map) : [];
   };
 
+  // Price each store's order. Basket prices are already customer prices
+  // (merchant price + platform markup), so nothing is marked up again here.
+  const buildOrderPlans = () => {
+    const groups = selectedGroups.map((group) => {
+      const dishes = groupItemsInMerchant(group.items);
+      let origSubtotal = 0;
+      let sellSubtotal = 0;
+      let baseSubtotal = 0;
+      let merchantDiscount = 0;
+      for (const gd of dishes) {
+        const sell = Number(gd.item.price || gd.item.discountedPrice || 0);
+        const orig = Math.max(sell, Number(gd.item.originalPrice || sell));
+        const base = Number(gd.item.merchantBasePrice != null ? gd.item.merchantBasePrice : sell);
+        origSubtotal += orig * gd.quantity;
+        sellSubtotal += sell * gd.quantity;
+        baseSubtotal += base * gd.quantity;
+        merchantDiscount += (orig - sell) * gd.quantity;
+      }
+      const quote = calculateDeliveryQuote(
+        { latitude: group.merchantLat, longitude: group.merchantLng, city: group.merchantCity },
+        { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
+      );
+      return { group, dishes, quote, origSubtotal, sellSubtotal, baseSubtotal, merchantDiscount };
+    });
+
+    // Spread the promo discount across the store orders (FREESHIP by delivery fee, others by items)
+    const promoTotal = Number((discountAmount || 0).toFixed(2));
+    const weightOf = (g) => (appliedPromo?.code === "FREESHIP" ? g.quote.deliveryFee || 50 : g.sellSubtotal);
+    const weightSum = groups.reduce((sum, g) => sum + weightOf(g), 0) || 1;
+    let allocated = 0;
+    return groups.map((g, i) => {
+      const share =
+        i === groups.length - 1
+          ? Number((promoTotal - allocated).toFixed(2))
+          : Number(((promoTotal * weightOf(g)) / weightSum).toFixed(2));
+      allocated += share;
+      const fin = calculateOrderFinancials({
+        subtotal: Number(g.sellSubtotal.toFixed(2)),
+        deliveryFee: g.quote.deliveryFee || 50,
+        serviceFee: 15,
+        deliveryCommissionPercent: 20,
+        merchantBaseSubtotal: Number(g.baseSubtotal.toFixed(2)),
+        promoDiscount: share,
+      });
+      return { ...g, fin };
+    });
+  };
+
+  const writeOrders = async (plans, chapa) => {
+    const batch = writeBatch(db);
+    const created = [];
+    const custFullName = String(dbUser?.fullName || user.displayName || "Customer").trim();
+    const custPhone = String(dbUser?.phoneNumber || user.phoneNumber || "").trim();
+    const nameParts = custFullName.split(" ");
+
+    for (const pl of plans) {
+      const { group, fin, quote } = pl;
+      const orderRef = doc(collection(db, "orders"));
+      const orderId = orderRef.id;
+      const pickup = {
+        latitude: Number(group.merchantLat || 8.992),
+        longitude: Number(group.merchantLng || 38.752),
+      };
+      const pickupAddress = group.merchantAddress || group.merchantName || "Ethiopia";
+
+      const order = {
+        orderId,
+        userId: user.uid,
+        customerName: custFullName,
+        customerPhone: custPhone,
+        userPhoneNumber: custPhone,
+        phone: custPhone,
+        userFirstName: nameParts[0] || "Customer",
+        userLastName: nameParts.slice(1).join(" ") || "",
+        userAddress: currentAddress,
+        customerEmail: user.email || dbUser?.email || "",
+        restaurantId: group.merchantId,
+        merchantId: group.merchantId,
+        ...(group.sellerType === "shop" ? { shopId: group.merchantId } : {}),
+        merchantOwnerUid: group.merchantOwnerUid || null,
+        restaurantName: group.merchantName,
+        restaurantImage: group.merchantImage || null,
+        restaurantAddress: pickupAddress,
+        restaurantPhone: group.merchantPhone || "",
+        restaurantLat: pickup.latitude,
+        restaurantLng: pickup.longitude,
+        pickupAddress,
+        pickupCoords: pickup,
+        pickupLocationVerified: Boolean(group.hasStoreLocation),
+        sellerType: group.sellerType || "restaurant",
+        deliveryAddress: currentAddress,
+        dropoffAddress: currentAddress,
+        deliveryCoords: currentCoords,
+        dropoffCoords: currentCoords,
+        deliveryLat: Number(currentCoords.latitude),
+        deliveryLng: Number(currentCoords.longitude),
+        deliveryDistanceKm: quote.distanceKm,
+        deliveryEtaMinutes: quote.etaMinutes,
+        isIntercity: quote.isIntercity,
+        // AWAITING_PAYMENT orders are not forwarded to the store until Chapa confirms payment
+        status: chapa ? "AWAITING_PAYMENT" : "PENDING",
+        paymentMethod,
+        paymentStatus: chapa ? "UNPAID" : "PENDING",
+        ...(chapa
+          ? {
+              paymentInitiatedAt: serverTimestamp(),
+              chapaMerchantReference: chapa.txRef,
+              chapaCheckoutUrl: chapa.checkoutUrl,
+            }
+          : {}),
+        subtotal: fin.subtotal,
+        originalSubtotal: Number(pl.origSubtotal.toFixed(2)),
+        discountedSubtotal: fin.subtotal,
+        merchantBaseSubtotal: Number(pl.baseSubtotal.toFixed(2)),
+        platformItemMarkup: fin.platformItemMarkup,
+        totalDiscountAmount: Number(pl.merchantDiscount.toFixed(2)),
+        hasMerchantDiscount: pl.merchantDiscount > 0,
+        promoCode: fin.promoDiscount > 0 ? appliedPromo?.code || null : null,
+        promoDiscount: fin.promoDiscount,
+        customerSavings: Number((pl.merchantDiscount + fin.promoDiscount).toFixed(2)),
+        deliveryFee: fin.deliveryFee,
+        serviceFee: fin.serviceFee,
+        total: fin.total,
+        currency: "ETB",
+        restaurantEarnings: fin.restaurantEarnings,
+        deliveryCommissionPercent: fin.deliveryCommissionPercent,
+        deliveryCommission: fin.deliveryCommission,
+        companyProfit: fin.companyProfit,
+        driverEarnings: fin.driverEarnings,
+        totalOwedOut: fin.totalOwedOut,
+        deliveryOtp: String(Math.floor(1000 + Math.random() * 9000)),
+        itemsCount: group.items.length,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      batch.set(orderRef, order);
+
+      for (const gd of pl.dishes) {
+        const sell = Number(gd.item.price || gd.item.discountedPrice || 0);
+        const orig = Math.max(sell, Number(gd.item.originalPrice || sell));
+        const base = Number(gd.item.merchantBasePrice != null ? gd.item.merchantBasePrice : sell);
+        batch.set(doc(collection(db, "orderDishes")), {
+          orderId,
+          restaurantId: group.merchantId,
+          dishId: gd.item.dishId || gd.item.id,
+          name: gd.item.name || "Item",
+          price: sell,
+          merchantBasePrice: base,
+          originalPrice: orig,
+          discountedPrice: sell,
+          hasDiscount: orig > sell,
+          discountPercent: orig > 0 ? Math.round(((orig - sell) / orig) * 100) : 0,
+          unitDiscount: Number((orig - sell).toFixed(2)),
+          quantity: gd.quantity,
+          totalPrice: Number((sell * gd.quantity).toFixed(2)),
+          totalOriginalPrice: Number((orig * gd.quantity).toFixed(2)),
+          specialInstructions: gd.item.specialInstructions || "",
+          image: gd.item.image || gd.item.imgUrl || gd.item.photo || "",
+          createdAt: serverTimestamp(),
+        });
+      }
+      created.push({ id: orderId, ...order });
+    }
+
+    await batch.commit();
+    return created;
+  };
+
   // Multi-merchant Grouped Checkout
   const handlePlaceOrder = async () => {
     if (!user?.uid) {
@@ -337,6 +574,18 @@ export default function BasketScreen() {
       return;
     }
 
+    if (!hasDeliveryLocation) {
+      Alert.alert(
+        "Set Delivery Location",
+        "Choose where we should deliver your order before checking out.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Set Location", onPress: () => setDeliveryModalVisible(true) },
+        ]
+      );
+      return;
+    }
+
     // ─── STEP 0: Enforce maximum delivery distance ─────────────────────────
     for (const group of selectedGroups) {
       const quote = calculateDeliveryQuote(
@@ -352,12 +601,15 @@ export default function BasketScreen() {
     setIsSubmitting(true);
 
     try {
+      const plans = buildOrderPlans();
+      const grandTotal = Number(plans.reduce((sum, pl) => sum + pl.fin.total, 0).toFixed(2));
+      let chapa = null;
+
       // ─── STEP 1: For CHAPA – initialize payment FIRST (before creating orders) ──
       if (paymentMethod === "CHAPA") {
         setPaymentInitializing(true); // blocks empty-cart flash
 
         const txRef = `MT${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-
         const rawPhone = String(dbUser?.phoneNumber || user?.phoneNumber || "").replace(/\D/g, "");
         const cleanPhone10 = rawPhone.startsWith("251")
           ? "0" + rawPhone.slice(3)
@@ -367,28 +619,19 @@ export default function BasketScreen() {
           chapaEmail = cleanPhone10.length >= 9 ? `customer${cleanPhone10}@gmail.com` : "customer@gmail.com";
         }
 
-        const totalAmount = selectedGroups.reduce((acc, g) => {
-          const q = calculateDeliveryQuote(
-            { latitude: g.merchantLat, longitude: g.merchantLng, city: g.merchantCity },
-            { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
-          );
-          const groupSub = g.items.reduce((sum, item) => sum + (Number(item.price) || 0), 0);
-          return acc + groupSub + (q.deliveryFee || 50) + 15; // subtotal + delivery + service fee
-        }, 0);
-
         let checkoutUrl = null;
         try {
           // Chapa is initialized server-side (functions/index.js) so the secret key never ships in the app.
           const startCheckout = httpsCallable(getFunctions(app), "createChapaCheckout");
           const fullName = String(dbUser?.fullName || user?.displayName || "Customer User");
           const res = await startCheckout({
-            amount: Number(Number(totalAmount || 100).toFixed(2)),
+            amount: grandTotal,
             txRef,
             email: chapaEmail,
             firstName: fullName.split(" ")[0] || "Customer",
             lastName: fullName.split(" ").slice(1).join(" ") || "Client",
             phone: cleanPhone10,
-            description: `Payment for ${selectedGroups.map(g => g.merchantName).join(", ")}`,
+            description: `Payment for ${plans.map((pl) => pl.group.merchantName).join(", ")}`,
             returnUrl: "https://checkout.chapa.co/checkout/payment-receipt",
           });
           checkoutUrl = res?.data?.checkoutUrl;
@@ -401,291 +644,51 @@ export default function BasketScreen() {
           setIsSubmitting(false);
           Alert.alert(
             "Payment Unavailable",
-            "Could not initialize the payment. Please check your connection and try again.",
+            "Online payment could not be started. Please try again, or choose Cash on Delivery if it is available.",
             [{ text: "Retry", onPress: handlePlaceOrder }, { text: "Cancel", style: "cancel" }]
           );
           return;
         }
+        chapa = { txRef, checkoutUrl };
+      }
 
-        // ─── STEP 2: Chapa initialized — NOW create orders with AWAITING_PAYMENT status ──
-        const createdOrderIds = [];
-        const batch = writeBatch(db);
+      // ─── STEP 2: Create one order per store (AWAITING_PAYMENT for Chapa, PENDING for COD) ──
+      const created = await writeOrders(plans, chapa);
+      const createdOrderIds = created.map((o) => o.id);
 
-        for (const group of selectedGroups) {
-          const orderRef = doc(collection(db, "orders"));
-          const orderId = orderRef.id;
-          createdOrderIds.push(orderId);
-
-          const dishesInGroup = groupItemsInMerchant(group.items);
-          let origSubtotal = 0, discSubtotal = 0, totalDiscAmount = 0, merchantBaseSubtotal = 0;
-
-          for (const gd of dishesInGroup) {
-            const itemOrig = Number(gd.item.originalPrice || gd.item.price || 0);
-            const itemDisc = Number(gd.item.price || gd.item.discountedPrice || 0);
-            const mBase = Number(gd.item.merchantBasePrice != null ? gd.item.merchantBasePrice : gd.item.price || 0);
-            origSubtotal += itemOrig * gd.quantity;
-            discSubtotal += itemDisc * gd.quantity;
-            merchantBaseSubtotal += mBase * gd.quantity;
-            if (itemOrig > itemDisc) totalDiscAmount += (itemOrig - itemDisc) * gd.quantity;
-          }
-
-          const groupSubtotal = Number(discSubtotal.toFixed(2));
-          const quote = calculateDeliveryQuote(
-            { latitude: group.merchantLat, longitude: group.merchantLng, city: group.merchantCity },
-            { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
-          );
-          const fin = calculateOrderFinancials({
-            subtotal: groupSubtotal,
-            deliveryFee: quote.deliveryFee || 50,
-            serviceFee: 15,
-            deliveryCommissionPercent: 20,
-          });
-
-          const deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
-          const custFullName = String(dbUser?.fullName || user.displayName || "Customer").trim();
-          const custPhone = String(dbUser?.phoneNumber || user.phoneNumber || "").trim();
-          const nameParts = custFullName.split(" ");
-
-          batch.set(orderRef, {
-            orderId,
-            userId: user.uid,
-            customerName: custFullName,
-            customerPhone: custPhone,
-            userPhoneNumber: custPhone,
-            phone: custPhone,
-            userFirstName: nameParts[0] || "Customer",
-            userLastName: nameParts.slice(1).join(" ") || "",
-            userAddress: currentAddress,
-            customerEmail: user.email || dbUser?.email || "",
-            restaurantId: group.merchantId,
-            restaurantName: group.merchantName,
-            restaurantAddress: group.merchantAddress || group.merchantName || "Ethiopia",
-            restaurantPhone: group.merchantPhone || "",
-            restaurantLat: Number(group.merchantLat || 8.992),
-            restaurantLng: Number(group.merchantLng || 38.752),
-            pickupAddress: group.merchantAddress || group.merchantName || "Ethiopia",
-            pickupCoords: { latitude: Number(group.merchantLat || 8.992), longitude: Number(group.merchantLng || 38.752) },
-            sellerType: group.sellerType || "restaurant",
-            deliveryAddress: currentAddress,
-            dropoffAddress: currentAddress,
-            deliveryCoords: currentCoords,
-            dropoffCoords: currentCoords,
-            deliveryLat: Number(currentCoords?.latitude) || 8.9806,
-            deliveryLng: Number(currentCoords?.longitude) || 38.7578,
-            deliveryDistanceKm: quote.distanceKm,
-            deliveryEtaMinutes: quote.etaMinutes,
-            isIntercity: quote.isIntercity,
-            // AWAITING_PAYMENT: order exists but NOT yet forwarded to restaurant
-            status: "AWAITING_PAYMENT",
-            paymentMethod,
-            paymentStatus: "UNPAID",
-            paymentInitiatedAt: serverTimestamp(),
-            chapaMerchantReference: txRef,
-            chapaCheckoutUrl: checkoutUrl,
-            subtotal: fin.subtotal,
-            originalSubtotal: Number(origSubtotal.toFixed(2)),
-            discountedSubtotal: fin.subtotal,
-            merchantBaseSubtotal: Number(merchantBaseSubtotal.toFixed(2)),
-            totalDiscountAmount: Number(totalDiscAmount.toFixed(2)),
-            hasMerchantDiscount: totalDiscAmount > 0,
-            customerSavings: Number(totalDiscAmount.toFixed(2)),
-            deliveryFee: fin.deliveryFee,
-            serviceFee: fin.serviceFee,
-            total: fin.total,
-            currency: "ETB",
-            restaurantEarnings: fin.restaurantEarnings,
-            deliveryCommissionPercent: fin.deliveryCommissionPercent,
-            deliveryCommission: fin.deliveryCommission,
-            companyProfit: fin.companyProfit,
-            driverEarnings: fin.driverEarnings,
-            totalOwedOut: fin.totalOwedOut,
-            deliveryOtp,
-            itemsCount: group.items.length,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-
-          for (const gd of dishesInGroup) {
-            const info = getItemDiscountInfo(gd.item);
-            const itemRef = doc(collection(db, "orderDishes"));
-            batch.set(itemRef, {
-              orderId,
-              dishId: gd.item.dishId || gd.item.id,
-              name: gd.item.name || "Item",
-              price: info.customerSellingPrice,
-              merchantBasePrice: Number(gd.item.merchantBasePrice != null ? gd.item.merchantBasePrice : gd.item.price || 0),
-              originalPrice: info.customerOriginalPrice,
-              discountedPrice: info.customerSellingPrice,
-              hasDiscount: true,
-              discountPercent: info.discountPercent,
-              unitDiscount: info.savingsAmount,
-              quantity: gd.quantity,
-              totalPrice: Number((info.customerSellingPrice * gd.quantity).toFixed(2)),
-              totalOriginalPrice: Number((info.customerOriginalPrice * gd.quantity).toFixed(2)),
-              image: gd.item.image || gd.item.imgUrl || gd.item.photo || "",
-              createdAt: serverTimestamp(),
-            });
-          }
-        }
-
-        await batch.commit();
-
-        // ─── STEP 3: Clear basket AFTER navigation to prevent empty-cart flash ──
-        // Navigate first with a brief loading state, THEN clear basket
+      if (chapa) {
         navigation.replace("PreparingOrderScreen", {
           orderId: createdOrderIds[0],
           orderIds: createdOrderIds,
           paymentPending: true,
           autoLaunchChapa: true,
-          initialCheckoutUrl: checkoutUrl,
-          txRef,
+          initialCheckoutUrl: chapa.checkoutUrl,
+          txRef: chapa.txRef,
         });
-
-        // Clear basket after navigation (slight delay ensures screen has mounted)
-        setTimeout(() => {
-          for (const group of selectedGroups) {
-            dispatch(removeMerchantFromBasket(group.merchantId));
-          }
-        }, 800);
-
-        setPaymentInitializing(false);
-        return;
-      }
-
-      // ─── COD / Other payment methods ──────────────────────────────────────
-      const createdOrderIds = [];
-      const batch = writeBatch(db);
-
-      for (const group of selectedGroups) {
-        const orderRef = doc(collection(db, "orders"));
-        const orderId = orderRef.id;
-        createdOrderIds.push(orderId);
-
-        const dishesInGroup = groupItemsInMerchant(group.items);
-        let origSubtotal = 0, discSubtotal = 0, totalDiscAmount = 0, merchantBaseSubtotal = 0;
-        for (const gd of dishesInGroup) {
-          const itemOrig = Number(gd.item.originalPrice || gd.item.price || 0);
-          const itemDisc = Number(gd.item.price || gd.item.discountedPrice || 0);
-          const mBase = Number(gd.item.merchantBasePrice != null ? gd.item.merchantBasePrice : gd.item.price || 0);
-          origSubtotal += itemOrig * gd.quantity;
-          discSubtotal += itemDisc * gd.quantity;
-          merchantBaseSubtotal += mBase * gd.quantity;
-          if (itemOrig > itemDisc) totalDiscAmount += (itemOrig - itemDisc) * gd.quantity;
-        }
-
-        const groupSubtotal = Number(discSubtotal.toFixed(2));
-        const quote = calculateDeliveryQuote(
-          { latitude: group.merchantLat, longitude: group.merchantLng, city: group.merchantCity },
-          { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
+      } else {
+        // COD orders go to the store immediately
+        created.forEach((o) =>
+          notifyMerchant(o, "New Order 🛎️", `${o.itemsCount} item(s) · ETB ${Number(o.total).toFixed(2)} · Cash on Delivery`)
         );
-        const fin = calculateOrderFinancials({
-          subtotal: groupSubtotal,
-          deliveryFee: quote.deliveryFee || 50,
-          serviceFee: 15,
-          deliveryCommissionPercent: 20,
+        presentLocalNotification({
+          title: "Order Placed! 🍔",
+          body: `Order #${String(createdOrderIds[0]).slice(0, 8).toUpperCase()} submitted – Cash on Delivery.`,
+          data: { orderId: createdOrderIds[0], targetRoute: "TrackOrder" },
+          category: "orders",
+        }).catch(() => {});
+        navigation.replace("PreparingOrderScreen", {
+          orderId: createdOrderIds[0],
+          orderIds: createdOrderIds,
         });
-
-        const deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
-        const custFullName = String(dbUser?.fullName || user.displayName || "Customer").trim();
-        const custPhone = String(dbUser?.phoneNumber || user.phoneNumber || "").trim();
-        const nameParts = custFullName.split(" ");
-
-        batch.set(orderRef, {
-          orderId,
-          userId: user.uid,
-          customerName: custFullName,
-          customerPhone: custPhone,
-          userPhoneNumber: custPhone,
-          phone: custPhone,
-          userFirstName: nameParts[0] || "Customer",
-          userLastName: nameParts.slice(1).join(" ") || "",
-          userAddress: currentAddress,
-          customerEmail: user.email || dbUser?.email || "",
-          restaurantId: group.merchantId,
-          restaurantName: group.merchantName,
-          restaurantAddress: group.merchantAddress || group.merchantName || "Ethiopia",
-          restaurantPhone: group.merchantPhone || "",
-          restaurantLat: Number(group.merchantLat || 8.992),
-          restaurantLng: Number(group.merchantLng || 38.752),
-          pickupAddress: group.merchantAddress || group.merchantName || "Ethiopia",
-          pickupCoords: { latitude: Number(group.merchantLat || 8.992), longitude: Number(group.merchantLng || 38.752) },
-          sellerType: group.sellerType || "restaurant",
-          deliveryAddress: currentAddress,
-          dropoffAddress: currentAddress,
-          deliveryCoords: currentCoords,
-          dropoffCoords: currentCoords,
-          deliveryLat: Number(currentCoords?.latitude) || 8.9806,
-          deliveryLng: Number(currentCoords?.longitude) || 38.7578,
-          deliveryDistanceKm: quote.distanceKm,
-          deliveryEtaMinutes: quote.etaMinutes,
-          isIntercity: quote.isIntercity,
-          status: "PENDING",
-          paymentMethod,
-          paymentStatus: "PENDING",
-          subtotal: fin.subtotal,
-          originalSubtotal: Number(origSubtotal.toFixed(2)),
-          merchantBaseSubtotal: Number(merchantBaseSubtotal.toFixed(2)),
-          totalDiscountAmount: Number(totalDiscAmount.toFixed(2)),
-          hasMerchantDiscount: totalDiscAmount > 0,
-          deliveryFee: fin.deliveryFee,
-          serviceFee: fin.serviceFee,
-          total: fin.total,
-          currency: "ETB",
-          restaurantEarnings: fin.restaurantEarnings,
-          deliveryCommissionPercent: fin.deliveryCommissionPercent,
-          deliveryCommission: fin.deliveryCommission,
-          companyProfit: fin.companyProfit,
-          driverEarnings: fin.driverEarnings,
-          totalOwedOut: fin.totalOwedOut,
-          deliveryOtp,
-          itemsCount: group.items.length,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-
-        for (const gd of dishesInGroup) {
-          const info = getItemDiscountInfo(gd.item);
-          const itemRef = doc(collection(db, "orderDishes"));
-          batch.set(itemRef, {
-            orderId,
-            dishId: gd.item.dishId || gd.item.id,
-            name: gd.item.name || "Item",
-            price: info.customerSellingPrice,
-            merchantBasePrice: Number(gd.item.merchantBasePrice != null ? gd.item.merchantBasePrice : gd.item.price || 0),
-            originalPrice: info.customerOriginalPrice,
-            discountedPrice: info.customerSellingPrice,
-            hasDiscount: true,
-            discountPercent: info.discountPercent,
-            unitDiscount: info.savingsAmount,
-            quantity: gd.quantity,
-            totalPrice: Number((info.customerSellingPrice * gd.quantity).toFixed(2)),
-            image: gd.item.image || gd.item.imgUrl || gd.item.photo || "",
-            createdAt: serverTimestamp(),
-          });
-        }
       }
 
-      await batch.commit();
-
-      // COD: notify restaurant now (payment is on delivery)
-      presentLocalNotification({
-        title: "Order Placed! 🍔",
-        body: `Order #${String(createdOrderIds[0]).slice(0, 8).toUpperCase()} submitted – Cash on Delivery.`,
-        data: { orderId: createdOrderIds[0], targetRoute: "TrackOrder" },
-        category: "orders",
-      }).catch(() => {});
-
-      navigation.replace("PreparingOrderScreen", {
-        orderId: createdOrderIds[0],
-        orderIds: createdOrderIds,
-      });
-
+      // ─── STEP 3: Clear basket AFTER navigation to prevent empty-cart flash ──
       setTimeout(() => {
         for (const group of selectedGroups) {
           dispatch(removeMerchantFromBasket(group.merchantId));
         }
       }, 800);
-
+      setPaymentInitializing(false);
     } catch (error) {
       console.error("Order submission failure:", error);
       setPaymentInitializing(false);
@@ -894,7 +897,16 @@ export default function BasketScreen() {
                           {gd.item.name}
                         </Text>
                         {(() => {
-                          const info = getItemDiscountInfo(gd.item);
+                          const sell = Number(gd.item.price || 0);
+                          const orig = Math.max(sell, Number(gd.item.originalPrice || sell));
+                          const info = {
+                            customerSellingPrice: sell,
+                            customerOriginalPrice: orig,
+                            discountPercent: orig > 0 ? Math.round(((orig - sell) / orig) * 100) : 0,
+                          };
+                          if (orig <= sell) {
+                            return <Text style={s.itemUnitPrice}>{formatETB(sell)}</Text>;
+                          }
                           return (
                             <View style={{ flexDirection: "row", alignItems: "baseline", gap: 4 }}>
                               <Text style={[s.itemUnitPrice, { color: "#E11D48", fontWeight: "700" }]}>
