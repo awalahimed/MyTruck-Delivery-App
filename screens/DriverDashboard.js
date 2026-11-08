@@ -1165,7 +1165,7 @@ export default function DriverDashboard() {
                     <>
                       <View style={s.missionSection}>
                         <View style={s.sectionHeader}>
-                          <MaterialCommunityIcons name="account-location" size={18} color={ORANGE} />
+                          <MaterialCommunityIcons name="map-marker-account" size={18} color={ORANGE} />
                           <Text style={s.sectionTitle}>Customer Drop-off Point & Contact</Text>
                         </View>
                         <Text style={s.sectionName}>{custName}</Text>

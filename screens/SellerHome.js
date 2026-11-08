@@ -898,7 +898,7 @@ export default function SellerHome() {
         <View style={s.kpiRow}>
           <View style={s.kpiCard}>
             <View style={[s.kpiIconBox, { backgroundColor: "#E6F7F1" }]}>
-              <MaterialCommunityIcons name="receipt-text-outline" size={20} color={TEAL} />
+              <MaterialCommunityIcons name="file-document-outline" size={20} color={TEAL} />
             </View>
             <Text style={s.kpiValue}>{stats.todayCount}</Text>
             <Text style={s.kpiLabel}>Today's Orders</Text>
@@ -1514,7 +1514,7 @@ export default function SellerHome() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[s.saveConfigBtn, { marginTop: 12, backgroundColor: TEAL, paddingVertical: 14, borderRadius: 12, alignItems: "center" }, savingStorefront && { opacity: 0.7 }]}
+                style={[{ marginTop: 12, backgroundColor: TEAL, paddingVertical: 14, borderRadius: 12, alignItems: "center" }, savingStorefront && { opacity: 0.7 }]}
                 onPress={handleSaveStoreSettings}
                 disabled={savingStorefront}
               >

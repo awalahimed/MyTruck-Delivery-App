@@ -284,7 +284,7 @@ export default function NotificationCenterScreen() {
                       </Text>
 
                       {/* Action Pill if deep-linkable */}
-                      {item.data && (item.data.orderId || item.data.targetRoute) && (
+                      {Boolean(item.data && (item.data.orderId || item.data.targetRoute)) && (
                         <View style={s.linkPill}>
                           <Text style={s.linkPillText}>Tap to view details</Text>
                           <MaterialCommunityIcons name="chevron-right" size={14} color={TEAL} />
@@ -360,7 +360,7 @@ export default function NotificationCenterScreen() {
                 <Text style={s.detailModalBodyText}>{selectedDetailItem.body}</Text>
 
                 {/* Metadata card if order linked */}
-                {selectedDetailItem.data?.orderId && (
+                {Boolean(selectedDetailItem.data?.orderId) && (
                   <View style={s.detailMetaBox}>
                     <MaterialCommunityIcons name="receipt" size={18} color={TEAL} />
                     <Text style={s.detailMetaTxt}>

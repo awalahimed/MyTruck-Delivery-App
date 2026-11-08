@@ -879,7 +879,7 @@ export default function OptionsScreen() {
                 )}
               </View>
 
-              {bioActive && bioLastLogin && (
+              {Boolean(bioActive && bioLastLogin) && (
                 <View style={s.bioFooter}>
                   <MaterialCommunityIcons name="clock-outline" size={13} color="#64748B" style={{ marginRight: 4 }} />
                   <Text style={s.bioFooterTxt}>
@@ -1217,7 +1217,8 @@ const s = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
-    paddingBottom: 60,
+    // Clears the floating customer tab bar
+    paddingBottom: 110,
   },
   profileCard: {
     backgroundColor: "white",

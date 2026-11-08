@@ -820,7 +820,7 @@ export default function PreparingOrderScreen() {
         {/* Order Details & Items Breakdown Card */}
         <View style={s.summaryCard}>
           <View style={s.summaryHeader}>
-            <MaterialCommunityIcons name="receipt-text-outline" size={20} color={TEAL} />
+            <MaterialCommunityIcons name="file-document-outline" size={20} color={TEAL} />
             <Text style={s.summaryTitle}>Order Summary · #{String(orderId || "").slice(0, 8).toUpperCase()}</Text>
           </View>
 

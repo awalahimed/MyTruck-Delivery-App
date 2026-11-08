@@ -53,7 +53,7 @@ const TABS = [
   { id: "overview", label: "Overview", icon: "chart-box-outline" },
   { id: "users", label: "Users", icon: "account-group-outline" },
   { id: "approvals", label: "Approvals", icon: "storefront-outline" },
-  { id: "orders", label: "Orders", icon: "receipt-text-outline" },
+  { id: "orders", label: "Orders", icon: "file-document-outline" },
   { id: "payments", label: "Payments", icon: "credit-card-check-outline" },
   { id: "revenue", label: "Revenue", icon: "cash-multiple" },
   { id: "catalog", label: "Merchants & Catalog", icon: "store-cog-outline" },
@@ -1531,7 +1531,7 @@ export default function AdminDashboard() {
                 {
                   label: "Orders Management",
                   sub: "Track deliveries & lifecycle overrides",
-                  icon: "receipt-text-outline",
+                  icon: "file-document-outline",
                   color: "#F59E0B",
                   badge: `${allOrders.length} Total`,
                   onPress: () => { setActiveTab("orders"); setOrderStatusFilter("ALL"); },
@@ -1648,7 +1648,7 @@ export default function AdminDashboard() {
                 <Text style={s.quickActionTxt}>Manage Users</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[s.quickActionBtn, { marginLeft: 10 }]} onPress={() => setActiveTab("orders")}>
-                <MaterialCommunityIcons name="receipt-text" size={20} color={TEAL} style={{ marginRight: 6 }} />
+                <MaterialCommunityIcons name="receipt" size={20} color={TEAL} style={{ marginRight: 6 }} />
                 <Text style={s.quickActionTxt}>All Orders</Text>
               </TouchableOpacity>
             </View>
@@ -1932,7 +1932,7 @@ export default function AdminDashboard() {
 
             {filteredOrders.length === 0 ? (
               <View style={s.emptyCard}>
-                <MaterialCommunityIcons name="receipt-text-outline" size={40} color="#CBD5E1" />
+                <MaterialCommunityIcons name="file-document-outline" size={40} color="#CBD5E1" />
                 <Text style={s.emptyTitle}>No matching orders</Text>
               </View>
             ) : (
@@ -2520,7 +2520,7 @@ export default function AdminDashboard() {
             <View style={[s.finCard, { marginTop: 14 }]}>
               <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                 <View style={{ flexDirection: "row", alignItems: "center" }}>
-                  <MaterialCommunityIcons name="storefront-check" size={20} color={TEAL} style={{ marginRight: 8 }} />
+                  <MaterialCommunityIcons name="store-check" size={20} color={TEAL} style={{ marginRight: 8 }} />
                   <Text style={s.finCardTitle}>Daily Merchant Sales ({selectedRange})</Text>
                 </View>
                 <View style={{ backgroundColor: "#E6F7F1", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
@@ -5213,6 +5213,109 @@ const s = StyleSheet.create({
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "flex-end",
+  },
+  // ── Styles referenced by the finance, merchants, documents and payout views ──
+  statGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    marginBottom: 16,
+  },
+  statCard: {
+    width: "48.5%",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  statIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+  statNumber: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: DARK,
+  },
+  statLabel: {
+    fontSize: 11.5,
+    color: "#64748B",
+    marginTop: 3,
+    fontWeight: "600",
+  },
+  filterChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  filterChipActive: {
+    backgroundColor: TEAL,
+    borderColor: TEAL,
+  },
+  filterChipTxt: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: "#475569",
+  },
+  filterChipTxtActive: {
+    color: "#FFFFFF",
+  },
+  card: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  cardTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: DARK,
+  },
+  modOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  modContent: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: Platform.OS === "ios" ? 36 : 24,
+  },
+  modCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 10,
+  },
+  modalCard: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: Platform.OS === "ios" ? 36 : 24,
+  },
+  modalSubtitle: {
+    fontSize: 12,
+    color: "#64748B",
+    marginTop: 2,
   },
   modalSheet: {
     backgroundColor: "white",

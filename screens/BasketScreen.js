@@ -1286,7 +1286,8 @@ const s = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 12,
-    paddingBottom: 40,
+    // Clears the floating customer tab bar so "Place Order" is fully tappable
+    paddingBottom: 110,
   },
   searchWrap: {
     flexDirection: "row",

@@ -272,7 +272,7 @@ export default function OrderDetailsScreen() {
 
         {!loading && !loadError && filteredOrders.length === 0 && (
           <View style={s.emptyBox}>
-            <MaterialCommunityIcons name="receipt-text-outline" size={64} color="#CBD5E1" />
+            <MaterialCommunityIcons name="file-document-outline" size={64} color="#CBD5E1" />
             <Text style={s.emptyTitle}>No {activeFilter !== "All" ? activeFilter.toLowerCase() : ""} orders</Text>
             <Text style={s.emptySub}>
               {activeFilter === "All"
@@ -518,7 +518,8 @@ const s = StyleSheet.create({
     backgroundColor: BG,
   },
   scrollContent: {
-    paddingBottom: 40,
+    // Clears the floating customer tab bar (68px Android / 80px iOS)
+    paddingBottom: 110,
     flexGrow: 1,
   },
   ordersList: {

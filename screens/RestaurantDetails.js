@@ -23,6 +23,7 @@ import { selectUser } from "../features/userSlice";
 import { db } from "../firebase";
 import { collection, getDocs, query, where, getDoc, doc } from "firebase/firestore";
 import { StatusBar } from "expo-status-bar";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import BackButton from "../components/ui/BackButton";
 import ResilientImage from "../components/ui/ResilientImage";
 import {
@@ -69,6 +70,9 @@ const isRestaurantOpen = (info) => {
 
 export default function RestaurantDetails() {
   const navigation = useNavigation();
+  // Full-bleed hero: float the back button and toast below the status bar / notch
+  const insets = useSafeAreaInsets();
+  const floatTop = Math.max(insets.top, 24) + 10;
   const dispatch = useDispatch();
   const route = useRoute();
   const restaurantUid = route?.params?.id || route?.params?.restaurantId || "";
@@ -438,7 +442,7 @@ export default function RestaurantDetails() {
 
       {/* Confirmation Toast */}
       {toastMessage ? (
-        <View style={s.toast}>
+        <View style={[s.toast, { top: floatTop }]}>
           <MaterialCommunityIcons name="check-circle" size={18} color="white" />
           <Text style={s.toastTxt}>{toastMessage}</Text>
         </View>
@@ -455,7 +459,7 @@ export default function RestaurantDetails() {
           />
           <BackButton
             fallbackRoute="HomeTab"
-            style={s.backBtn}
+            style={[s.backBtn, { top: floatTop }]}
           />
         </View>
 
