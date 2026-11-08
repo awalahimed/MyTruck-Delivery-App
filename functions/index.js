@@ -6,9 +6,10 @@
  * It must never be shipped inside the mobile app.
  */
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const { initializeApp } = require("firebase-admin/app");
-const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestore");
 
 initializeApp();
 const db = getFirestore();
@@ -81,6 +82,9 @@ exports.createChapaCheckout = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (req
     if (orders.some((s) => s.data().paymentStatus === "PAID")) {
       throw new HttpsError("failed-precondition", "Order is already paid.");
     }
+    if (orders.some((s) => s.data().status === "CANCELLED")) {
+      throw new HttpsError("failed-precondition", "This order was cancelled.");
+    }
     amount = orders.reduce((sum, s) => sum + (Number(s.data().total) || 0), 0);
   } else {
     amount = Number(data.amount);
@@ -144,7 +148,8 @@ exports.createChapaCheckout = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (req
  * verifyChapaPayment({ orderId?, orderIds?, tx_ref? })
  *
  * Asks Chapa whether tx_ref was paid and, only when the paid amount covers all
- * of the caller's orders under that reference, marks them PAID.
+ * of the caller's orders under that reference, marks them PAID and forwards
+ * them to the merchant as PENDING (the same state a Cash on Delivery order starts in).
  */
 exports.verifyChapaPayment = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (request) => {
   const uid = requireAuth(request);
@@ -185,9 +190,13 @@ exports.verifyChapaPayment = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (requ
   const batch = db.batch();
   linked.docs.forEach((d) => {
     if (d.data().paymentStatus === "PAID") return;
+    const cancelled = d.data().status === "CANCELLED";
     batch.update(d.ref, {
       paymentStatus: "PAID",
-      status: "AWAITING_MERCHANT",
+      // Only move orders still waiting on payment; never undo a cancel or later stage.
+      ...(d.data().status === "AWAITING_PAYMENT" ? { status: "PENDING" } : {}),
+      // Paid after the customer cancelled: money must go back
+      ...(cancelled ? { refundStatus: "REQUESTED", refundAmount: Number(d.data().total || 0) } : {}),
       paidAt: FieldValue.serverTimestamp(),
       chapaVerifiedAmount: paid,
       updatedAt: FieldValue.serverTimestamp(),
@@ -196,4 +205,123 @@ exports.verifyChapaPayment = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (requ
   await batch.commit();
 
   return { verified: true, paymentStatus: "PAID", txRef };
+});
+
+/* ───────────────────────── Driver dispatch ─────────────────────────
+ * Nearest-driver-first: when an order enters PREPARING (or READY) without a
+ * driver, it is offered to the closest free online driver for OFFER_SECONDS.
+ * If that driver passes, the next closest gets it (up to MAX_OFFER_ROUNDS).
+ * After that, or once an offer expires, the order is visible to every online
+ * driver (the open pool) — the app hides offers from other drivers only while
+ * offerExpiresAt is in the future.
+ */
+const OFFER_SECONDS = 60;
+const MAX_OFFER_ROUNDS = 3;
+const MAX_OFFER_RADIUS_KM = 15;
+const DRIVER_LOCATION_MAX_AGE_MS = 10 * 60 * 1000;
+const DISPATCHABLE = ["PREPARING", "READY"];
+
+function haversineKm(aLat, aLng, bLat, bLng) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(bLat - aLat);
+  const dLng = toRad(bLng - aLng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(h));
+}
+
+async function sendExpoPush(token, title, body, data) {
+  if (!token || !String(token).startsWith("ExponentPushToken")) return;
+  try {
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ to: token, title, body, data, sound: "default", priority: "high", channelId: "orders" }),
+    });
+  } catch (e) {
+    console.warn("Expo push failed", e?.message);
+  }
+}
+
+exports.offerOrderToNearestDriver = onDocumentWritten("orders/{orderId}", async (event) => {
+  const after = event.data?.after;
+  if (!after?.exists) return;
+  const order = after.data();
+
+  if (!DISPATCHABLE.includes(order.status) || order.driverId) return;
+  if (order.offeredDriverId || order.offerOpenPool) return; // an offer is live, or we already fell back
+  if ((order.offerRound || 0) >= MAX_OFFER_ROUNDS) return;
+
+  const pLat = Number(order.restaurantLat ?? order.pickupCoords?.latitude);
+  const pLng = Number(order.restaurantLng ?? order.pickupCoords?.longitude);
+  if (!Number.isFinite(pLat) || !Number.isFinite(pLng)) {
+    await after.ref.update({ offerOpenPool: true });
+    return;
+  }
+
+  const [onlineSnap, busySnap] = await Promise.all([
+    db.collection("user").where("isOnline", "==", true).limit(300).get(),
+    db.collection("orders").where("status", "in", ["PREPARING", "READY", "DRIVERACCEPTED", "DRIVERPICKEDUP"]).limit(500).get(),
+  ]);
+
+  const busy = new Set();
+  busySnap.forEach((d) => {
+    const o = d.data();
+    if (o.driverId) busy.add(o.driverId);
+    // Don't stack two live offers on one driver
+    if (o.offeredDriverId && d.id !== after.id && o.offerExpiresAt?.toMillis?.() > Date.now()) busy.add(o.offeredDriverId);
+  });
+  const declined = new Set(order.declinedDriverIds || []);
+  const now = Date.now();
+
+  let best = null;
+  onlineSnap.forEach((d) => {
+    const u = d.data();
+    if (String(u.role || "").toLowerCase() !== "driver") return;
+    if (busy.has(d.id) || declined.has(d.id)) return;
+    if (["BANNED", "SUSPENDED"].includes(String(u.accountStatus || "").toUpperCase())) return;
+    const lat = Number(u.driverLat);
+    const lng = Number(u.driverLng);
+    const seenAt = u.driverLocationUpdatedAt?.toMillis?.() || 0;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || now - seenAt > DRIVER_LOCATION_MAX_AGE_MS) return;
+    const km = haversineKm(pLat, pLng, lat, lng);
+    if (km <= MAX_OFFER_RADIUS_KM && (!best || km < best.km)) best = { id: d.id, km, token: u.expoPushToken };
+  });
+
+  if (!best) {
+    await after.ref.update({ offerOpenPool: true, offeredDriverId: null, offerExpiresAt: null });
+    return;
+  }
+
+  // Transaction: only write the offer if nobody claimed the order meanwhile.
+  const offered = await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(after.ref);
+    const f = fresh.data() || {};
+    if (f.driverId || f.offeredDriverId || f.offerOpenPool || !DISPATCHABLE.includes(f.status)) return false;
+    tx.update(after.ref, {
+      offeredDriverId: best.id,
+      offeredDriverDistanceKm: Number(best.km.toFixed(2)),
+      offerExpiresAt: Timestamp.fromMillis(Date.now() + OFFER_SECONDS * 1000),
+      offerRound: (f.offerRound || 0) + 1,
+    });
+    return true;
+  });
+  if (!offered) return;
+
+  const title = "New delivery near you 🚚";
+  const body = `${order.restaurantName || "A store"} · ${best.km.toFixed(1)} km away · ${OFFER_SECONDS}s to accept`;
+  await Promise.all([
+    db.collection("notifications").add({
+      recipientUid: best.id,
+      type: "DELIVERY_OFFER",
+      category: "ORDER",
+      title,
+      body,
+      data: { targetRoute: "DriverDashboard" },
+      priority: "HIGH",
+      isRead: false,
+      readAt: null,
+      createdAt: FieldValue.serverTimestamp(),
+    }),
+    sendExpoPush(best.token, title, body, { targetRoute: "DriverDashboard" }),
+  ]);
 });

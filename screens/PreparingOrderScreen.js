@@ -15,7 +15,7 @@ import {
 import { WebView } from "react-native-webview";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute } from "@react-navigation/native";
-import { doc, onSnapshot, getDoc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { doc, onSnapshot, getDoc, updateDoc, serverTimestamp, runTransaction } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import SharedMapView from "../components/SharedMapView";
 import { StatusBar } from "expo-status-bar";
@@ -135,6 +135,66 @@ export default function PreparingOrderScreen() {
   const [chapaModalVisible, setChapaModalVisible] = useState(false);
   const [activeCheckoutUrl, setActiveCheckoutUrl] = useState(initialCheckoutUrl || null);
 
+  // ── Customer cancellation ────────────────────────────────────────────
+  // Allowed only before the merchant accepts and before a driver is assigned.
+  const CUSTOMER_CANCELLABLE = ["AWAITING_PAYMENT", "PENDING", "AWAITING_MERCHANT", "MERCHANT_REJECTED"];
+  const [cancelling, setCancelling] = useState(false);
+  const canCancel = Boolean(order) && CUSTOMER_CANCELLABLE.includes(order.status) && !order.driverId;
+
+  const cancelOrder = async (reason) => {
+    if (!orderId) return;
+    setCancelling(true);
+    try {
+      const result = await runTransaction(db, async (tx) => {
+        const ref = doc(db, "orders", String(orderId).trim());
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error("Order not found.");
+        const o = snap.data();
+        // Re-check against the live order: the store may have accepted it a moment ago
+        if (!CUSTOMER_CANCELLABLE.includes(o.status) || o.driverId) {
+          throw new Error("The store has already accepted this order, so it can no longer be cancelled here. Please contact support.");
+        }
+        const paid = o.paymentStatus === "PAID";
+        tx.update(ref, {
+          status: "CANCELLED",
+          cancelledBy: "CUSTOMER",
+          cancelReason: reason,
+          cancelledAt: serverTimestamp(),
+          ...(paid ? { refundStatus: "REQUESTED", refundAmount: Number(o.total || 0) } : {}),
+          updatedAt: serverTimestamp(),
+        });
+        return { paid };
+      });
+      setChapaModalVisible(false);
+      Alert.alert(
+        "Order Cancelled",
+        result.paid
+          ? "Your order was cancelled. Your Chapa payment will be refunded by MyTruck support to the original payment method."
+          : "Your order was cancelled. You have not been charged."
+      );
+    } catch (e) {
+      Alert.alert("Could Not Cancel", e?.message || "Please try again.");
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const confirmCancel = () => {
+    const pick = (reason) => () => cancelOrder(reason);
+    Alert.alert(
+      "Cancel this order?",
+      order?.paymentStatus === "PAID"
+        ? "The store hasn't accepted it yet. Your payment will be refunded."
+        : "The store hasn't accepted it yet, so you won't be charged.",
+      [
+        { text: "Keep Order", style: "cancel" },
+        { text: "Ordered by mistake", onPress: pick("Ordered by mistake") },
+        { text: "Taking too long", onPress: pick("Taking too long") },
+        { text: "Other reason", style: "destructive", onPress: pick("Other") },
+      ]
+    );
+  };
+
   useEffect(() => {
     if (autoLaunchChapa && initialCheckoutUrl) {
       setActiveCheckoutUrl(initialCheckoutUrl);
@@ -231,7 +291,7 @@ export default function PreparingOrderScreen() {
 
       if (data?.verified || data?.paymentStatus === "PAID") {
         setChapaModalVisible(false);
-        setOrder((prev) => ({ ...(prev || {}), paymentStatus: "PAID", status: "AWAITING_MERCHANT" }));
+        setOrder((prev) => ({ ...(prev || {}), paymentStatus: "PAID", status: "PENDING" }));
         Alert.alert(
           "Payment Confirmed",
           "Your payment was confirmed by Chapa! The restaurant has received your order."
@@ -485,6 +545,8 @@ export default function PreparingOrderScreen() {
                 ? "Awaiting Online Payment"
                 : order?.status === "DRIVERPICKEDUP" || order?.status === "ON_THE_WAY"
                 ? "Your order is on the way"
+                : order?.status === "DRIVERACCEPTED" || order?.status === "READY"
+                ? "Driver is picking up your order"
                 : order?.status === "ACCEPTED" || order?.status === "PREPARING"
                 ? "Restaurant is preparing your order"
                 : "Order Placed & Awaiting Confirmation"}
@@ -492,16 +554,43 @@ export default function PreparingOrderScreen() {
             <Text style={s.statusSubtitle}>
               {order?.status === "COMPLETE" || order?.status === "DELIVERED"
                 ? "Delivered successfully! Enjoy your meal."
+                : order?.status === "CANCELLED"
+                ? order?.refundStatus === "REQUESTED"
+                  ? "Cancelled · refund in progress"
+                  : "This order was cancelled"
                 : order?.paymentMethod === "CHAPA" && order?.paymentStatus !== "PAID"
                 ? "Please complete payment via Telebirr, CBE, or Card to begin preparation."
                 : order?.status === "DRIVERPICKEDUP" || order?.status === "ON_THE_WAY"
                 ? "Driver is heading to your location"
+                : order?.status === "DRIVERACCEPTED" || order?.status === "READY"
+                ? "Your driver is at or heading to the store"
                 : order?.status === "ACCEPTED" || order?.status === "PREPARING"
-                ? "Kitchen is preparing your items"
+                ? order?.driverId
+                  ? "Kitchen is preparing your items · driver already assigned"
+                  : "Kitchen is preparing your items"
                 : "Your order details have been safely received"}
             </Text>
           </View>
         </View>
+
+        {canCancel && (
+          <TouchableOpacity
+            onPress={confirmCancel}
+            disabled={cancelling}
+            style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", marginHorizontal: 16, marginBottom: 12, paddingVertical: 11, borderRadius: 12, borderWidth: 1, borderColor: "#FCA5A5", backgroundColor: "#FFF5F5" }}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+          >
+            {cancelling ? (
+              <ActivityIndicator size="small" color="#DC2626" />
+            ) : (
+              <>
+                <MaterialCommunityIcons name="close-circle-outline" size={18} color="#DC2626" style={{ marginRight: 6 }} />
+                <Text style={{ fontSize: 13, fontWeight: "700", color: "#DC2626" }}>Cancel Order</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
 
         {/* Customer Information Card (Phase 3.1 - Non-clickable info with icons) */}
         <View style={s.customerCard}>
@@ -543,7 +632,7 @@ export default function PreparingOrderScreen() {
         )}
 
         {/* Driver Card (Phase 3.2) */}
-        {order?.driverName || order?.driverId ? (
+        {order?.status === "CANCELLED" ? null : order?.driverName || order?.driverId ? (
           <View style={s.driverCard}>
             <Image
               source={order.driverImage ? { uri: order.driverImage } : DRIVER_AVATAR}
@@ -599,7 +688,18 @@ export default function PreparingOrderScreen() {
 
         {/* Order Status Timeline matching Image 1 */}
         <View style={s.timelineCard}>
-          {(order?.paymentMethod === "CHAPA" && order?.paymentStatus !== "PAID"
+          {(order?.status === "CANCELLED"
+            ? [
+                { title: "Order placed", time: "Submitted", done: true, active: false },
+                {
+                  title: "Order cancelled",
+                  time: order?.cancelReason ? `Reason: ${order.cancelReason}` : "Cancelled",
+                  done: false,
+                  active: true,
+                  isAlert: true,
+                },
+              ]
+            : order?.paymentMethod === "CHAPA" && order?.paymentStatus !== "PAID"
             ? [
                 {
                   title: "Order placed",
@@ -642,9 +742,9 @@ export default function PreparingOrderScreen() {
                 },
                 {
                   title: "Restaurant preparing",
-                  time: ["ACCEPTED", "PREPARING", "READY", "DRIVERPICKEDUP", "ON_THE_WAY", "COMPLETE", "DELIVERED"].includes(order?.status) ? "Kitchen active" : "Pending",
-                  done: ["ACCEPTED", "PREPARING", "READY", "DRIVERPICKEDUP", "ON_THE_WAY", "COMPLETE", "DELIVERED"].includes(order?.status),
-                  active: ["ACCEPTED", "PREPARING", "READY"].includes(order?.status),
+                  time: ["ACCEPTED", "PREPARING", "READY", "DRIVERACCEPTED", "DRIVERPICKEDUP", "ON_THE_WAY", "COMPLETE", "DELIVERED"].includes(order?.status) ? "Kitchen active" : "Pending",
+                  done: ["ACCEPTED", "PREPARING", "READY", "DRIVERACCEPTED", "DRIVERPICKEDUP", "ON_THE_WAY", "COMPLETE", "DELIVERED"].includes(order?.status),
+                  active: ["ACCEPTED", "PREPARING", "READY", "DRIVERACCEPTED"].includes(order?.status),
                 },
                 {
                   title: "Picked up",
@@ -797,7 +897,7 @@ export default function PreparingOrderScreen() {
           </View>
 
           {/* Chapa Payment Controls if unpaid */}
-          {order?.paymentMethod === "CHAPA" && order?.paymentStatus !== "PAID" && (
+          {order?.paymentMethod === "CHAPA" && order?.paymentStatus !== "PAID" && order?.status !== "CANCELLED" && (
             <View style={{ marginTop: 12, gap: 10 }}>
               {/* Primary: Pay Online with Chapa */}
               <TouchableOpacity

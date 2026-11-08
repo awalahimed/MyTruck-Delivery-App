@@ -149,7 +149,7 @@ export default function AdminDashboard() {
   const [itemMarkupPercent, setItemMarkupPercent] = useState("20");
   const [itemMarkupFlat, setItemMarkupFlat] = useState("100");
   const [serviceFeeConfig, setServiceFeeConfig] = useState("15");
-  const [codEnabled, setCodEnabled] = useState(true);
+  const [codEnabled, setCodEnabled] = useState(false);
   const [telebirrEnabled, setTelebirrEnabled] = useState(true);
   const [cbeBirrEnabled, setCbeBirrEnabled] = useState(true);
   const [chapaEnabled, setChapaEnabled] = useState(true);
@@ -1985,6 +1985,42 @@ export default function AdminDashboard() {
                       <Text style={s.orderCustomer}>Customer: {ord.customerName || ord.userFirstName || "Customer"}</Text>
                       <Text style={s.orderAddress}>📍 {ord.deliveryAddress || "Addis Ababa"}</Text>
 
+                      {/* Customer cancelled a paid order: refund the Chapa payment, then mark it done */}
+                      {ord.refundStatus === "REQUESTED" && (
+                        <View style={{ backgroundColor: "#FFF7ED", borderWidth: 1, borderColor: "#FDBA74", borderRadius: 8, padding: 8, marginTop: 6, marginBottom: 4 }}>
+                          <Text style={{ fontSize: 11.5, color: "#9A3412", fontWeight: "800" }}>
+                            {`💸 Refund due: ETB ${Number(ord.refundAmount || ord.total || 0).toFixed(2)} · Chapa ref ${ord.chapaMerchantReference || "—"}`}
+                          </Text>
+                          <Text style={{ fontSize: 11, color: "#9A3412", marginTop: 2 }}>
+                            {`Cancelled by ${ord.cancelledBy === "CUSTOMER" ? "customer" : "system"}${ord.cancelReason ? ` · ${ord.cancelReason}` : ""}`}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={() =>
+                              Alert.alert(
+                                "Mark as Refunded?",
+                                "Confirm you have refunded this payment in the Chapa dashboard.",
+                                [
+                                  { text: "Not Yet", style: "cancel" },
+                                  {
+                                    text: "Mark Refunded",
+                                    onPress: () =>
+                                      updateDoc(doc(db, "orders", ord.id), {
+                                        refundStatus: "REFUNDED",
+                                        refundedAt: serverTimestamp(),
+                                        refundedBy: dbUser?.email || "admin",
+                                        updatedAt: serverTimestamp(),
+                                      }).catch((e) => Alert.alert("Error", e?.message || "Could not update refund.")),
+                                  },
+                                ]
+                              )
+                            }
+                            style={{ alignSelf: "flex-start", marginTop: 6, backgroundColor: "#EA580C", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6 }}
+                          >
+                            <Text style={{ color: "white", fontSize: 11, fontWeight: "800" }}>Mark Refunded</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+
                       {/* Prominent Store Rejection Notice and Reassign Action */}
                       {isRejected && (
                         <View style={{ backgroundColor: "#FEF2F2", borderWidth: 1, borderColor: "#FECDD3", borderRadius: 8, padding: 8, marginTop: 6, marginBottom: 4 }}>
@@ -2107,7 +2143,11 @@ export default function AdminDashboard() {
               <View style={[s.comingSoonCard, { marginLeft: 10 }]}>
                 <Text style={s.comingSoonTitle}>Cash on Delivery</Text>
                 <Text style={s.comingSoonSub}>Physical Collection</Text>
-                <View style={s.comingSoonBadge}><Text style={s.comingSoonBadgeTxt}>COMING SOON</Text></View>
+                <View style={[s.comingSoonBadge, codEnabled && { backgroundColor: "#DCFCE7" }]}>
+                  <Text style={[s.comingSoonBadgeTxt, codEnabled && { color: "#166534" }]}>
+                    {codEnabled ? "LIVE" : "OFF · enable in Settings"}
+                  </Text>
+                </View>
               </View>
             </View>
 

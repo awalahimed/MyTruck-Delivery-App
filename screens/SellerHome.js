@@ -37,6 +37,7 @@ import {
   addDoc,
   setDoc,
   deleteDoc,
+  runTransaction,
 } from "firebase/firestore";
 import NotificationBell from "../components/ui/NotificationBell";
 import SmartImage from "../components/ui/SmartImage";
@@ -48,6 +49,8 @@ const BG = "#F5FAF9";
 
 const STATUS_CONFIG = {
   PENDING: { label: "Pending", bg: "#FEF9C3", text: "#A16207", actions: ["ACCEPTED", "DECLINED"] },
+  // Reassigned by admin after another merchant declined — handled exactly like a new order
+  AWAITING_MERCHANT: { label: "Pending", bg: "#FEF9C3", text: "#A16207", actions: ["ACCEPTED", "DECLINED"] },
   ACCEPTED: { label: "Accepted", bg: "#DCFCE7", text: "#166534", actions: ["PREPARING"] },
   PREPARING: { label: "Preparing", bg: "#DBEAFE", text: "#1E40AF", actions: ["READY"] },
   READY: { label: "Ready for Driver", bg: "#E0E7FF", text: "#3730A3", actions: [] },
@@ -55,7 +58,10 @@ const STATUS_CONFIG = {
   COMPLETE: { label: "Completed", bg: "#D1FAE5", text: "#065F46", actions: [] },
   DRIVERACCEPTED: { label: "Driver Assigned", bg: "#FEF3C7", text: "#B45309", actions: [] },
   DRIVERPICKEDUP: { label: "Out for Delivery", bg: "#E0F2FE", text: "#0369A1", actions: [] },
+  CANCELLED: { label: "Cancelled by Customer", bg: "#FEE2E2", text: "#991B1B", actions: [] },
 };
+
+const isNewOrder = (o) => o.status === "PENDING" || o.status === "AWAITING_MERCHANT";
 
 const ACTION_LABELS = {
   ACCEPTED: "Accept Order",
@@ -210,7 +216,11 @@ export default function SellerHome() {
       q,
       (snap) => {
         const all = [];
-        snap.forEach((d) => all.push({ id: d.id, ...d.data() }));
+        snap.forEach((d) => {
+          // Unpaid Chapa orders are not forwarded to the merchant until payment is verified
+          if (d.data().status === "AWAITING_PAYMENT") return;
+          all.push({ id: d.id, ...d.data() });
+        });
         // In-memory sort by createdAt
         all.sort((a, b) => {
           const tA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt?.seconds ? a.createdAt.seconds * 1000 : 0);
@@ -247,7 +257,7 @@ export default function SellerHome() {
         return sum + net;
       }, 0);
 
-    const pending = orders.filter((o) => o.status === "PENDING").length;
+    const pending = orders.filter(isNewOrder).length;
     const preparing = orders.filter((o) => o.status === "PREPARING" || o.status === "ACCEPTED").length;
     const completedOrdersList = orders.filter((o) => o.status === "COMPLETE");
     const completed = completedOrdersList.length;
@@ -311,7 +321,7 @@ export default function SellerHome() {
   // Filtered Orders for Queue
   const filteredOrders = useMemo(() => {
     if (orderFilter === "ALL") return orders;
-    if (orderFilter === "PENDING") return orders.filter((o) => o.status === "PENDING");
+    if (orderFilter === "PENDING") return orders.filter(isNewOrder);
     if (orderFilter === "PREPARING") return orders.filter((o) => o.status === "ACCEPTED" || o.status === "PREPARING");
     if (orderFilter === "READY") return orders.filter((o) => o.status === "READY" || o.status === "DRIVERACCEPTED" || o.status === "DRIVERPICKEDUP");
     if (orderFilter === "COMPLETE") return orders.filter((o) => o.status === "COMPLETE");
@@ -340,11 +350,35 @@ export default function SellerHome() {
   }, []);
 
   // Order status update
+  // Allowed merchant transitions. Checked inside a transaction so a customer
+  // cancelling at the same moment can't be overwritten.
+  const MERCHANT_TRANSITIONS = {
+    ACCEPTED: ["PENDING", "AWAITING_MERCHANT"],
+    PREPARING: ["ACCEPTED"],
+    READY: ["PREPARING"],
+  };
+
   const updateOrderStatus = async (orderId, newStatus) => {
     try {
-      await updateDoc(doc(db, "orders", orderId), {
-        status: newStatus,
-        updatedAt: serverTimestamp(),
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, "orders", orderId);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error("This order no longer exists.");
+        const current = snap.data();
+        if (current.status === "CANCELLED") throw new Error("The customer cancelled this order.");
+        const allowedFrom = MERCHANT_TRANSITIONS[newStatus];
+        if (allowedFrom && !allowedFrom.includes(current.status)) {
+          throw new Error("This order was already updated. Pull to refresh.");
+        }
+        const updates = { status: newStatus, updatedAt: serverTimestamp() };
+        if (newStatus === "ACCEPTED") updates.acceptedAt = serverTimestamp();
+        if (newStatus === "PREPARING") updates.preparingAt = serverTimestamp();
+        if (newStatus === "READY") {
+          updates.readyAt = serverTimestamp();
+          // A driver may already have claimed it while it was cooking
+          if (current.driverId) updates.status = "DRIVERACCEPTED";
+        }
+        tx.update(ref, updates);
       });
     } catch (e) {
       Alert.alert("Update Error", e?.message || "Could not update order status.");

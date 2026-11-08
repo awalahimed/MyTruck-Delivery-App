@@ -125,6 +125,13 @@ export default function BasketScreen() {
     return unsub;
   }, []);
 
+  // Keep the chosen payment method valid when the admin turns a method on/off
+  useEffect(() => {
+    if (paymentMethod === "CHAPA" && !paymentConfig.chapaEnabled && paymentConfig.codEnabled) setPaymentMethod("COD");
+    if (paymentMethod === "COD" && !paymentConfig.codEnabled && paymentConfig.chapaEnabled) setPaymentMethod("CHAPA");
+  }, [paymentConfig.chapaEnabled, paymentConfig.codEnabled, paymentMethod]);
+  const noPaymentMethod = !paymentConfig.chapaEnabled && !paymentConfig.codEnabled;
+
   // Initialize selected merchants with all present in cart
   useEffect(() => {
     if (rawMerchantGroups.length > 0) {
@@ -325,6 +332,10 @@ export default function BasketScreen() {
       return;
     }
     if (isSubmitting || paymentInitializing) return;
+    if (noPaymentMethod) {
+      Alert.alert("Checkout Unavailable", "Online payment and Cash on Delivery are both turned off right now. Please try again later.");
+      return;
+    }
 
     // ─── STEP 0: Enforce maximum delivery distance ─────────────────────────
     for (const group of selectedGroups) {
@@ -1008,25 +1019,63 @@ export default function BasketScreen() {
             {promoError ? <Text style={s.promoErrorTxt}>{promoError}</Text> : null}
           </View>
 
-          {/* Payment Method Selector - Chapa Exclusive */}
+          {/* Payment Method Selector — options follow the admin's platform settings */}
           <View style={s.sectionCard}>
             <Text style={s.sectionHeading}>Payment Method</Text>
 
-            {/* Chapa - Online Gateway */}
-            <View style={[s.paymentOption, s.paymentOptionActive]}>
-              <MaterialCommunityIcons
-                name="radiobox-marked"
-                size={22}
-                color={TEAL}
-              />
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={s.paymentTitle}>Pay Online with Chapa</Text>
-                <Text style={s.paymentSub}>Telebirr, CBE Birr, Debit / Credit Card</Text>
-              </View>
-              <View style={s.paymentPill}>
-                <Text style={s.paymentPillTxt}>ACTIVE</Text>
-              </View>
-            </View>
+            {paymentConfig.chapaEnabled && (
+              <TouchableOpacity
+                style={[s.paymentOption, paymentMethod === "CHAPA" && s.paymentOptionActive]}
+                onPress={() => setPaymentMethod("CHAPA")}
+                activeOpacity={0.85}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: paymentMethod === "CHAPA" }}
+              >
+                <MaterialCommunityIcons
+                  name={paymentMethod === "CHAPA" ? "radiobox-marked" : "radiobox-blank"}
+                  size={22}
+                  color={paymentMethod === "CHAPA" ? TEAL : "#94A3B8"}
+                />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={s.paymentTitle}>Pay Online with Chapa</Text>
+                  <Text style={s.paymentSub}>Telebirr, CBE Birr, Debit / Credit Card</Text>
+                </View>
+                {paymentMethod === "CHAPA" && (
+                  <View style={s.paymentPill}>
+                    <Text style={s.paymentPillTxt}>SELECTED</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            )}
+
+            {paymentConfig.codEnabled && (
+              <TouchableOpacity
+                style={[s.paymentOption, paymentMethod === "COD" && s.paymentOptionActive, paymentConfig.chapaEnabled && { marginTop: 10 }]}
+                onPress={() => setPaymentMethod("COD")}
+                activeOpacity={0.85}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: paymentMethod === "COD" }}
+              >
+                <MaterialCommunityIcons
+                  name={paymentMethod === "COD" ? "radiobox-marked" : "radiobox-blank"}
+                  size={22}
+                  color={paymentMethod === "COD" ? TEAL : "#94A3B8"}
+                />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={s.paymentTitle}>Cash on Delivery</Text>
+                  <Text style={s.paymentSub}>Pay the driver in cash when your order arrives</Text>
+                </View>
+                {paymentMethod === "COD" && (
+                  <View style={s.paymentPill}>
+                    <Text style={s.paymentPillTxt}>SELECTED</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            )}
+
+            {noPaymentMethod && (
+              <Text style={s.paymentSub}>No payment method is available right now. Please check back shortly.</Text>
+            )}
           </View>
 
           {/* Checkout Summary */}
@@ -1092,10 +1141,10 @@ export default function BasketScreen() {
           <TouchableOpacity
             style={[
               s.placeOrderBtn,
-              (isSubmitting || selectedGroups.length === 0) && { opacity: 0.75 },
+              (isSubmitting || selectedGroups.length === 0 || noPaymentMethod) && { opacity: 0.75 },
             ]}
             onPress={handlePlaceOrder}
-            disabled={isSubmitting || selectedGroups.length === 0}
+            disabled={isSubmitting || selectedGroups.length === 0 || noPaymentMethod}
             activeOpacity={0.88}
           >
             {isSubmitting ? (
@@ -1105,7 +1154,9 @@ export default function BasketScreen() {
                 <Text style={s.placeOrderBtnTxt}>
                   {selectedGroups.length > 1
                     ? `Checkout ${selectedGroups.length} Orders`
-                    : "Confirm & Place Order"}
+                    : paymentMethod === "COD"
+                      ? "Place Order · Pay on Delivery"
+                      : "Confirm & Pay with Chapa"}
                 </Text>
                 <Text style={s.placeOrderAmount}>{formatETB(finalPayable)}</Text>
               </View>

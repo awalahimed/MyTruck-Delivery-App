@@ -35,6 +35,8 @@ import {
   orderBy,
   limit,
   serverTimestamp,
+  runTransaction,
+  arrayUnion,
 } from "firebase/firestore";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import NotificationBell from "../components/ui/NotificationBell";
@@ -46,6 +48,7 @@ const ORANGE = "#F47721";
 const BG = "#F5FAF9";
 
 const STATUS_BADGE = {
+  PREPARING: { label: "Being Prepared", bg: "#E0E7FF", text: "#3730A3" },
   READY: { label: "Ready for Pickup", bg: "#FEF9C3", text: "#A16207" },
   DRIVERACCEPTED: { label: "Pickup In Progress", bg: "#DCFCE7", text: "#166534" },
   DRIVERPICKEDUP: { label: "Out for Delivery", bg: "#DBEAFE", text: "#1E40AF" },
@@ -59,6 +62,16 @@ const TABS = [
   { id: "earnings", label: "Earnings & Trips", icon: "cash-multiple" },
   { id: "profile", label: "Driver Profile", icon: "card-account-details-outline" },
 ];
+
+// Orders drivers can claim: still cooking (claim early, arrive as it's packed) or ready.
+const CLAIMABLE_STATUSES = ["PREPARING", "READY"];
+// Statuses where this driver owns the order
+const DRIVER_ACTIVE_STATUSES = ["PREPARING", "READY", "DRIVERACCEPTED", "DRIVERPICKEDUP"];
+
+const tsMillis = (t) => (t?.toMillis ? t.toMillis() : t?.seconds ? t.seconds * 1000 : 0);
+
+/** Order is waiting at the merchant for this driver (claimed while cooking, or ready). */
+const isAwaitingPickup = (o) => Boolean(o) && ["PREPARING", "READY", "DRIVERACCEPTED"].includes(o.status);
 
 export default function DriverDashboard() {
   const navigation = useNavigation();
@@ -75,6 +88,8 @@ export default function DriverDashboard() {
   const [loadingActive, setLoadingActive] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [gpsActive, setGpsActive] = useState(false);
+  const [rawOpenOrders, setRawOpenOrders] = useState([]);
+  const [nowMs, setNowMs] = useState(Date.now());
 
   // Modals state
   const [otpModalVisible, setOtpModalVisible] = useState(false);
@@ -234,7 +249,7 @@ export default function DriverDashboard() {
   useEffect(() => {
     let watcher = null;
     let isSubscribed = true;
-    if (activeOrder && activeOrder.id && (activeOrder.status === "DRIVERACCEPTED" || activeOrder.status === "DRIVERPICKEDUP")) {
+    if (activeOrder && activeOrder.id && DRIVER_ACTIVE_STATUSES.includes(activeOrder.status)) {
       (async () => {
         try {
           const { status } = await Location.requestForegroundPermissionsAsync();
@@ -273,59 +288,119 @@ export default function DriverDashboard() {
   }, [activeOrder?.id, activeOrder?.status]);
 
   // Toggle online status
+  // Share the driver's position while online so dispatch can offer the nearest orders.
+  const reportDriverLocation = useCallback(async () => {
+    if (!user?.uid) return;
+    try {
+      const { status } = await Location.getForegroundPermissionsAsync();
+      if (status !== "granted") return;
+      const loc =
+        (await Location.getLastKnownPositionAsync({ maxAge: 60000 })) ||
+        (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }));
+      if (!loc?.coords) return;
+      await updateDoc(doc(db, "user", user.uid), {
+        driverLat: loc.coords.latitude,
+        driverLng: loc.coords.longitude,
+        driverLocationUpdatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn("DriverDashboard: location report note:", e?.message);
+    }
+  }, [user?.uid]);
+
   const toggleOnline = async (value) => {
     setIsOnline(value);
     try {
+      if (value) {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") {
+          Alert.alert(
+            "Location Needed",
+            "Allow location access so MyTruck can send you the deliveries closest to you. You can still accept orders from the open list."
+          );
+        }
+      }
       await updateDoc(doc(db, "user", user.uid), {
         isOnline: value,
         updatedAt: serverTimestamp(),
       });
+      if (value) reportDriverLocation();
     } catch (e) {
       Alert.alert("Could not update status", e?.message || "Try again.");
       setIsOnline(!value);
     }
   };
 
-  // Poll available orders every 25s when online
-  const fetchAvailable = useCallback(async () => {
+  // Live list of claimable orders while online
+  useEffect(() => {
     if (!isOnline) {
-      setAvailableOrders([]);
+      setRawOpenOrders([]);
       return;
     }
     setLoadingAvailable(true);
-    try {
-      const snap = await getDocs(
-        query(
-          collection(db, "orders"),
-          where("status", "==", "READY"),
-          limit(30)
-        )
-      );
-      const orders = [];
-      snap.forEach((d) => {
-        const data = d.data();
-        if (!data.driverId) orders.push({ id: d.id, ...data });
-      });
-      orders.sort((a, b) => {
-        const tA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt?.seconds ? a.createdAt.seconds * 1000 : 0);
-        const tB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt?.seconds ? b.createdAt.seconds * 1000 : 0);
-        return tB - tA;
-      });
-      setAvailableOrders(orders);
-    } catch (e) {
-      console.warn("DriverDashboard: could not fetch available orders", e?.message);
-    } finally {
-      setLoadingAvailable(false);
-    }
+    const q = query(collection(db, "orders"), where("status", "in", CLAIMABLE_STATUSES), limit(50));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          if (!data.driverId) list.push({ id: d.id, ...data });
+        });
+        setRawOpenOrders(list);
+        setLoadingAvailable(false);
+      },
+      (e) => {
+        console.warn("DriverDashboard: available orders listener note:", e?.message);
+        setLoadingAvailable(false);
+      }
+    );
+    return unsub;
   }, [isOnline]);
 
+  // Heartbeat: keep location fresh every 25s while online
   useEffect(() => {
-    fetchAvailable();
-    if (isOnline) {
-      pollRef.current = setInterval(fetchAvailable, 25000);
-    }
+    if (!isOnline) return;
+    reportDriverLocation();
+    pollRef.current = setInterval(reportDriverLocation, 25000);
     return () => clearInterval(pollRef.current);
-  }, [fetchAvailable, isOnline]);
+  }, [isOnline, reportDriverLocation]);
+
+  // Tick once a second only while some offer is counting down (drives countdown + expiry)
+  const hasLiveOffer = rawOpenOrders.some((o) => o.offeredDriverId && tsMillis(o.offerExpiresAt) > nowMs);
+  useEffect(() => {
+    setNowMs(Date.now());
+    if (!hasLiveOffer) return;
+    const tick = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, [hasLiveOffer, rawOpenOrders]);
+
+  // Nearest-driver-first: an order offered to another driver stays hidden until
+  // that offer expires; an order offered to me is pinned on top with a countdown.
+  useEffect(() => {
+    const visible = rawOpenOrders
+      .filter((o) => {
+        const offerLive = Boolean(o.offeredDriverId) && tsMillis(o.offerExpiresAt) > nowMs;
+        return !(offerLive && o.offeredDriverId !== user?.uid);
+      })
+      .map((o) => ({
+        ...o,
+        offerSecondsLeft:
+          o.offeredDriverId === user?.uid ? Math.max(0, Math.ceil((tsMillis(o.offerExpiresAt) - nowMs) / 1000)) : 0,
+      }))
+      .sort((a, b) => {
+        if ((b.offerSecondsLeft > 0) !== (a.offerSecondsLeft > 0)) return b.offerSecondsLeft > 0 ? 1 : -1;
+        // Ready orders first, then newest
+        if ((a.status === "READY") !== (b.status === "READY")) return a.status === "READY" ? -1 : 1;
+        return tsMillis(b.createdAt) - tsMillis(a.createdAt);
+      });
+    setAvailableOrders(visible);
+  }, [rawOpenOrders, nowMs, user?.uid]);
+
+  // Pull-to-refresh: the list itself is live, so just refresh our location
+  const fetchAvailable = useCallback(async () => {
+    await reportDriverLocation();
+  }, [reportDriverLocation]);
 
   // Listen for active delivery in real-time
   useEffect(() => {
@@ -333,7 +408,7 @@ export default function DriverDashboard() {
     const q = query(
       collection(db, "orders"),
       where("driverId", "==", user.uid),
-      where("status", "in", ["DRIVERACCEPTED", "DRIVERPICKEDUP"]),
+      where("status", "in", DRIVER_ACTIVE_STATUSES),
       orderBy("updatedAt", "desc"),
       limit(1)
     );
@@ -483,28 +558,64 @@ export default function DriverDashboard() {
     setRefreshing(false);
   }, [fetchAvailable, fetchEarnings]);
 
-  // Accept available delivery
+  // Accept available delivery. Transaction so two drivers can't claim the same order.
   const acceptOrder = async (orderId) => {
+    if (activeOrder) {
+      Alert.alert("Finish Current Delivery", "Complete or release your active delivery before accepting another.");
+      return;
+    }
     try {
-      try {
-        const fn = httpsCallable(getFunctions(app), "claimDeliveryOrder");
-        await fn({ orderId });
-      } catch (fnErr) {
-        console.warn("claimDeliveryOrder fallback to direct doc update:", fnErr?.message);
-        await updateDoc(doc(db, "orders", orderId), {
+      const claimedStatus = await runTransaction(db, async (tx) => {
+        const ref = doc(db, "orders", orderId);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error("This order is no longer available.");
+        const o = snap.data();
+        if (o.driverId) throw new Error("Another driver already accepted this order.");
+        if (!CLAIMABLE_STATUSES.includes(o.status)) throw new Error("This order is no longer available.");
+        if (o.offeredDriverId && o.offeredDriverId !== user.uid && tsMillis(o.offerExpiresAt) > Date.now()) {
+          throw new Error("This order is currently offered to a closer driver.");
+        }
+        // Claimed while cooking: stays PREPARING until the merchant marks it ready
+        const nextStatus = o.status === "READY" ? "DRIVERACCEPTED" : o.status;
+        tx.update(ref, {
           driverId: user.uid,
           driverName: `${dbUser?.firstName || "Driver"} ${dbUser?.lastName || ""}`.trim(),
           driverPhone: dbUser?.phone || dbUser?.phoneNumber || dbUser?.mobileNumber || "",
-          status: "DRIVERACCEPTED",
+          status: nextStatus,
           driverAcceptedAt: serverTimestamp(),
+          offeredDriverId: null,
+          offerExpiresAt: null,
           updatedAt: serverTimestamp(),
         });
-      }
-      Alert.alert("Order Accepted! 🚗", "Proceed to pickup location. Customer has received driver details via SMS.");
+        return nextStatus;
+      });
+      Alert.alert(
+        "Order Accepted! 🚗",
+        claimedStatus === "PREPARING"
+          ? "The merchant is still preparing it. Head to the pickup location — it should be ready when you arrive."
+          : "Proceed to the pickup location."
+      );
       setActiveTab("active");
-      fetchAvailable();
     } catch (e) {
       Alert.alert("Could not accept order", e?.message || "Try again.");
+    }
+  };
+
+  // Pass on an order offered to me so the next-closest driver gets it
+  const passOffer = async (orderId) => {
+    try {
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, "orders", orderId);
+        const snap = await tx.get(ref);
+        if (!snap.exists() || snap.data().offeredDriverId !== user.uid) return;
+        tx.update(ref, {
+          offeredDriverId: null,
+          offerExpiresAt: null,
+          declinedDriverIds: arrayUnion(user.uid),
+        });
+      });
+    } catch (e) {
+      Alert.alert("Error", e?.message || "Could not pass on this order.");
     }
   };
 
@@ -573,8 +684,10 @@ export default function DriverDashboard() {
     if (!activeOrder?.id) return;
     try {
       await updateDoc(doc(db, "orders", activeOrder.id), {
-        status: "READY",
+        // Back to the merchant's current stage so the order re-enters dispatch
+        status: activeOrder.status === "PREPARING" ? "PREPARING" : "READY",
         driverId: null,
+        declinedDriverIds: arrayUnion(user.uid),
         driverRejectedAt: serverTimestamp(),
         driverRejectReason: rejectReason,
         updatedAt: serverTimestamp(),
@@ -794,7 +907,7 @@ export default function DriverDashboard() {
             ) : availableOrders.length === 0 ? (
               <View style={s.emptyCard}>
                 <MaterialCommunityIcons name="inbox-outline" size={54} color="#CBD5E1" />
-                <Text style={s.emptyTitle}>No Ready Orders Nearby</Text>
+                <Text style={s.emptyTitle}>No Orders Nearby Yet</Text>
                 <Text style={s.emptySub}>
                   You are online and prioritized. New deliveries from restaurants and shops will appear here immediately.
                 </Text>
@@ -809,8 +922,26 @@ export default function DriverDashboard() {
                 const distKm = order.deliveryDistanceKm || 3.2;
                 const etaMins = order.deliveryEtaMinutes || 20;
 
+                const isMyOffer = order.offerSecondsLeft > 0;
+                const stage = STATUS_BADGE[order.status] || STATUS_BADGE.READY;
+
                 return (
-                  <View key={order.id} style={s.deliveryCard}>
+                  <View key={order.id} style={[s.deliveryCard, isMyOffer && { borderWidth: 2, borderColor: ORANGE }]}>
+                    {isMyOffer && (
+                      <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#FFF7ED", borderRadius: 10, padding: 8, marginBottom: 10 }}>
+                        <MaterialCommunityIcons name="map-marker-radius" size={18} color={ORANGE} />
+                        <Text style={{ flex: 1, marginLeft: 8, fontSize: 12, fontWeight: "700", color: "#9A3412" }}>
+                          {"Offered to you — you're the closest driver"}
+                          {order.offeredDriverDistanceKm != null ? ` (${Number(order.offeredDriverDistanceKm).toFixed(1)} km)` : ""}
+                        </Text>
+                        <Text style={{ fontSize: 13, fontWeight: "800", color: ORANGE }}>{`${order.offerSecondsLeft}s`}</Text>
+                      </View>
+                    )}
+                    <View style={{ alignSelf: "flex-start", backgroundColor: stage.bg, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, marginBottom: 8 }}>
+                      <Text style={{ fontSize: 10.5, fontWeight: "800", color: stage.text }}>
+                        {order.status === "PREPARING" ? "BEING PREPARED · CLAIM EARLY" : "READY FOR PICKUP"}
+                      </Text>
+                    </View>
                     {/* Delivery Card Top Header */}
                     <View style={s.deliveryCardHeader}>
                       <View style={{ flexDirection: "row", alignItems: "center" }}>
@@ -874,7 +1005,7 @@ export default function DriverDashboard() {
                       </View>
                     </View>
 
-                    {/* Action Button */}
+                    {/* Action Buttons */}
                     <TouchableOpacity
                       onPress={() => acceptOrder(order.id)}
                       style={s.acceptBtn}
@@ -883,6 +1014,11 @@ export default function DriverDashboard() {
                       <MaterialCommunityIcons name="check" size={18} color="#FFFFFF" />
                       <Text style={s.acceptBtnTxt}>Accept Delivery</Text>
                     </TouchableOpacity>
+                    {isMyOffer && (
+                      <TouchableOpacity onPress={() => passOffer(order.id)} style={{ alignItems: "center", paddingVertical: 10 }} activeOpacity={0.7}>
+                        <Text style={{ fontSize: 12.5, fontWeight: "700", color: "#64748B" }}>Pass — offer to the next driver</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 );
               })
@@ -921,9 +1057,11 @@ export default function DriverDashboard() {
                       MISSION #{activeOrder.id ? activeOrder.id.slice(-6).toUpperCase() : "ACTIVE"}
                     </Text>
                     <Text style={s.missionStatusText}>
-                      {activeOrder.status === "DRIVERACCEPTED"
-                        ? "Phase 1: Proceed to Pickup"
-                        : "Phase 2: Out for Customer Delivery"}
+                      {activeOrder.status === "PREPARING"
+                        ? "Phase 1: Head to Pickup — Food Being Prepared"
+                        : isAwaitingPickup(activeOrder)
+                          ? "Phase 1: Proceed to Pickup"
+                          : "Phase 2: Out for Customer Delivery"}
                     </Text>
                   </View>
                   <View
@@ -1067,15 +1205,27 @@ export default function DriverDashboard() {
 
                 {/* Mission Actions */}
                 <View style={s.missionActionsWrap}>
-                  {activeOrder.status === "DRIVERACCEPTED" && (
+                  {isAwaitingPickup(activeOrder) && (
                     <View style={{ flexDirection: "row", gap: 10 }}>
                       <TouchableOpacity
                         onPress={() => updateOrderStatus(activeOrder.id, "DRIVERPICKEDUP")}
-                        style={[s.primaryActionBtn, { backgroundColor: ORANGE }]}
+                        disabled={activeOrder.status === "PREPARING"}
+                        style={[
+                          s.primaryActionBtn,
+                          { backgroundColor: activeOrder.status === "PREPARING" ? "#94A3B8" : ORANGE },
+                        ]}
                         activeOpacity={0.8}
                       >
-                        <MaterialCommunityIcons name="package-variant-closed" size={18} color="#FFFFFF" />
-                        <Text style={s.primaryActionBtnTxt}>Confirm Pickup from Merchant</Text>
+                        <MaterialCommunityIcons
+                          name={activeOrder.status === "PREPARING" ? "chef-hat" : "package-variant-closed"}
+                          size={18}
+                          color="#FFFFFF"
+                        />
+                        <Text style={s.primaryActionBtnTxt}>
+                          {activeOrder.status === "PREPARING"
+                            ? "Waiting for Merchant to Mark Ready"
+                            : "Confirm Pickup from Merchant"}
+                        </Text>
                       </TouchableOpacity>
 
                       <TouchableOpacity
