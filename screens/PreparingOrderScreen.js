@@ -155,11 +155,12 @@ export default function PreparingOrderScreen() {
       let checkoutUrl = null;
       const txRef = `MT${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 
-      // 1. Attempt backend cloud function to initialize checkout session with Chapa
+      // Chapa is initialized server-side (functions/index.js) so the secret key never ships in the app.
       try {
         const startCheckout = httpsCallable(getFunctions(app), "createChapaCheckout");
         const res = await startCheckout({
           orderIds: [cleanOrderId],
+          txRef,
           amount: Number(order?.total || 100),
           email: order?.customerEmail || "customer@gmail.com",
           currency: "ETB",
@@ -167,74 +168,7 @@ export default function PreparingOrderScreen() {
         });
         checkoutUrl = res?.data?.checkoutUrl;
       } catch (cfErr) {
-        console.warn("createChapaCheckout CF note, falling back to direct Chapa API:", cfErr?.message);
-      }
-
-      // 2. Direct Chapa API initialization (Guaranteed fresh checkout launch)
-      if (!checkoutUrl) {
-        // Ensure email adheres strictly to standard public domains (e.g. @gmail.com)
-        const rawPhone = String(order?.customerPhone || "").replace(/\D/g, "");
-        const cleanPhone10 = rawPhone.startsWith("251") ? "0" + rawPhone.slice(3) : (rawPhone.startsWith("0") ? rawPhone : "0" + rawPhone);
-        let chapaEmail = String(order?.customerEmail || "").trim().toLowerCase();
-        if (!chapaEmail || !chapaEmail.includes("@") || chapaEmail.endsWith(".local") || chapaEmail.endsWith(".et")) {
-          chapaEmail = cleanPhone10.length >= 9 ? `customer${cleanPhone10}@gmail.com` : "customer@gmail.com";
-        }
-
-        const cleanOrderCode = String(cleanOrderId || "MT").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 10).toUpperCase();
-
-        const chapaRes = await fetch("https://api.chapa.co/v1/transaction/initialize", {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer CHASECK-2wQU2SzPeV7V9Pu2Mdb9gxNY2k9Jq5nQ",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            amount: String(Number(order?.total || 100).toFixed(2)),
-            currency: "ETB",
-            tx_ref: txRef,
-            email: chapaEmail,
-            first_name: String(order?.customerName || "Customer").split(" ")[0] || "Customer",
-            last_name: String(order?.customerName || "User").split(" ")[1] || "Client",
-            phone_number: cleanPhone10.length === 10 ? cleanPhone10 : "0911000000",
-            return_url: "https://checkout.chapa.co/checkout/payment-receipt",
-            customization: {
-              title: "MyTruck Delivery",
-              description: `Order ${cleanOrderCode}`,
-            },
-          }),
-        });
-        const chapaData = await chapaRes.json().catch(() => ({}));
-        checkoutUrl = chapaData?.data?.checkout_url;
-
-        // Fail-safe retry without customization
-        if (!checkoutUrl) {
-          const retryRes = await fetch("https://api.chapa.co/v1/transaction/initialize", {
-            method: "POST",
-            headers: {
-              Authorization: "Bearer CHASECK-2wQU2SzPeV7V9Pu2Mdb9gxNY2k9Jq5nQ",
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              amount: String(Number(order?.total || 100).toFixed(2)),
-              currency: "ETB",
-              tx_ref: txRef,
-              email: chapaEmail,
-              first_name: "Customer",
-              last_name: "User",
-              phone_number: cleanPhone10.length === 10 ? cleanPhone10 : "0911000000",
-              return_url: "https://checkout.chapa.co/checkout/payment-receipt",
-            }),
-          });
-          const retryData = await retryRes.json().catch(() => ({}));
-          checkoutUrl = retryData?.data?.checkout_url;
-        }
-
-        if (checkoutUrl) {
-          await updateDoc(doc(db, "orders", cleanOrderId), {
-            chapaMerchantReference: txRef,
-            chapaCheckoutUrl: checkoutUrl,
-          }).catch(() => {});
-        }
+        console.warn("createChapaCheckout error:", cfErr?.message);
       }
 
       if (checkoutUrl) {
@@ -306,48 +240,17 @@ export default function PreparingOrderScreen() {
         return;
       }
 
-      // 3. Resilient Direct Chapa API verification fallback
-      const txRef = order?.chapaMerchantReference || snap.data()?.chapaMerchantReference || "";
-      if (txRef) {
-        try {
-          const directRes = await fetch(
-            `https://api.chapa.co/v1/transaction/verify/${encodeURIComponent(txRef)}`,
-            {
-              headers: { Authorization: "Bearer CHASECK-2wQU2SzPeV7V9Pu2Mdb9gxNY2k9Jq5nQ" },
-            }
-          );
-          const directData = await directRes.json().catch(() => ({}));
-          const chapaStatus = String(directData?.data?.status || "").toUpperCase();
-          if (directData?.status === "success" && chapaStatus === "SUCCESS") {
-            setChapaModalVisible(false);
-            await updateDoc(doc(db, "orders", cleanOrderId), {
-              paymentStatus: "PAID",
-              status: "AWAITING_MERCHANT",
-              paidAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-            setOrder((prev) => ({ ...(prev || {}), paymentStatus: "PAID", status: "AWAITING_MERCHANT" }));
-            Alert.alert(
-              "Payment Confirmed 🎉",
-              "Your payment was confirmed by Chapa! The restaurant has received your order."
-            );
-            setVerifying(false);
-            return;
-          } else if (["FAILED", "CANCELLED", "EXPIRED"].includes(chapaStatus)) {
-            Alert.alert(
-              "Payment Unsuccessful",
-              "The transaction was not completed. You can retry paying with Chapa.",
-              [
-                { text: "Dismiss", style: "cancel" },
-                { text: "Retry Payment", onPress: () => handlePayNowWithChapa() },
-              ]
-            );
-            setVerifying(false);
-            return;
-          }
-        } catch (directErr) {
-          console.warn("Direct verification fallback notice:", directErr?.message);
-        }
+      if (data?.paymentStatus === "FAILED") {
+        Alert.alert(
+          "Payment Unsuccessful",
+          "The transaction was not completed. You can retry paying with Chapa.",
+          [
+            { text: "Dismiss", style: "cancel" },
+            { text: "Retry Payment", onPress: () => handlePayNowWithChapa() },
+          ]
+        );
+        setVerifying(false);
+        return;
       }
 
       // 4. Payment still pending confirmation with bank / mobile wallet

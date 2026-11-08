@@ -38,6 +38,7 @@ import {
 import { selectUser, setUser } from "../features/userSlice";
 import { UserAuth } from "../contexts/AuthContext";
 import { app, db } from "../firebase";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { presentLocalNotification } from "../services/notificationService";
 import {
   collection,
@@ -366,52 +367,20 @@ export default function BasketScreen() {
 
         let checkoutUrl = null;
         try {
-          const chapaRes = await fetch("https://api.chapa.co/v1/transaction/initialize", {
-            method: "POST",
-            headers: {
-              Authorization: "Bearer CHASECK-2wQU2SzPeV7V9Pu2Mdb9gxNY2k9Jq5nQ",
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              amount: String(Number(totalAmount || 100).toFixed(2)),
-              currency: "ETB",
-              tx_ref: txRef,
-              email: chapaEmail,
-              first_name: String(dbUser?.fullName || user?.displayName || "Customer").split(" ")[0] || "Customer",
-              last_name: String(dbUser?.fullName || user?.displayName || "User").split(" ")[1] || "Client",
-              phone_number: cleanPhone10.length === 10 ? cleanPhone10 : "0911000000",
-              return_url: "https://checkout.chapa.co/checkout/payment-receipt",
-              customization: {
-                title: "MyTruck Delivery",
-                description: `Payment for ${selectedGroups.map(g => g.merchantName).join(", ")}`,
-              },
-            }),
+          // Chapa is initialized server-side (functions/index.js) so the secret key never ships in the app.
+          const startCheckout = httpsCallable(getFunctions(app), "createChapaCheckout");
+          const fullName = String(dbUser?.fullName || user?.displayName || "Customer User");
+          const res = await startCheckout({
+            amount: Number(Number(totalAmount || 100).toFixed(2)),
+            txRef,
+            email: chapaEmail,
+            firstName: fullName.split(" ")[0] || "Customer",
+            lastName: fullName.split(" ").slice(1).join(" ") || "Client",
+            phone: cleanPhone10,
+            description: `Payment for ${selectedGroups.map(g => g.merchantName).join(", ")}`,
+            returnUrl: "https://checkout.chapa.co/checkout/payment-receipt",
           });
-          const chapaData = await chapaRes.json().catch(() => ({}));
-          checkoutUrl = chapaData?.data?.checkout_url;
-
-          // Retry without customization if failed
-          if (!checkoutUrl) {
-            const retryRes = await fetch("https://api.chapa.co/v1/transaction/initialize", {
-              method: "POST",
-              headers: {
-                Authorization: "Bearer CHASECK-2wQU2SzPeV7V9Pu2Mdb9gxNY2k9Jq5nQ",
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                amount: String(Number(totalAmount || 100).toFixed(2)),
-                currency: "ETB",
-                tx_ref: txRef,
-                email: chapaEmail,
-                first_name: "Customer",
-                last_name: "User",
-                phone_number: cleanPhone10.length === 10 ? cleanPhone10 : "0911000000",
-                return_url: "https://checkout.chapa.co/checkout/payment-receipt",
-              }),
-            });
-            const retryData = await retryRes.json().catch(() => ({}));
-            checkoutUrl = retryData?.data?.checkout_url;
-          }
+          checkoutUrl = res?.data?.checkoutUrl;
         } catch (initErr) {
           console.warn("Chapa init error:", initErr?.message);
         }
