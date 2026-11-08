@@ -241,8 +241,7 @@ export default function OptionsScreen() {
     userEmail.includes("911000001") ||
     userPhone.includes("911000001") ||
     userEmail === "superadmin@mytruck.et" ||
-    userEmail === "admin@mytruck.et" ||
-    userEmail.includes("admin");
+    userEmail === "admin@mytruck.et";
 
   const isSuperAdminUser =
     isSuperAdminAuthority ||

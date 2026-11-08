@@ -6,6 +6,8 @@ import AppStack from "../navigation/AppStack";
 import PhoneVerificationGate from "../screens/PhoneVerificationGate";
 import AnimatedSplash from "../components/AnimatedSplash";
 import { UserAuth, OTP_VERIFICATION_REQUIRED } from "../contexts/AuthContext";
+import { getRoleInfo, homeRouteFor } from "../utils/roles";
+import { BlockedAccountScreen } from "../components/RoleGate";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -98,40 +100,15 @@ const RootNavigator = () => {
   // - Driver -> starts on "DriverDashboard"
   // - Restaurant / Shop / Pending Seller -> starts on "SellerHome"
   // - Customer -> starts on "Home" (CustomerTabNavigator)
-  const rawRole = String(dbUser?.role || "").toLowerCase().replace(/[-_]/g, "").trim();
-  const userEmail = String(user?.email || dbUser?.email || "").toLowerCase().trim();
-  const userPhone = String(dbUser?.phoneNumber || "").replace(/\D/g, "");
+  // Role rules live in utils/roles (exact owner accounts only — no "email contains admin")
+  const roleInfo = getRoleInfo(user, dbUser);
 
-  const isSuperAdminAuthority =
-    userEmail.includes("251911000001") ||
-    userEmail.includes("911000001") ||
-    userPhone.includes("911000001") ||
-    userEmail === "superadmin@mytruck.et" ||
-    userEmail === "admin@mytruck.et" ||
-    userEmail.includes("admin");
-
-  const isStaffAdmin =
-    isSuperAdminAuthority ||
-    rawRole === "superadmin" ||
-    rawRole === "admin" ||
-    rawRole === "miniadmin" ||
-    dbUser?.isSuperAdmin === true ||
-    dbUser?.isAdmin === true ||
-    dbUser?.isMiniAdmin === true;
-
-  let initialRoute = "Home";
-  if (isStaffAdmin) {
-    initialRoute = "AdminDashboard";
-  } else if (rawRole === "driver") {
-    initialRoute = "DriverDashboard";
-  } else if (
-    rawRole === "pendingseller" ||
-    rawRole === "shop" ||
-    rawRole === "restaurant" ||
-    rawRole === "seller"
-  ) {
-    initialRoute = "SellerHome";
+  // Banned / suspended accounts (set from the Admin dashboard) can't use the app
+  if (roleInfo.isBlocked) {
+    return <BlockedAccountScreen status={roleInfo.accountStatus} onSignOut={() => signOutUser()} />;
   }
+
+  const initialRoute = homeRouteFor(roleInfo);
 
   return (
     <AppStack

@@ -90,6 +90,15 @@ const INSTANT_BASELINE_RESTAURANTS = [
   },
 ];
 
+// A dish is orderable only once approved and available (same rule as RestaurantDetails)
+const isOrderableDish = (d) => {
+  if (!d) return false;
+  const status = String(d.status || "");
+  if (["PENDING", "REJECTED"].includes(status.toUpperCase()) || d.isApproved === false) return false;
+  if (d.isAvailable === false || d.inStock === false) return false;
+  return d.isApproved === true || status === "APPROVED" || status === "Published" || !status;
+};
+
 export default function Home() {
   const { user, dbUser } = UserAuth();
   const reduxUser = useSelector(selectUser);
@@ -97,7 +106,7 @@ export default function Home() {
   const navigation = useNavigation();
 
   // Instant render on cold launch with zero spinner freeze
-  const [restaurants, setRestaurants] = useState(INSTANT_BASELINE_RESTAURANTS);
+  const [restaurants, setRestaurants] = useState([]);
   const [dishes, setDishes] = useState([]);
   const [deliveryModalVisible, setDeliveryModalVisible] = useState(false);
   const getSafeAddress = (raw) => {
@@ -256,9 +265,11 @@ export default function Home() {
         }
       }
 
+      const visibleStoreIds = new Set(uniqueResList.map((r) => r.id));
       const dishList = [];
       dishSnap.forEach((d) => {
-        dishList.push({ id: d.id, ...d.data() });
+        const data = { id: d.id, ...d.data() };
+        if (isOrderableDish(data) && visibleStoreIds.has(data.restaurantId)) dishList.push(data);
       });
 
       setRestaurants(uniqueResList);
@@ -282,7 +293,7 @@ export default function Home() {
         ]);
         if (cachedRes) setRestaurants(JSON.parse(cachedRes));
         if (cachedDishes) {
-          setDishes(JSON.parse(cachedDishes));
+          setDishes((JSON.parse(cachedDishes) || []).filter(isOrderableDish));
           setLoading(false);
         }
       } catch (_) {}
@@ -377,91 +388,30 @@ export default function Home() {
     });
   };
 
-  // Curated fallback restaurants with attractive promotional deals
-  const defaultRestaurants = [
-    {
-      id: "habesha-kitchen-1",
-      name: "Habesha Kitchen",
-      genre: "Ethiopian",
-      priceRange: "$$",
-      rating: "4.8",
-      reviews: "1.2k+",
-      deliveryTime: "25 min",
-      deal: "20% OFF Special",
-      discountTag: "Save 20%",
-      imageAsset: HABESHA_ASSET,
-      description: "Authentic Ethiopian cuisine, traditional injera & tibs",
-    },
-    {
-      id: "pizza-house-1",
-      name: "Pizza House",
-      genre: "Pizza",
-      priceRange: "$$",
-      rating: "4.8",
-      reviews: "800+",
-      deliveryTime: "30 min",
-      deal: "25% OFF Artisanal",
-      discountTag: "Save 25%",
-      imageAsset: PIZZA_ASSET,
-      description: "Wood-fired artisanal pizzas and Italian specialties",
-    },
-  ];
-
-  // Featured signature deal items showing transparent crossed-out old price and selling price
-  const featuredDeals = [
-    {
-      id: "deal-doro-wot",
-      restaurantId: "habesha-kitchen-1",
-      restaurantName: "Habesha Kitchen",
-      name: "Special Doro Wot",
-      price: 420,
-      originalPrice: 560,
-      discountPercent: 25,
-      hasDiscount: true,
-      imageAsset: HABESHA_ASSET,
-      image: HABESHA_ASSET,
-      description: "Authentic chicken stew with berbere, egg & teff injera",
-    },
-    {
-      id: "deal-pepperoni-pizza",
-      restaurantId: "pizza-house-1",
-      restaurantName: "Pizza House",
-      name: "Signature Pepperoni Pizza",
-      price: 450,
-      originalPrice: 600,
-      discountPercent: 25,
-      hasDiscount: true,
-      imageAsset: PIZZA_ASSET,
-      image: PIZZA_ASSET,
-      description: "Wood-fired crust with rich sauce, melted mozzarella & pepperoni",
-    },
-    {
-      id: "deal-cheeseburger",
-      restaurantId: "habesha-kitchen-1",
-      restaurantName: "Habesha Kitchen",
-      name: "Classic Cheeseburger Deluxe",
-      price: 320,
-      originalPrice: 400,
-      discountPercent: 20,
-      hasDiscount: true,
-      imageAsset: BURGER_ASSET,
-      image: BURGER_ASSET,
-      description: "Handcrafted grilled beef patty with cheddar & special sauce",
-    },
-    {
-      id: "deal-shekla-tibs",
-      restaurantId: "habesha-kitchen-1",
-      restaurantName: "Habesha Kitchen",
-      name: "Sizzling Shekla Tibs",
-      price: 390,
-      originalPrice: 520,
-      discountPercent: 25,
-      hasDiscount: true,
-      imageAsset: HABESHA_ASSET,
-      image: HABESHA_ASSET,
-      description: "Tender beef cubes sautéed with rosemary, garlic & awaze",
-    },
-  ];
+  // Featured deals: real, orderable dishes from visible stores, biggest saving first.
+  // (Hard-coded demo deals pointed at stores that don't exist, so orders went nowhere.)
+  const featuredDeals = useMemo(() => {
+    const storeById = new Map((restaurants || []).map((r) => [r.id, r]));
+    return (dishes || [])
+      .filter((d) => isOrderableDish(d) && storeById.has(d.restaurantId) && Number(d.price) > 0)
+      .map((d) => {
+        const store = storeById.get(d.restaurantId);
+        return {
+          id: d.id,
+          restaurantId: d.restaurantId,
+          restaurantName: store?.name || store?.businessName || d.restaurantName || "",
+          name: d.name,
+          price: Number(d.price),
+          originalPrice: d.originalPrice,
+          discountPercent: d.discountPercent,
+          image: d.image || d.imgUrl || "",
+          description: d.description || "",
+          saving: Math.max(0, Number(d.originalPrice || 0) - Number(d.price || 0)),
+        };
+      })
+      .sort((x, y) => y.saving - x.saving)
+      .slice(0, 6);
+  }, [dishes, restaurants]);
 
   const handleQuickAddDeal = (deal) => {
     const r = (restaurants || []).find((it) => it.id === deal.restaurantId);
@@ -496,8 +446,7 @@ export default function Home() {
   };
 
 
-  const rawDisplayRestaurants =
-    restaurants.length > 0 ? restaurants : defaultRestaurants;
+  const rawDisplayRestaurants = restaurants || [];
 
   // Deduplicate restaurants by name to ensure clean, unique top restaurant list
   const seenNames = new Set();
@@ -881,6 +830,11 @@ export default function Home() {
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4 }}
               >
+                {featuredDeals.length === 0 ? (
+                  <Text style={{ color: "#64748B", fontSize: 12.5, fontWeight: "600", paddingVertical: 12 }}>
+                    {loading ? "Loading deals…" : "No deals right now — check back soon."}
+                  </Text>
+                ) : null}
                 {featuredDeals.map((deal) => {
                   const info = getItemDiscountInfo(deal);
                   return (
@@ -889,11 +843,8 @@ export default function Home() {
                       style={s.dishDealCard}
                       activeOpacity={0.88}
                       onPress={() => {
-                        const targetRes = displayRestaurants.find((r) =>
-                          r.id === deal.restaurantId ||
-                          String(r.name || "").toLowerCase().includes(String(deal.restaurantName || "").toLowerCase())
-                        ) || defaultRestaurants[0];
-                        openRestaurantDetails(targetRes);
+                        const targetRes = displayRestaurants.find((r) => r.id === deal.restaurantId);
+                        if (targetRes) openRestaurantDetails(targetRes);
                       }}
                     >
                       <View style={s.dishDealImgWrap}>

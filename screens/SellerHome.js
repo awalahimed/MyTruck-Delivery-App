@@ -398,9 +398,14 @@ export default function SellerHome() {
         }
         const updates = { status: newStatus, updatedAt: serverTimestamp() };
         if (newStatus === "ACCEPTED") updates.acceptedAt = serverTimestamp();
-        if (newStatus === "PREPARING") updates.preparingAt = serverTimestamp();
+        if (newStatus === "PREPARING") {
+          updates.preparingAt = serverTimestamp();
+          // Starts the driver proximity rings (closest drivers see it first)
+          updates.dispatchStartedAt = serverTimestamp();
+        }
         if (newStatus === "READY") {
           updates.readyAt = serverTimestamp();
+          if (!current.dispatchStartedAt) updates.dispatchStartedAt = serverTimestamp();
           // A driver may already have claimed it while it was cooking
           if (current.driverId) updates.status = "DRIVERACCEPTED";
         }

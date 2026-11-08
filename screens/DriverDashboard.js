@@ -70,6 +70,41 @@ const DRIVER_ACTIVE_STATUSES = ["PREPARING", "READY", "DRIVERACCEPTED", "DRIVERP
 
 const tsMillis = (t) => (t?.toMillis ? t.toMillis() : t?.seconds ? t.seconds * 1000 : 0);
 
+/* ── Proximity dispatch (works without Cloud Functions) ─────────────────
+ * Each claimable order opens in widening rings around its pickup point,
+ * measured from when dispatch started:
+ *   0–45s  → drivers within 3 km     45–90s → within 7 km     90s+ → everyone
+ * Drivers who don't share location only see orders once they reach "everyone",
+ * so nothing is ever stranded. A driver who released or passed on an order
+ * doesn't see it again for 5 minutes.
+ */
+const DISPATCH_WAVES = [
+  { untilSec: 45, maxKm: 3 },
+  { untilSec: 90, maxKm: 7 },
+];
+const REOFFER_AFTER_DECLINE_MS = 5 * 60 * 1000;
+
+const distanceKmBetween = (aLat, aLng, bLat, bLng) => {
+  const nums = [aLat, aLng, bLat, bLng].map(Number);
+  if (nums.some((n) => !Number.isFinite(n))) return null;
+  const [lat1, lng1, lat2, lng2] = nums;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const h =
+    Math.sin(toRad(lat2 - lat1) / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(toRad(lng2 - lng1) / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(h));
+};
+
+const dispatchStartMs = (o) =>
+  tsMillis(o.dispatchStartedAt) || tsMillis(o.preparingAt) || tsMillis(o.readyAt) || tsMillis(o.updatedAt) || tsMillis(o.createdAt);
+
+/** Max distance (km) at which this order is visible right now; Infinity = everyone. */
+const visibleRadiusKm = (o, nowMs) => {
+  const ageSec = (nowMs - dispatchStartMs(o)) / 1000;
+  const wave = DISPATCH_WAVES.find((w) => ageSec < w.untilSec);
+  return wave ? wave.maxKm : Infinity;
+};
+
 /** Order is waiting at the merchant for this driver (claimed while cooking, or ready). */
 const isAwaitingPickup = (o) => Boolean(o) && ["PREPARING", "READY", "DRIVERACCEPTED"].includes(o.status);
 
@@ -89,6 +124,11 @@ export default function DriverDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [gpsActive, setGpsActive] = useState(false);
   const [rawOpenOrders, setRawOpenOrders] = useState([]);
+  const [driverPos, setDriverPos] = useState(
+    Number.isFinite(Number(dbUser?.driverLat)) && Number.isFinite(Number(dbUser?.driverLng)) && dbUser?.driverLat
+      ? { latitude: Number(dbUser.driverLat), longitude: Number(dbUser.driverLng) }
+      : null
+  );
   const [nowMs, setNowMs] = useState(Date.now());
 
   // Modals state
@@ -298,6 +338,7 @@ export default function DriverDashboard() {
         (await Location.getLastKnownPositionAsync({ maxAge: 60000 })) ||
         (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }));
       if (!loc?.coords) return;
+      setDriverPos({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
       await updateDoc(doc(db, "user", user.uid), {
         driverLat: loc.coords.latitude,
         driverLng: loc.coords.longitude,
@@ -368,34 +409,56 @@ export default function DriverDashboard() {
 
   // Tick once a second only while some offer is counting down (drives countdown + expiry)
   const hasLiveOffer = rawOpenOrders.some((o) => o.offeredDriverId && tsMillis(o.offerExpiresAt) > nowMs);
+  const hasWideningOrder = rawOpenOrders.some(
+    (o) =>
+      visibleRadiusKm(o, nowMs) !== Infinity ||
+      ((o.declinedDriverIds || []).includes(user?.uid) && nowMs - dispatchStartMs(o) < REOFFER_AFTER_DECLINE_MS)
+  );
+  const tickMs = hasLiveOffer ? 1000 : hasWideningOrder ? 5000 : 0;
   useEffect(() => {
     setNowMs(Date.now());
-    if (!hasLiveOffer) return;
-    const tick = setInterval(() => setNowMs(Date.now()), 1000);
+    if (!tickMs) return;
+    const tick = setInterval(() => setNowMs(Date.now()), tickMs);
     return () => clearInterval(tick);
-  }, [hasLiveOffer, rawOpenOrders]);
+  }, [tickMs, rawOpenOrders]);
 
-  // Nearest-driver-first: an order offered to another driver stays hidden until
-  // that offer expires; an order offered to me is pinned on top with a countdown.
+  // Matching: exclusive offers (Cloud Function) > proximity rings > open pool.
   useEffect(() => {
     const visible = rawOpenOrders
-      .filter((o) => {
-        const offerLive = Boolean(o.offeredDriverId) && tsMillis(o.offerExpiresAt) > nowMs;
-        return !(offerLive && o.offeredDriverId !== user?.uid);
-      })
       .map((o) => ({
         ...o,
+        pickupDistanceKm: driverPos
+          ? distanceKmBetween(
+              driverPos.latitude,
+              driverPos.longitude,
+              o.restaurantLat ?? o.pickupCoords?.latitude,
+              o.restaurantLng ?? o.pickupCoords?.longitude
+            )
+          : null,
         offerSecondsLeft:
           o.offeredDriverId === user?.uid ? Math.max(0, Math.ceil((tsMillis(o.offerExpiresAt) - nowMs) / 1000)) : 0,
       }))
+      .filter((o) => {
+        // A live exclusive offer to someone else hides the order
+        const offerLive = Boolean(o.offeredDriverId) && tsMillis(o.offerExpiresAt) > nowMs;
+        if (offerLive) return o.offeredDriverId === user?.uid;
+        // I released / passed on it recently
+        if ((o.declinedDriverIds || []).includes(user?.uid) && nowMs - dispatchStartMs(o) < REOFFER_AFTER_DECLINE_MS) return false;
+        // Proximity rings
+        const radius = visibleRadiusKm(o, nowMs);
+        if (radius === Infinity) return true;
+        return o.pickupDistanceKm != null && o.pickupDistanceKm <= radius;
+      })
       .sort((a, b) => {
         if ((b.offerSecondsLeft > 0) !== (a.offerSecondsLeft > 0)) return b.offerSecondsLeft > 0 ? 1 : -1;
-        // Ready orders first, then newest
-        if ((a.status === "READY") !== (b.status === "READY")) return a.status === "READY" ? -1 : 1;
-        return tsMillis(b.createdAt) - tsMillis(a.createdAt);
+        // Closest pickup first (unknown distance last), then the order that has waited longest
+        const da = a.pickupDistanceKm ?? Number.POSITIVE_INFINITY;
+        const dbk = b.pickupDistanceKm ?? Number.POSITIVE_INFINITY;
+        if (Math.abs(da - dbk) > 0.3) return da - dbk;
+        return dispatchStartMs(a) - dispatchStartMs(b);
       });
     setAvailableOrders(visible);
-  }, [rawOpenOrders, nowMs, user?.uid]);
+  }, [rawOpenOrders, nowMs, user?.uid, driverPos]);
 
   // Pull-to-refresh: the list itself is live, so just refresh our location
   const fetchAvailable = useCallback(async () => {
@@ -735,6 +798,7 @@ export default function DriverDashboard() {
           driverLng: null,
           driverAcceptedAt: null,
           declinedDriverIds: arrayUnion(user.uid),
+          dispatchStartedAt: serverTimestamp(),
           driverRejectedAt: serverTimestamp(),
           driverRejectReason: rejectReason,
           updatedAt: serverTimestamp(),
@@ -958,7 +1022,9 @@ export default function DriverDashboard() {
                 <MaterialCommunityIcons name="inbox-outline" size={54} color="#CBD5E1" />
                 <Text style={s.emptyTitle}>No Orders Nearby Yet</Text>
                 <Text style={s.emptySub}>
-                  You are online and prioritized. New deliveries from restaurants and shops will appear here immediately.
+                  {driverPos
+                    ? "You're online. New orders reach the closest drivers first, then widen — keep the app open to see them."
+                    : "You're online, but location is off — you'll only see orders after nearby drivers had first chance. Turn on location to get priority."}
                 </Text>
               </View>
             ) : (
@@ -1046,7 +1112,8 @@ export default function DriverDashboard() {
                       {/* Distance & Duration Strip */}
                       <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 8, paddingTop: 6, borderTopWidth: 1, borderTopColor: "#F1F5F9" }}>
                         <Text style={{ fontSize: 11, color: "#64748B", fontWeight: "600" }}>
-                          📍 Distance: <Text style={{ color: DARK, fontWeight: "700" }}>{distKm} km</Text>
+                          📍 Pickup: <Text style={{ color: DARK, fontWeight: "700" }}>{order.pickupDistanceKm != null ? `${order.pickupDistanceKm.toFixed(1)} km away` : "—"}</Text>
+                          {"  ·  "}Trip: <Text style={{ color: DARK, fontWeight: "700" }}>{`${distKm} km`}</Text>
                         </Text>
                         <Text style={{ fontSize: 11, color: "#64748B", fontWeight: "600" }}>
                           ⏱️ Est. Time: <Text style={{ color: DARK, fontWeight: "700" }}>{etaMins} mins</Text>

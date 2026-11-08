@@ -33,6 +33,7 @@ import {
   serverTimestamp,
   setDoc,
   getDoc,
+  runTransaction,
   writeBatch,
   onSnapshot,
   deleteDoc,
@@ -42,7 +43,8 @@ import BackButton from "../components/ui/BackButton";
 import NotificationBell from "../components/ui/NotificationBell";
 import SmartImage from "../components/ui/SmartImage";
 import { triggerLocalTestAlert } from "../services/notificationService";
-import { calculateOrderFinancials, aggregateFinancialMetrics } from "../utils/pricing";
+import { calculateOrderFinancials, aggregateFinancialMetrics, calculateDistanceKm } from "../utils/pricing";
+import { notifyUser, notifyCustomer } from "../services/orderNotifications";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -916,42 +918,65 @@ export default function AdminDashboard() {
       const orderId = order.id || order.orderId;
       const mId = newMerchant.id || newMerchant.uid;
       const mName = newMerchant.businessName || newMerchant.name || "Partner Store";
-      const mType = newMerchant.sellerType || "restaurant";
+      const mType = newMerchant.businessType === "shop" || newMerchant.sellerType === "shop" ? "shop" : "restaurant";
+      const lat = Number(newMerchant.latitude ?? newMerchant.lat);
+      const lng = Number(newMerchant.longitude ?? newMerchant.lng);
+      const hasLocation = Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0;
+      const pickupAddress = newMerchant.address || mName;
 
       const updates = {
         restaurantId: mId,
+        merchantId: mId,
+        shopId: mType === "shop" ? mId : null,
+        merchantOwnerUid: newMerchant.ownerUid || null,
         restaurantName: mName,
+        restaurantImage: newMerchant.image || newMerchant.logoUrl || null,
+        restaurantAddress: pickupAddress,
+        restaurantPhone: newMerchant.phone || newMerchant.phoneNumber || "",
+        pickupAddress,
+        ...(hasLocation
+          ? { restaurantLat: lat, restaurantLng: lng, pickupCoords: { latitude: lat, longitude: lng } }
+          : {}),
+        pickupLocationVerified: hasLocation,
         sellerType: mType,
         status: "AWAITING_MERCHANT",
         rejectedByMerchant: false,
         merchantRejectionReason: "",
+        previousRestaurantId: order.restaurantId || null,
         reassignedByAdminAt: serverTimestamp(),
         reassignedByAdmin: dbUser?.email || "superadmin",
         updatedAt: serverTimestamp(),
       };
 
-      await updateDoc(doc(db, "orders", orderId), updates);
+      // Transaction: never revive a cancelled order or move one a store already accepted
+      const current = await runTransaction(db, async (tx) => {
+        const ref = doc(db, "orders", orderId);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error("Order not found.");
+        const o = snap.data();
+        if (o.status === "CANCELLED") throw new Error("The customer already cancelled this order.");
+        if (!["MERCHANT_REJECTED", "PENDING", "AWAITING_MERCHANT"].includes(o.status) || o.driverId) {
+          throw new Error("Only orders not yet accepted by a store can be reassigned.");
+        }
+        tx.update(ref, updates);
+        return { id: snap.id, ...o, ...updates };
+      });
 
-      // In-app notification to the new merchant
-      try {
-        const notifRef = doc(collection(db, "notifications"));
-        await setDoc(notifRef, {
-          id: notifRef.id,
-          recipientUid: mId,
-          userId: mId,
+      // Alert the new store's owner (recipient is the owner's account, not the store record)
+      if (newMerchant.ownerUid) {
+        notifyUser(newMerchant.ownerUid, {
           type: "NEW_ORDER_REASSIGNED",
-          category: "MERCHANT",
           title: "New Order Reassigned! 🔔",
-          body: `Order #${orderId.slice(-6).toUpperCase()} has been reassigned to your store. Please review and accept.`,
-          data: { targetRoute: "SellerHome", orderId },
-          isRead: false,
-          createdAt: serverTimestamp(),
+          body: `#${String(orderId).slice(0, 8).toUpperCase()} was assigned to your store. Please review and accept.`,
+          data: { targetRoute: "SellerHome" },
         });
-      } catch (_) {}
+      }
+      notifyCustomer(current, "New Store Assigned", `${mName} will prepare your order.`);
 
       Alert.alert(
         "Order Reassigned",
-        `Order #${orderId.slice(-6).toUpperCase()} has been successfully reassigned to ${mName}.`
+        `Order #${orderId.slice(-6).toUpperCase()} has been successfully reassigned to ${mName}.` +
+          (newMerchant.ownerUid ? "" : "\n\nNote: this store has no owner account linked, so it was not notified.")
       );
       setReassignModalOrder(null);
       setReassignTargetMerchant(null);
@@ -965,6 +990,22 @@ export default function AdminDashboard() {
       setReassigning(false);
     }
   };
+
+  // Alternative stores for a declined order: not the store that declined, nearest to the customer first
+  const reassignCandidates = useMemo(() => {
+    if (!reassignModalOrder) return [];
+    const dLat = Number(reassignModalOrder.deliveryLat ?? reassignModalOrder.deliveryCoords?.latitude);
+    const dLng = Number(reassignModalOrder.deliveryLng ?? reassignModalOrder.deliveryCoords?.longitude);
+    return approvedBusinesses
+      .filter((b) => b.id !== reassignModalOrder.restaurantId && b.status !== "BANNED")
+      .map((b) => {
+        const lat = Number(b.latitude ?? b.lat);
+        const lng = Number(b.longitude ?? b.lng);
+        const known = Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && Number.isFinite(dLat) && Number.isFinite(dLng);
+        return { ...b, distanceToCustomerKm: known ? calculateDistanceKm(lat, lng, dLat, dLng) : null };
+      })
+      .sort((x, y) => (x.distanceToCustomerKm ?? 9999) - (y.distanceToCustomerKm ?? 9999));
+  }, [approvedBusinesses, reassignModalOrder]);
 
   // Action: Update User Status (Activate, Suspend, Ban, Restore)
   const handleUpdateUserStatus = (targetUser, newStatus) => {
@@ -3817,14 +3858,14 @@ export default function AdminDashboard() {
                   </Text>
                 </View>
 
-                <Text style={s.sectionHeader}>Approved Platform Merchants ({approvedBusinesses.length})</Text>
+                <Text style={s.sectionHeader}>Nearest Approved Merchants ({reassignCandidates.length})</Text>
 
-                {approvedBusinesses.length === 0 ? (
+                {reassignCandidates.length === 0 ? (
                   <Text style={{ fontSize: 12, color: "#94A3B8", fontStyle: "italic", textAlign: "center", marginVertical: 12 }}>
                     No other approved merchants available.
                   </Text>
                 ) : (
-                  approvedBusinesses.map((b) => {
+                  reassignCandidates.map((b) => {
                     const isSelected = reassignTargetMerchant?.id === b.id;
                     return (
                       <TouchableOpacity
@@ -3843,7 +3884,12 @@ export default function AdminDashboard() {
                             </Text>
                           </View>
                         </View>
-                        <Text style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>📍 {b.address || "Addis Ababa"}</Text>
+                        <Text style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>
+                          {`📍 ${b.address || "Address not set"}`}
+                          {b.distanceToCustomerKm != null
+                            ? ` · ${b.distanceToCustomerKm.toFixed(1)} km from customer${b.distanceToCustomerKm > 15 ? " (beyond 15 km limit)" : ""}`
+                            : " · location not pinned"}
+                        </Text>
                         {isSelected && (
                           <Text style={{ fontSize: 11, fontWeight: "800", color: TEAL, marginTop: 4 }}>✓ Selected for Reassignment</Text>
                         )}

@@ -16,8 +16,14 @@ import AdminDashboard from "../screens/AdminDashboard";
 import SellerHome from "../screens/SellerHome";
 import DriverDashboard from "../screens/DriverDashboard";
 import NotificationCenterScreen from "../screens/NotificationCenterScreen";
+import { withRoleGate } from "../components/RoleGate";
 
 const Stack = createNativeStackNavigator();
+
+// Role dashboards are registered for everyone, so gate them (deep links, stray navigation)
+const GatedSellerHome = withRoleGate(SellerHome, (r) => r.isSeller || r.isStaffAdmin, "Store partners");
+const GatedDriverDashboard = withRoleGate(DriverDashboard, (r) => r.isDriver || r.isStaffAdmin, "Drivers");
+const GatedAdminDashboard = withRoleGate(AdminDashboard, (r) => r.isStaffAdmin, "Administrators");
 
 export default function AppStack({ initialRoute = "Home" }) {
   return (
@@ -37,11 +43,11 @@ export default function AppStack({ initialRoute = "Home" }) {
       {/* Role-specific home screens */}
       <Stack.Screen
         name="SellerHome"
-        component={SellerHome}
+        component={GatedSellerHome}
       />
       <Stack.Screen
         name="DriverDashboard"
-        component={DriverDashboard}
+        component={GatedDriverDashboard}
       />
 
       {/* Main Feature Screens */}
@@ -108,7 +114,7 @@ export default function AppStack({ initialRoute = "Home" }) {
       {/* Governance & Control Center */}
       <Stack.Screen
         name="AdminDashboard"
-        component={AdminDashboard}
+        component={GatedAdminDashboard}
       />
 
       {/* Centralized Notification Center */}
