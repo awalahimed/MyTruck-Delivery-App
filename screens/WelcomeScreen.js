@@ -87,14 +87,7 @@ export default function WelcomeScreen() {
         </TouchableOpacity>
 
         {/* 2. Continue with Phone (SMS OTP) */}
-        <TouchableOpacity
-          style={s.phoneBtn}
-          onPress={() => navigation.navigate("PhoneAuth")}
-          activeOpacity={0.88}
-        >
-          <MaterialCommunityIcons name="cellphone-message" size={18} color={TEAL} style={{ marginRight: 8 }} />
-          <Text style={s.phoneBtnTxt}>Continue with Phone (SMS OTP)</Text>
-        </TouchableOpacity>
+        {/* SMS-code sign-in disabled for security (see AuthContext.signInWithOtp) */}
 
         {/* 3. Already have an account? Sign In */}
         <View style={s.signInRow}>

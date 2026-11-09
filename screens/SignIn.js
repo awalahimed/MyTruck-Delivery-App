@@ -273,15 +273,7 @@ export default function SignIn() {
               </TouchableOpacity>
             )}
 
-            {/* Fast SMS Phone OTP Sign In */}
-            <TouchableOpacity
-              style={s.phoneOtpBtn}
-              onPress={() => navigation.navigate("PhoneAuth")}
-              activeOpacity={0.85}
-            >
-              <MaterialCommunityIcons name="cellphone-message" size={20} color={TEAL} style={{ marginRight: 8 }} />
-              <Text style={s.phoneOtpBtnTxt}>Sign In with Phone (SMS OTP)</Text>
-            </TouchableOpacity>
+            {/* SMS-code sign-in disabled for security (see AuthContext.signInWithOtp) */}
           </View>
 
           {/* New to MyTruck */}

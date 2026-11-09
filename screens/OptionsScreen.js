@@ -37,7 +37,7 @@ import { StatusBar } from "expo-status-bar";
 import { UserAuth } from "../contexts/AuthContext";
 import { auth, db } from "../firebase";
 import { doc, onSnapshot } from "firebase/firestore";
-import { sendPasswordResetEmail } from "firebase/auth";
+import { sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "firebase/auth";
 import BackButton from "../components/ui/BackButton";
 import NotificationBell from "../components/ui/NotificationBell";
 import {
@@ -125,6 +125,65 @@ export default function OptionsScreen() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [showPaymentsModal, setShowPaymentsModal] = useState(false);
   const [showSecurityModal, setShowSecurityModal] = useState(false);
+  // Phone accounts sign in with an internal address that can't receive reset emails
+  const isPhoneAccount = String(auth.currentUser?.email || user?.email || "").endsWith("@login.mytruck.local");
+  const [pwCurrent, setPwCurrent] = useState("");
+  const [pwNew, setPwNew] = useState("");
+  const [pwConfirm, setPwConfirm] = useState("");
+  const [pwSmsOnly, setPwSmsOnly] = useState(false);
+  const [pwSaving, setPwSaving] = useState(false);
+
+  const handleSetPassword = async () => {
+    const current = auth.currentUser;
+    if (!current?.email) {
+      Alert.alert("Not Signed In", "Please sign in again and retry.");
+      return;
+    }
+    if (pwNew.length < 8 || !/\d/.test(pwNew) || !/[A-Za-z]/.test(pwNew)) {
+      Alert.alert("Weak Password", "Use at least 8 characters with letters and numbers.");
+      return;
+    }
+    if (pwNew !== pwConfirm) {
+      Alert.alert("Passwords Don't Match", "Please type the same new password twice.");
+      return;
+    }
+    if (!pwSmsOnly && !pwCurrent) {
+      Alert.alert("Current Password", "Enter your current password, or tick that you've only used SMS codes.");
+      return;
+    }
+    setPwSaving(true);
+    try {
+      // Accounts created by the old SMS-code login have a legacy password built from the phone number;
+      // re-authenticating with it lets the owner replace it with a real one.
+      const legacy = `P@ss_${current.email.split("@")[0]}_MyTruck2026!`;
+      const credential = EmailAuthProvider.credential(current.email, pwSmsOnly ? legacy : pwCurrent);
+      await reauthenticateWithCredential(current, credential);
+      await updatePassword(current, pwNew);
+      setPwCurrent("");
+      setPwNew("");
+      setPwConfirm("");
+      setPwSmsOnly(false);
+      setShowSecurityModal(false);
+      Alert.alert(
+        "Password Updated ✓",
+        "Use your phone number and this password to sign in from now on. If you use fingerprint sign-in, turn it off and on again so it uses the new password."
+      );
+    } catch (err) {
+      const code = err?.code || "";
+      Alert.alert(
+        "Could Not Update Password",
+        code.includes("wrong-password") || code.includes("invalid-credential")
+          ? pwSmsOnly
+            ? "This account already has its own password. Untick the SMS option and enter your current password."
+            : "Your current password is incorrect."
+          : code.includes("requires-recent-login")
+          ? "For security, sign out and sign in again, then retry."
+          : err?.message || "Please try again."
+      );
+    } finally {
+      setPwSaving(false);
+    }
+  };
   const [showSupportModal, setShowSupportModal] = useState(false);
   const [showAboutModal, setShowAboutModal] = useState(false);
   const [resetEmailSent, setResetEmailSent] = useState(false);
@@ -889,13 +948,59 @@ export default function OptionsScreen() {
             </View>
 
             <Text style={{ fontSize: 13, fontWeight: "700", color: DARK, marginTop: 14, marginBottom: 6 }}>
-              Reset or Change Password
+              {isPhoneAccount ? "Set or Change Password" : "Reset or Change Password"}
             </Text>
+            {isPhoneAccount ? (
+              <View>
+                <Text style={{ fontSize: 12, color: "#64748B", lineHeight: 17, marginBottom: 10 }}>
+                  You sign in with your phone number and password. If you've only ever used SMS codes, tick the box below — no current password needed.
+                </Text>
+                <TouchableOpacity
+                  onPress={() => setPwSmsOnly((v) => !v)}
+                  style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}
+                  activeOpacity={0.8}
+                >
+                  <MaterialCommunityIcons name={pwSmsOnly ? "checkbox-marked" : "checkbox-blank-outline"} size={20} color={TEAL} />
+                  <Text style={{ fontSize: 12.5, color: DARK, marginLeft: 8, flex: 1 }}>I've only used SMS codes to sign in</Text>
+                </TouchableOpacity>
+                {!pwSmsOnly && (
+                  <TextInput
+                    style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, marginBottom: 8, color: DARK }}
+                    placeholder="Current password"
+                    placeholderTextColor="#94A3B8"
+                    secureTextEntry
+                    value={pwCurrent}
+                    onChangeText={setPwCurrent}
+                  />
+                )}
+                <TextInput
+                  style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, marginBottom: 8, color: DARK }}
+                  placeholder="New password (8+ letters & numbers)"
+                  placeholderTextColor="#94A3B8"
+                  secureTextEntry
+                  value={pwNew}
+                  onChangeText={setPwNew}
+                />
+                <TextInput
+                  style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, marginBottom: 12, color: DARK }}
+                  placeholder="Confirm new password"
+                  placeholderTextColor="#94A3B8"
+                  secureTextEntry
+                  value={pwConfirm}
+                  onChangeText={setPwConfirm}
+                />
+                <TouchableOpacity style={s.modalPrimaryBtn} disabled={pwSaving} onPress={handleSetPassword}>
+                  {pwSaving ? <ActivityIndicator color="white" /> : <Text style={s.modalPrimaryBtnTxt}>Save Password</Text>}
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            {!isPhoneAccount && (
             <Text style={{ fontSize: 12, color: "#64748B", lineHeight: 17, marginBottom: 14 }}>
               We will send a secure password reset link to your registered email: {user?.email || "your account email"}.
             </Text>
+            )}
 
-            {resetEmailSent ? (
+            {isPhoneAccount ? null : resetEmailSent ? (
               <View style={s.resetSuccessBox}>
                 <Text style={s.resetSuccessTxt}>✓ Password reset link has been sent to your email!</Text>
               </View>

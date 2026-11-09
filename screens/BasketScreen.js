@@ -227,10 +227,11 @@ export default function BasketScreen() {
   };
 
   // A real delivery location must be chosen; the fallback above is only for display
-  const hasDeliveryLocation = Boolean(
-    (reduxUser?.latitude && isWithinEthiopia(reduxUser.latitude, reduxUser.longitude)) ||
-      (dbUser?.latitude && isWithinEthiopia(dbUser.latitude, dbUser.longitude))
-  );
+  // New accounts are saved with a default Bole point (8.9806, 38.7578); that isn't a real choice.
+  const isRealPoint = (lat, lng) =>
+    Boolean(lat) && isWithinEthiopia(lat, lng) && !(Number(lat) === 8.9806 && Number(lng) === 38.7578);
+  const hasDeliveryLocation =
+    isRealPoint(reduxUser?.latitude, reduxUser?.longitude) || isRealPoint(dbUser?.latitude, dbUser?.longitude);
 
   // Filter merchant groups and items by search query
   const merchantGroups = useMemo(() => {

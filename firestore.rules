@@ -1,0 +1,339 @@
+rules_version = '2';
+
+// MyTruck Delivery — Firestore security rules
+//
+// Roles live on /user/{uid}.role: customer, pendingSeller, restaurant, shop,
+// driver, mini_admin, superadmin. Cloud Functions use the Admin SDK and are not
+// affected by these rules.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Identity ──────────────────────────────────────────────────────────
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function profilePath() { return /databases/$(database)/documents/user/$(uid()); }
+    function hasProfile() { return signedIn() && exists(profilePath()); }
+    function me() { return get(profilePath()).data; }
+    function myRole() { return hasProfile() ? me().get('role', '') : ''; }
+
+    // Platform owner accounts (exact matches — mirrors utils/roles.js)
+    function isOwnerAccount() {
+      return signedIn() && request.auth.token.email in [
+        'superadmin@mytruck.et', 'admin@mytruck.et', '251911000001@login.mytruck.local'
+      ];
+    }
+    function isStaff() {
+      return isOwnerAccount() || (hasProfile() && (
+        myRole() in ['superadmin', 'super_admin', 'admin', 'mini_admin', 'miniadmin'] ||
+        me().get('isAdmin', false) == true ||
+        me().get('isSuperAdmin', false) == true ||
+        me().get('isMiniAdmin', false) == true));
+    }
+    function isBlocked() {
+      return hasProfile() && me().get('accountStatus', '') in ['BANNED', 'SUSPENDED'] && !isStaff();
+    }
+    function isDriver() { return myRole() == 'driver' && !isBlocked(); }
+    function isSeller() { return myRole() in ['pendingSeller', 'restaurant', 'shop', 'seller'] && !isBlocked(); }
+
+    // A store id this account owns (same ids SellerHome queries with)
+    function ownsStoreId(storeId) {
+      return storeId == uid() || (hasProfile() && (
+        storeId == me().get('sellerId', '~') ||
+        storeId == me().get('restaurantId', '~') ||
+        storeId == me().get('shopId', '~')));
+    }
+    function ownsStoreDoc(storeId) {
+      return (exists(/databases/$(database)/documents/restaurants/$(storeId)) &&
+              get(/databases/$(database)/documents/restaurants/$(storeId)).data.get('ownerUid', '') == uid()) ||
+             (exists(/databases/$(database)/documents/shops/$(storeId)) &&
+              get(/databases/$(database)/documents/shops/$(storeId)).data.get('ownerUid', '') == uid());
+    }
+
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function onlyChanges(keys) { return changed().hasOnly(keys); }
+
+    // ── User profiles (/user is primary, /users is a legacy mirror) ───────
+    // Fields an account may never change about itself
+    function protectedProfileKeys() {
+      return ['role', 'isAdmin', 'isSuperAdmin', 'isMiniAdmin', 'accountStatus',
+              'approvalStatus', 'isApproved', 'banReason', 'sellerId', 'restaurantId', 'shopId'];
+    }
+    function validNewProfile() {
+      let d = request.resource.data;
+      return d.get('role', 'customer') in ['customer', 'pendingSeller'] &&
+             d.get('isAdmin', false) == false && d.get('isSuperAdmin', false) == false &&
+             d.get('isMiniAdmin', false) == false &&
+             !(d.get('accountStatus', '') in ['BANNED', 'SUSPENDED']) &&
+             d.get('approvalStatus', 'PENDING') == 'PENDING' && d.get('isApproved', false) == false;
+    }
+    function safeSelfUpdate() {
+      let oldRole = resource.data.get('role', '');
+      let newRole = request.resource.data.get('role', '');
+      return !changed().hasAny(protectedProfileKeys().removeAll(['role'])) &&
+             (newRole == oldRole ||
+              (oldRole == '' && newRole == 'customer') ||
+              (oldRole in ['', 'customer'] && newRole == 'pendingSeller'));
+    }
+
+    match /user/{userId} {
+      allow get: if signedIn() && (userId == uid() || isStaff());
+      // Own-email lookup (AuthContext fallback) and admin listing
+      allow list: if isStaff() || (signedIn() && resource.data.get('email', '') == request.auth.token.email);
+      allow create: if signedIn() && (isStaff() || (userId == uid() && (validNewProfile() || isOwnerAccount())));
+      allow update: if signedIn() && (isStaff() || (userId == uid() && (safeSelfUpdate() || isOwnerAccount())));
+      allow delete: if isStaff();
+
+      match /deviceTokens/{tokenId} {
+        allow read, write: if signedIn() && (userId == uid() || isStaff());
+      }
+    }
+    match /users/{userId} {
+      allow get: if signedIn() && (userId == uid() || isStaff());
+      allow list: if isStaff() || (signedIn() && resource.data.get('email', '') == request.auth.token.email);
+      allow create: if signedIn() && (isStaff() || (userId == uid() && (validNewProfile() || isOwnerAccount())));
+      allow update: if signedIn() && (isStaff() || (userId == uid() && (safeSelfUpdate() || isOwnerAccount())));
+      allow delete: if isStaff();
+
+      match /deviceTokens/{tokenId} {
+        allow read, write: if signedIn() && (userId == uid() || isStaff());
+      }
+    }
+
+    match /drivers/{driverId} {
+      allow read: if signedIn() && (driverId == uid() || isStaff());
+      allow write: if signedIn() && ((driverId == uid() && isDriver()) || isStaff());
+    }
+
+    // ── Orders ────────────────────────────────────────────────────────────
+    function isOrderCustomer() { return resource.data.userId == uid(); }
+    function isOrderStore() {
+      return resource.data.get('merchantOwnerUid', '') == uid() ||
+             ownsStoreId(resource.data.restaurantId) ||
+             ownsStoreDoc(resource.data.restaurantId);
+    }
+    function isOrderDriver() { return resource.data.get('driverId', null) == uid(); }
+
+    function validNewOrder() {
+      let d = request.resource.data;
+      return d.userId == uid() &&
+             d.status in ['PENDING', 'AWAITING_PAYMENT'] &&
+             d.paymentStatus in ['PENDING', 'UNPAID'] &&
+             d.get('driverId', null) == null &&
+             !('cashCollected' in d) && !('refundStatus' in d) && !('paidAt' in d) &&
+             d.total is number && d.subtotal is number && d.deliveryFee is number && d.serviceFee is number &&
+             d.deliveryFee >= 50 && d.serviceFee >= 0 && d.total >= 0 &&
+             // total must add up (promo discount is the only reduction)
+             math.abs(d.total - (d.subtotal + d.deliveryFee + d.serviceFee - d.get('promoDiscount', 0))) < 0.05;
+    }
+
+    // Customer: cancel before the store accepts and before a driver is assigned
+    function customerCancels() {
+      return isOrderCustomer() &&
+             resource.data.status in ['AWAITING_PAYMENT', 'PENDING', 'AWAITING_MERCHANT', 'MERCHANT_REJECTED'] &&
+             resource.data.get('driverId', null) == null &&
+             request.resource.data.status == 'CANCELLED' &&
+             request.resource.data.paymentStatus == resource.data.paymentStatus &&
+             onlyChanges(['status', 'cancelledBy', 'cancelReason', 'cancelledAt',
+                          'refundStatus', 'refundAmount', 'updatedAt']) &&
+             (!('refundStatus' in request.resource.data) || resource.data.paymentStatus == 'PAID');
+    }
+    // Customer: store the Chapa checkout link the server created
+    function customerSavesCheckout() {
+      return isOrderCustomer() && resource.data.status == 'AWAITING_PAYMENT' &&
+             onlyChanges(['chapaCheckoutUrl', 'updatedAt']);
+    }
+
+    // Store: accept / decline / prepare / ready, in order
+    function storeAdvances() {
+      let from = resource.data.status;
+      let to = request.resource.data.status;
+      let hasDriver = resource.data.get('driverId', null) != null;
+      return isOrderStore() && isSeller() &&
+             onlyChanges(['status', 'acceptedAt', 'preparingAt', 'readyAt', 'dispatchStartedAt', 'updatedAt',
+                          'rejectedByMerchant', 'merchantRejectionReason', 'rejectedAt']) &&
+             ((from in ['PENDING', 'AWAITING_MERCHANT'] && to in ['ACCEPTED', 'MERCHANT_REJECTED']) ||
+              (from == 'ACCEPTED' && to == 'PREPARING') ||
+              (from == 'PREPARING' && ((!hasDriver && to == 'READY') || (hasDriver && to == 'DRIVERACCEPTED'))));
+    }
+
+    // Driver actions
+    function driverClaims() {
+      let from = resource.data.status;
+      let offerLive = resource.data.get('offeredDriverId', null) != null &&
+                      resource.data.get('offerExpiresAt', null) != null &&
+                      resource.data.offerExpiresAt > request.time;
+      return isDriver() &&
+             resource.data.get('driverId', null) == null &&
+             from in ['PREPARING', 'READY'] &&
+             (!offerLive || resource.data.offeredDriverId == uid()) &&
+             request.resource.data.driverId == uid() &&
+             request.resource.data.status == (from == 'READY' ? 'DRIVERACCEPTED' : from) &&
+             onlyChanges(['driverId', 'driverName', 'driverPhone', 'status', 'driverAcceptedAt',
+                          'offeredDriverId', 'offerExpiresAt', 'updatedAt']);
+    }
+    function driverPassesOffer() {
+      return isDriver() && resource.data.get('offeredDriverId', null) == uid() &&
+             onlyChanges(['offeredDriverId', 'offerExpiresAt', 'declinedDriverIds']);
+    }
+    function driverSharesLocation() {
+      return isOrderDriver() &&
+             onlyChanges(['driverLat', 'driverLng', 'driverHeading', 'driverSpeed', 'driverLocationUpdatedAt']);
+    }
+    function driverPicksUp() {
+      return isOrderDriver() &&
+             resource.data.status in ['READY', 'DRIVERACCEPTED'] &&
+             request.resource.data.status == 'DRIVERPICKEDUP' &&
+             onlyChanges(['status', 'pickedUpAt', 'updatedAt']);
+    }
+    function driverCompletes() {
+      let cashOrder = resource.data.get('paymentMethod', '') != 'CHAPA';
+      return isOrderDriver() &&
+             resource.data.status == 'DRIVERPICKEDUP' &&
+             request.resource.data.status == 'COMPLETE' &&
+             onlyChanges(['status', 'deliveredAt', 'updatedAt',
+                          'paymentStatus', 'cashCollected', 'cashCollectedAmount', 'paidAt']) &&
+             // only a cash order can be marked paid by the driver
+             (request.resource.data.paymentStatus == resource.data.paymentStatus ||
+              (cashOrder && request.resource.data.paymentStatus == 'PAID'));
+    }
+    function driverReleases() {
+      return isOrderDriver() &&
+             resource.data.status in ['PREPARING', 'READY', 'DRIVERACCEPTED'] &&
+             request.resource.data.get('driverId', null) == null &&
+             request.resource.data.status == (resource.data.status == 'PREPARING' ? 'PREPARING' : 'READY') &&
+             onlyChanges(['status', 'driverId', 'driverName', 'driverPhone', 'driverLat', 'driverLng',
+                          'driverAcceptedAt', 'declinedDriverIds', 'dispatchStartedAt',
+                          'driverRejectedAt', 'driverRejectReason', 'updatedAt']);
+    }
+
+    match /orders/{orderId} {
+      allow read: if signedIn() && (
+        isStaff() ||
+        isOrderCustomer() ||
+        isOrderDriver() ||
+        (isDriver() && resource.data.status in ['PREPARING', 'READY']) ||
+        isOrderStore());
+      allow create: if signedIn() && !isBlocked() && validNewOrder();
+      allow update: if signedIn() && !isBlocked() && (
+        isStaff() ||
+        customerCancels() || customerSavesCheckout() ||
+        storeAdvances() ||
+        driverClaims() || driverPassesOffer() || driverSharesLocation() ||
+        driverPicksUp() || driverCompletes() || driverReleases());
+      allow delete: if isStaff();
+    }
+
+    // Order line items: written in the same batch as the order
+    match /orderDishes/{lineId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && !isBlocked() &&
+        getAfter(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.userId == uid();
+      allow update, delete: if isStaff();
+    }
+
+    // ── Catalog ───────────────────────────────────────────────────────────
+    function ownsItem() {
+      return resource.data.get('ownerUid', '') == uid() || resource.data.get('sellerId', '') == uid();
+    }
+    function itemStaysUnapproved() {
+      let d = request.resource.data;
+      return d.get('isApproved', false) == false && d.get('status', 'PENDING') == 'PENDING' &&
+             d.get('approvalStatus', 'PENDING') == 'PENDING' && d.get('isPublished', false) == false;
+    }
+    function approvalUntouched() {
+      return !changed().hasAny(['isApproved', 'status', 'approvalStatus', 'isPublished', 'lifecycleStatus', 'isActive']);
+    }
+
+    match /dishes/{dishId} {
+      allow read: if signedIn();
+      allow create: if isStaff() ||
+        (isSeller() && request.resource.data.get('ownerUid', '') == uid() && itemStaysUnapproved());
+      // Edits go back to review; toggling availability keeps approval as-is
+      allow update: if isStaff() ||
+        (isSeller() && ownsItem() && request.resource.data.get('ownerUid', '') == uid() &&
+         (approvalUntouched() || itemStaysUnapproved()));
+      allow delete: if isStaff() || (isSeller() && ownsItem());
+    }
+    match /products/{productId} {
+      allow read: if signedIn();
+      allow create: if isStaff() ||
+        (isSeller() && request.resource.data.get('ownerUid', '') == uid() && itemStaysUnapproved() &&
+         request.resource.data.get('isActive', false) == false);
+      allow update: if isStaff() ||
+        (isSeller() && ownsItem() && request.resource.data.get('ownerUid', '') == uid() &&
+         ((approvalUntouched()) || (itemStaysUnapproved() && request.resource.data.get('isActive', false) == false)));
+      allow delete: if isStaff() || (isSeller() && ownsItem());
+    }
+
+    // Stores: created at seller sign-up as PENDING; owners edit storefront details only
+    function newStoreValid() {
+      let d = request.resource.data;
+      return d.get('ownerUid', '') == uid() && d.get('status', '') == 'PENDING' && d.get('isVerified', false) == false;
+    }
+    function ownerEditsStorefront() {
+      return resource.data.get('ownerUid', '') == uid() &&
+             onlyChanges(['address', 'workingHours', 'image', 'profileImage', 'logoUrl',
+                          'latitude', 'longitude', 'updatedAt']);
+    }
+    match /restaurants/{storeId} {
+      allow read: if signedIn();
+      allow create: if isStaff() || (signedIn() && newStoreValid());
+      allow update: if isStaff() || (signedIn() && !isBlocked() && ownerEditsStorefront());
+      allow delete: if isStaff();
+    }
+    match /shops/{storeId} {
+      allow read: if signedIn();
+      allow create: if isStaff() || (signedIn() && newStoreValid());
+      allow update: if isStaff() || (signedIn() && !isBlocked() && ownerEditsStorefront());
+      allow delete: if isStaff();
+    }
+
+    match /sellerApplications/{appId} {
+      allow create: if signedIn() && request.resource.data.get('ownerUid', '') == uid() &&
+                       request.resource.data.get('status', '') == 'PENDING';
+      allow read: if signedIn() && (isStaff() || resource.data.get('ownerUid', '') == uid());
+      allow update, delete: if isStaff();
+    }
+
+    match /categories/{id} {
+      allow read: if signedIn();
+      allow write: if isStaff();
+    }
+    match /platformSettings/{id} {
+      allow read: if signedIn();
+      allow write: if isStaff();
+    }
+
+    // ── Money ─────────────────────────────────────────────────────────────
+    match /driver_payouts/{payoutId} {
+      allow read: if signedIn() && (isStaff() || resource.data.get('driverId', '') == uid());
+      allow write: if isStaff();
+    }
+
+    // ── Notifications ─────────────────────────────────────────────────────
+    match /notifications/{id} {
+      allow create: if signedIn() && !isBlocked();
+      allow read, update, delete: if signedIn() &&
+        (isStaff() || resource.data.get('recipientUid', '') == uid());
+    }
+    match /deviceTokens/{tokenId} {
+      allow create, update: if signedIn() && request.resource.data.get('uid', '') == uid();
+      allow read, delete: if signedIn() && (isStaff() || resource.data.get('uid', '') == uid());
+    }
+
+    // ── Sign-up SMS verification (interim; replace with a server-side OTP) ─
+    // Readable by id only (no listing) so codes can't be bulk-downloaded.
+    match /phoneOtpChallenges/{challengeId} {
+      allow get: if challengeId.matches('challenge_251[79][0-9]{8}');
+      allow create, update: if challengeId.matches('challenge_251[79][0-9]{8}') &&
+        request.resource.data.keys().hasOnly(['phoneNumber', 'cleanDigits', 'code', 'expiresAt',
+                                               'attempts', 'consumed', 'updatedAt', 'verifiedAt']);
+      allow list, delete: if false;
+    }
+
+    // Everything else is closed
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

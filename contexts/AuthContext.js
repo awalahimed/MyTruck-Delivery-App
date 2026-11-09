@@ -182,12 +182,12 @@ export const AuthContextProvder = ({ children }) => {
     const e = String(email || "").toLowerCase().trim();
     const p = String(phone || "").replace(/\D/g, "");
     const r = String(role || "").toLowerCase().trim();
+    // Exact owner accounts only (mirrors utils/roles.js and firestore.rules)
     return (
-      e.includes("251911000001") ||
-      e.includes("911000001") ||
+      e === "251911000001@login.mytruck.local" ||
       e === "superadmin@mytruck.et" ||
       e === "admin@mytruck.et" ||
-      p.includes("911000001") ||
+      p === "251911000001" ||
       r === "superadmin" ||
       r === "super_admin" ||
       r === "admin"
@@ -435,14 +435,18 @@ export const AuthContextProvder = ({ children }) => {
     if (!norm.isValid) return { isRegistered: false, error: norm.error };
 
     try {
-      // 1. Check Firestore /user collection by phone number
-      const q = query(
-        collection(db, "user"),
-        where("phoneNumber", "==", norm.intlNumber)
-      );
-      const snap = await getDocs(q);
-      if (!snap.empty) {
-        return { isRegistered: true };
+      // 1. Profile lookup only when signed in: user profiles are private, so a signed-out
+      //    device can't search them. Duplicate sign-ups are still rejected by Firebase Auth
+      //    ("email-already-in-use") when the account is created.
+      if (auth.currentUser) {
+        const q = query(
+          collection(db, "user"),
+          where("phoneNumber", "==", norm.intlNumber)
+        );
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          return { isRegistered: true };
+        }
       }
 
       // 2. Check Firebase Auth methods if available
@@ -769,6 +773,15 @@ export const AuthContextProvder = ({ children }) => {
       throw new Error("Enter a valid 6-digit verification code.");
     }
 
+    // SECURITY: SMS-code sign-in is disabled until codes are sent and checked by a server.
+    // The previous flow signed users in with a password derived from their phone number,
+    // which let anyone sign in as any phone user. Sign-up SMS verification still works.
+    throw new Error(
+      "SMS code sign-in is turned off for your security. Please sign in with your phone number and password. " +
+        "If you have only ever used SMS codes, open MyTruck on a phone where you're still signed in and set a " +
+        "password in Settings → Security, or contact MyTruck support."
+    );
+
     setAuthLoading(true);
     try {
       let customToken = null;
@@ -850,36 +863,8 @@ export const AuthContextProvder = ({ children }) => {
         const userCred = await signInWithCustomToken(auth, customToken);
         setUser(userCred.user);
       } else {
-        // Authenticate client session via standard phone auth account or anonymous fallback
-        const phoneAuthPass = `P@ss_${norm.cleanDigits}_MyTruck2026!`;
-        try {
-          const cred = await signInWithEmailAndPassword(auth, norm.authEmail, phoneAuthPass);
-          setUser(cred.user);
-          targetUid = cred.user.uid;
-        } catch (signInErr) {
-          if (signInErr?.code === "auth/user-not-found" || signInErr?.code === "auth/invalid-credential") {
-            try {
-              const cred = await createUserWithEmailAndPassword(auth, norm.authEmail, phoneAuthPass);
-              setUser(cred.user);
-              targetUid = cred.user.uid;
-            } catch (createErr) {
-              try {
-                const anonCred = await signInAnonymously(auth);
-                setUser(anonCred.user);
-                targetUid = anonCred.user.uid;
-              } catch (_) {
-                setUser({ uid: targetUid || norm.cleanDigits, email: norm.authEmail, phoneNumber: norm.intlNumber });
-              }
-            }
-          } else {
-            try {
-              const anonCred = await signInAnonymously(auth);
-              setUser(anonCred.user);
-            } catch (_) {
-              setUser({ uid: targetUid || norm.cleanDigits, email: norm.authEmail, phoneNumber: norm.intlNumber });
-            }
-          }
-        }
+        // Removed: deterministic-password sign-in, auto account creation and anonymous fallback.
+        throw new Error("SMS code sign-in is turned off. Please sign in with your phone number and password.");
       }
 
       // 5. Load authoritative profile and verify roles
