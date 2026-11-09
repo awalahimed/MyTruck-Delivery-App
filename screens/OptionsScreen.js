@@ -319,6 +319,8 @@ export default function OptionsScreen() {
     rawRole === "store";
   const isDriverUser =
     rawRole === "driver";
+  // Addresses and order history are customer features (staff may view them)
+  const showCustomerLinks = !isDriverUser && !isRestaurantUser && !isShopUser && !(rawRole === "pendingseller" || rawRole === "pending_seller");
 
   const currentRoleKey = isSuperAdminUser
     ? "superadmin"
@@ -583,9 +585,10 @@ export default function OptionsScreen() {
             <ChevronRightIcon size={18} color="#94A3B8" />
           </TouchableOpacity>
 
-          <View style={s.divider} />
+          {showCustomerLinks && <View style={s.divider} />}
 
           {/* Delivery Addresses */}
+          {showCustomerLinks && (
           <TouchableOpacity
             style={s.menuItem}
             activeOpacity={0.7}
@@ -602,6 +605,7 @@ export default function OptionsScreen() {
             </View>
             <ChevronRightIcon size={18} color="#94A3B8" />
           </TouchableOpacity>
+          )}
         </View>
 
         {/* SECTION 2: Orders & Payments */}
@@ -609,6 +613,7 @@ export default function OptionsScreen() {
           <Text style={s.sectionHeader}>Activity & Orders</Text>
 
           {/* My Orders */}
+          {showCustomerLinks && (
           <TouchableOpacity
             style={s.menuItem}
             activeOpacity={0.7}
@@ -625,8 +630,9 @@ export default function OptionsScreen() {
             </View>
             <ChevronRightIcon size={18} color="#94A3B8" />
           </TouchableOpacity>
+          )}
 
-          <View style={s.divider} />
+          {showCustomerLinks && <View style={s.divider} />}
 
           {/* Payment Methods */}
           <TouchableOpacity

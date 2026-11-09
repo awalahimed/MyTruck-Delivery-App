@@ -137,10 +137,23 @@ service cloud.firestore {
                           'refundStatus', 'refundAmount', 'updatedAt']) &&
              (!('refundStatus' in request.resource.data) || resource.data.paymentStatus == 'PAID');
     }
-    // Customer: store the Chapa checkout link the server created
+    // Customer: store the Chapa checkout link / reference for an unpaid order
     function customerSavesCheckout() {
       return isOrderCustomer() && resource.data.status == 'AWAITING_PAYMENT' &&
-             onlyChanges(['chapaCheckoutUrl', 'updatedAt']);
+             onlyChanges(['chapaCheckoutUrl', 'chapaMerchantReference', 'updatedAt']);
+    }
+    // Customer app (interim, while the server functions aren't deployed): after Chapa verifies a
+    // payment, forward the unpaid Chapa order to the store. Only ever AWAITING_PAYMENT -> PENDING.
+    function customerRecordsChapaPayment() {
+      return isOrderCustomer() &&
+             resource.data.status == 'AWAITING_PAYMENT' &&
+             resource.data.get('paymentMethod', '') == 'CHAPA' &&
+             resource.data.get('chapaMerchantReference', '') != '' &&
+             request.resource.data.status == 'PENDING' &&
+             request.resource.data.paymentStatus == 'PAID' &&
+             request.resource.data.chapaVerifiedAmount is number &&
+             request.resource.data.chapaVerifiedAmount + 0.01 >= resource.data.total &&
+             onlyChanges(['status', 'paymentStatus', 'paidAt', 'chapaVerifiedAmount', 'paymentVerifiedBy', 'updatedAt']);
     }
 
     // Store: accept / decline / prepare / ready, in order
@@ -216,7 +229,7 @@ service cloud.firestore {
       allow create: if signedIn() && !isBlocked() && validNewOrder();
       allow update: if signedIn() && !isBlocked() && (
         isStaff() ||
-        customerCancels() || customerSavesCheckout() ||
+        customerCancels() || customerSavesCheckout() || customerRecordsChapaPayment() ||
         storeAdvances() ||
         driverClaims() || driverPassesOffer() || driverSharesLocation() ||
         driverPicksUp() || driverCompletes() || driverReleases());

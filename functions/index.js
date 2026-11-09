@@ -75,6 +75,8 @@ async function loadOwnedOrders(uid, orderIds) {
 exports.createChapaCheckout = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (request) => {
   const uid = requireAuth(request);
   const data = request.data || {};
+  // Availability probe from the app (lets it hide Chapa when this function isn't deployed)
+  if (data.probe === true) return { ok: true };
   const orders = data.orderIds && data.orderIds.length ? await loadOwnedOrders(uid, data.orderIds) : [];
 
   let amount;

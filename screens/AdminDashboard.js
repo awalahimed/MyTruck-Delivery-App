@@ -105,6 +105,8 @@ export default function AdminDashboard() {
   const [payoutModalDriver, setPayoutModalDriver] = useState(null);
   const [payoutAmountInput, setPayoutAmountInput] = useState("");
   const [payoutRefInput, setPayoutRefInput] = useState("");
+  // "transfer" = MyTruck pays the driver; "cash" = driver hands in COD cash to MyTruck
+  const [payoutMode, setPayoutMode] = useState("transfer");
   const [submittingPayout, setSubmittingPayout] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -720,11 +722,15 @@ export default function AdminDashboard() {
       const transferred = driverPayouts
         .filter((p) => p.driverId === d.id && (p.status === "TRANSFERRED" || p.status === "COMPLETED" || p.status === "PAID"))
         .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const cashReceived = driverPayouts
+        .filter((p) => p.driverId === d.id && p.status === "CASH_RECEIVED")
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
       d.transferred = Number(transferred.toFixed(2));
+      d.cashReceived = Number(cashReceived.toFixed(2));
       d.cashHeld = Number(d.cashHeld.toFixed(2));
       // Drivers keep their share of COD fares from the cash; only online-paid earnings are paid out,
-      // and cash still held for MyTruck is netted off.
-      const net = d.onlineEarnings - transferred - d.cashHeld;
+      // cash still held for MyTruck is netted off, and cash already handed in is credited back.
+      const net = d.onlineEarnings - transferred - d.cashHeld + cashReceived;
       d.outstanding = Math.max(0, Number(net.toFixed(2)));
       d.owesPlatform = Math.max(0, Number((-net).toFixed(2)));
     }
@@ -2648,20 +2654,22 @@ export default function AdminDashboard() {
                       </Text>
                       <TouchableOpacity
                         onPress={() => {
+                          const cashMode = d.owesPlatform > 0;
+                          setPayoutMode(cashMode ? "cash" : "transfer");
                           setPayoutModalDriver(d);
-                          setPayoutAmountInput(String(d.outstanding > 0 ? d.outstanding : 0));
-                          setPayoutRefInput(`PAY-${Date.now().toString(36).toUpperCase()}`);
+                          setPayoutAmountInput(String(cashMode ? d.owesPlatform : d.outstanding > 0 ? d.outstanding : 0));
+                          setPayoutRefInput(`${cashMode ? "CASH" : "PAY"}-${Date.now().toString(36).toUpperCase()}`);
                         }}
                         style={{
-                          backgroundColor: d.outstanding > 0 ? TEAL : "#E2E8F0",
+                          backgroundColor: d.owesPlatform > 0 ? "#B45309" : d.outstanding > 0 ? TEAL : "#E2E8F0",
                           paddingHorizontal: 10,
                           paddingVertical: 5,
                           borderRadius: 8,
                         }}
                         activeOpacity={0.8}
                       >
-                        <Text style={{ fontSize: 11, fontWeight: "800", color: d.outstanding > 0 ? "#FFFFFF" : "#64748B" }}>
-                          {d.outstanding > 0 ? "Transfer Settlement" : "Settled ✓"}
+                        <Text style={{ fontSize: 11, fontWeight: "800", color: d.outstanding > 0 || d.owesPlatform > 0 ? "#FFFFFF" : "#64748B" }}>
+                          {d.owesPlatform > 0 ? "Record Cash Received" : d.outstanding > 0 ? "Transfer Settlement" : "Settled ✓"}
                         </Text>
                       </TouchableOpacity>
                     </View>
@@ -4240,7 +4248,7 @@ export default function AdminDashboard() {
             <View style={[s.modalCard, { maxHeight: "85%" }]}>
               <View style={s.modalHeader}>
                 <View style={{ flex: 1 }}>
-                  <Text style={s.modalTitle}>Transfer Driver Settlement</Text>
+                  <Text style={s.modalTitle}>{payoutMode === "cash" ? "Record Cash Received" : "Transfer Driver Settlement"}</Text>
                   <Text style={s.modalSubtitle}>
                     {payoutModalDriver.name} · Fleet Delivery Partner
                   </Text>
@@ -4266,16 +4274,18 @@ export default function AdminDashboard() {
                     </Text>
                   )}
                   <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 8, paddingTop: 6, borderTopWidth: 1, borderTopColor: "#DCFCE7" }}>
-                    <Text style={{ fontSize: 12, color: "#166534", fontWeight: "700" }}>Total Due to Rider:</Text>
+                    <Text style={{ fontSize: 12, color: "#166534", fontWeight: "700" }}>
+                      {payoutMode === "cash" ? "Cash Driver Owes MyTruck:" : "Total Due to Rider:"}
+                    </Text>
                     <Text style={{ fontSize: 14, fontWeight: "900", color: "#166534" }}>
-                      ETB {Number(payoutModalDriver.outstanding || 0).toFixed(2)}
+                      {`ETB ${Number((payoutMode === "cash" ? payoutModalDriver.owesPlatform : payoutModalDriver.outstanding) || 0).toFixed(2)}`}
                     </Text>
                   </View>
                 </View>
 
                 {/* Amount to Transfer Input */}
                 <Text style={{ fontSize: 12, fontWeight: "700", color: "#475569", marginBottom: 4 }}>
-                  Transfer Amount (ETB) *
+                  {payoutMode === "cash" ? "Cash Received (ETB) *" : "Transfer Amount (ETB) *"}
                 </Text>
                 <TextInput
                   style={{ borderWidth: 1.5, borderColor: "#CBD5E1", borderRadius: 10, padding: 12, fontSize: 16, fontWeight: "700", color: DARK, marginBottom: 12, backgroundColor: "#FFFFFF" }}
@@ -4288,7 +4298,7 @@ export default function AdminDashboard() {
 
                 {/* Reference / Tx Number Input */}
                 <Text style={{ fontSize: 12, fontWeight: "700", color: "#475569", marginBottom: 4 }}>
-                  Transfer Reference / Bank Tx Number *
+                  {payoutMode === "cash" ? "Receipt / Reference Number *" : "Transfer Reference / Bank Tx Number *"}
                 </Text>
                 <TextInput
                   style={{ borderWidth: 1.5, borderColor: "#CBD5E1", borderRadius: 10, padding: 12, fontSize: 14, color: DARK, marginBottom: 16, backgroundColor: "#FFFFFF" }}
@@ -4319,8 +4329,10 @@ export default function AdminDashboard() {
                         bankName: payoutModalDriver.bankName || "",
                         bankAccountNumber: payoutModalDriver.bankAccountNumber || "",
                         amount,
-                        referenceNumber: payoutRefInput.trim() || `PAY-${Date.now()}`,
-                        status: "TRANSFERRED",
+                        referenceNumber: payoutRefInput.trim() || `${payoutMode === "cash" ? "CASH" : "PAY"}-${Date.now()}`,
+                        // CASH_RECEIVED: driver handed COD cash to MyTruck (not a payout to the driver)
+                        status: payoutMode === "cash" ? "CASH_RECEIVED" : "TRANSFERRED",
+                        type: payoutMode === "cash" ? "CASH_HANDOVER" : "PAYOUT",
                         transferredBy: dbUser?.email || "Admin",
                         transferredAt: serverTimestamp(),
                         createdAt: serverTimestamp(),
@@ -4330,8 +4342,10 @@ export default function AdminDashboard() {
                       setDriverPayouts((prev) => [...prev, { id: payoutRef.id, ...newPayoutData }]);
                       setPayoutModalDriver(null);
                       Alert.alert(
-                        "Settlement Transferred! 💸",
-                        `Successfully transferred ETB ${amount.toFixed(2)} to ${payoutModalDriver.name}. Payout record saved.`
+                        payoutMode === "cash" ? "Cash Recorded ✓" : "Settlement Transferred! 💸",
+                        payoutMode === "cash"
+                          ? `Recorded ETB ${amount.toFixed(2)} received from ${payoutModalDriver.name}.`
+                          : `Successfully transferred ETB ${amount.toFixed(2)} to ${payoutModalDriver.name}. Payout record saved.`
                       );
                     } catch (e) {
                       Alert.alert("Payout Error", e?.message || "Could not record settlement transfer.");
@@ -4347,7 +4361,7 @@ export default function AdminDashboard() {
                     <ActivityIndicator size="small" color="#FFFFFF" />
                   ) : (
                     <Text style={{ color: "#FFFFFF", fontSize: 15, fontWeight: "800" }}>
-                      Confirm & Record Transfer
+                      {payoutMode === "cash" ? "Confirm Cash Received" : "Confirm & Record Transfer"}
                     </Text>
                   )}
                 </TouchableOpacity>

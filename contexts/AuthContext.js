@@ -187,7 +187,6 @@ export const AuthContextProvder = ({ children }) => {
       e === "251911000001@login.mytruck.local" ||
       e === "superadmin@mytruck.et" ||
       e === "admin@mytruck.et" ||
-      p === "251911000001" ||
       r === "superadmin" ||
       r === "super_admin" ||
       r === "admin"
@@ -196,11 +195,8 @@ export const AuthContextProvder = ({ children }) => {
 
   const sanitizeProfile = (profile, uid, userEmail) => {
     if (!profile) return profile;
-    const isSuper = isSuperAdminAuthority(
-      userEmail || profile.email,
-      profile.phoneNumber,
-      profile.role
-    );
+    // Sign-in email only: profile email/phone are user-editable and must not grant admin
+    const isSuper = isSuperAdminAuthority(userEmail || auth.currentUser?.email || "", "", profile.role);
     if (isSuper) {
       const updated = {
         ...profile,

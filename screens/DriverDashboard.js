@@ -561,15 +561,19 @@ export default function DriverDashboard() {
       });
 
       let totalTransferred = 0;
+      let cashHandedIn = 0;
       payoutSnap.forEach((p) => {
         const pData = p.data();
         if (pData.status === "TRANSFERRED" || pData.status === "COMPLETED" || pData.status === "PAID") {
           totalTransferred += Number(pData.amount || 0);
+        } else if (pData.status === "CASH_RECEIVED") {
+          cashHandedIn += Number(pData.amount || 0); // COD cash the driver already gave MyTruck
         }
       });
 
       // Positive: MyTruck owes the driver. Negative: the driver owes MyTruck (cash still held).
-      const netSettlement = onlineEarned - totalTransferred - cashHeld;
+      const netSettlement = onlineEarned - totalTransferred - cashHeld + cashHandedIn;
+      cashHeld = Math.max(0, cashHeld - cashHandedIn);
 
       history.sort((a, b) => {
         const tA = a.deliveredAt?.toMillis ? a.deliveredAt.toMillis() : (a.updatedAt?.seconds ? a.updatedAt.seconds * 1000 : 0);

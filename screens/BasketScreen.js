@@ -50,6 +50,7 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { notifyMerchant } from "../services/orderNotifications";
+import { startChapaCheckout, hasAppChapaKey } from "../services/chapaClient";
 import DeliveryLocationModal from "../components/DeliveryLocationModal";
 import BackButton from "../components/ui/BackButton";
 import { isWithinEthiopia } from "../utils/mapService";
@@ -127,12 +128,35 @@ export default function BasketScreen() {
     return unsub;
   }, []);
 
+  // Chapa runs through server functions (the secret key never ships in the app). If they
+  // aren't deployed (free Spark plan), hide the option instead of letting checkout fail.
+  // null = checking, true = reachable, false = not deployed. Network errors don't hide it.
+  const [chapaLive, setChapaLive] = useState(null);
+  useEffect(() => {
+    if (!paymentConfig.chapaEnabled || !user?.uid) return undefined;
+    let alive = true;
+    httpsCallable(getFunctions(app), "createChapaCheckout")({ probe: true })
+      .then(() => alive && setChapaLive(true))
+      .catch((e) => {
+        const code = String(e?.code || "");
+        if (!alive) return;
+        // not-found: function not deployed; failed-precondition/internal: deployed without the secret
+        if (code.includes("not-found") || code.includes("unimplemented") || code.includes("internal")) setChapaLive(false);
+        else setChapaLive(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [paymentConfig.chapaEnabled, user?.uid]);
+  const chapaAvailable = paymentConfig.chapaEnabled && (chapaLive !== false || hasAppChapaKey());
+  const chapaOffline = paymentConfig.chapaEnabled && !chapaAvailable;
+
   // Keep the chosen payment method valid when the admin turns a method on/off
   useEffect(() => {
-    if (paymentMethod === "CHAPA" && !paymentConfig.chapaEnabled && paymentConfig.codEnabled) setPaymentMethod("COD");
-    if (paymentMethod === "COD" && !paymentConfig.codEnabled && paymentConfig.chapaEnabled) setPaymentMethod("CHAPA");
-  }, [paymentConfig.chapaEnabled, paymentConfig.codEnabled, paymentMethod]);
-  const noPaymentMethod = !paymentConfig.chapaEnabled && !paymentConfig.codEnabled;
+    if (paymentMethod === "CHAPA" && !chapaAvailable && paymentConfig.codEnabled) setPaymentMethod("COD");
+    if (paymentMethod === "COD" && !paymentConfig.codEnabled && chapaAvailable) setPaymentMethod("CHAPA");
+  }, [chapaAvailable, paymentConfig.codEnabled, paymentMethod]);
+  const noPaymentMethod = !chapaAvailable && !paymentConfig.codEnabled;
 
   // Initialize selected merchants with all present in cart
   useEffect(() => {
@@ -621,11 +645,11 @@ export default function BasketScreen() {
         }
 
         let checkoutUrl = null;
+        let usedTxRef = txRef;
         try {
-          // Chapa is initialized server-side (functions/index.js) so the secret key never ships in the app.
-          const startCheckout = httpsCallable(getFunctions(app), "createChapaCheckout");
+          // Server functions first (secret stays off the phone); falls back to the app key if not deployed
           const fullName = String(dbUser?.fullName || user?.displayName || "Customer User");
-          const res = await startCheckout({
+          const started = await startChapaCheckout({
             amount: grandTotal,
             txRef,
             email: chapaEmail,
@@ -633,11 +657,13 @@ export default function BasketScreen() {
             lastName: fullName.split(" ").slice(1).join(" ") || "Client",
             phone: cleanPhone10,
             description: `Payment for ${plans.map((pl) => pl.group.merchantName).join(", ")}`,
-            returnUrl: "https://checkout.chapa.co/checkout/payment-receipt",
           });
-          checkoutUrl = res?.data?.checkoutUrl;
+          checkoutUrl = started.checkoutUrl;
+          usedTxRef = started.txRef;
         } catch (initErr) {
-          console.warn("Chapa init error:", initErr?.message);
+          console.warn("Chapa init error:", initErr?.code, initErr?.message);
+          const code = String(initErr?.code || "");
+          if (code.includes("not-found") || code.includes("unimplemented") || code === "chapa/unavailable") setChapaLive(false);
         }
 
         if (!checkoutUrl) {
@@ -650,7 +676,7 @@ export default function BasketScreen() {
           );
           return;
         }
-        chapa = { txRef, checkoutUrl };
+        chapa = { txRef: usedTxRef, checkoutUrl };
       }
 
       // ─── STEP 2: Create one order per store (AWAITING_PAYMENT for Chapa, PENDING for COD) ──
@@ -1036,7 +1062,7 @@ export default function BasketScreen() {
           <View style={s.sectionCard}>
             <Text style={s.sectionHeading}>Payment Method</Text>
 
-            {paymentConfig.chapaEnabled && (
+            {chapaAvailable && (
               <TouchableOpacity
                 style={[s.paymentOption, paymentMethod === "CHAPA" && s.paymentOptionActive]}
                 onPress={() => setPaymentMethod("CHAPA")}
@@ -1063,7 +1089,7 @@ export default function BasketScreen() {
 
             {paymentConfig.codEnabled && (
               <TouchableOpacity
-                style={[s.paymentOption, paymentMethod === "COD" && s.paymentOptionActive, paymentConfig.chapaEnabled && { marginTop: 10 }]}
+                style={[s.paymentOption, paymentMethod === "COD" && s.paymentOptionActive, chapaAvailable && { marginTop: 10 }]}
                 onPress={() => setPaymentMethod("COD")}
                 activeOpacity={0.85}
                 accessibilityRole="radio"
@@ -1084,6 +1110,12 @@ export default function BasketScreen() {
                   </View>
                 )}
               </TouchableOpacity>
+            )}
+
+            {chapaOffline && (
+              <Text style={[s.paymentSub, { marginTop: 10, color: "#B45309" }]}>
+                Online payment (Telebirr, CBE Birr, card) is temporarily unavailable. Please use Cash on Delivery.
+              </Text>
             )}
 
             {noPaymentMethod && (

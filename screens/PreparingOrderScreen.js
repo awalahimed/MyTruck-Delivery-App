@@ -24,6 +24,7 @@ import { StarIcon } from "react-native-heroicons/solid";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { db, app } from "../firebase";
 import { notifyMerchant } from "../services/orderNotifications";
+import { startChapaCheckout, verifyChapaPayment } from "../services/chapaClient";
 import { UserAuth } from "../contexts/AuthContext";
 import { getRoleInfo } from "../utils/roles";
 import { MAP_TILE_URL, isWithinEthiopia } from "../utils/mapService";
@@ -232,47 +233,44 @@ export default function PreparingOrderScreen() {
       Alert.alert("Order Information", "No active order found to pay for.");
       return;
     }
+    if (order?.status === "CANCELLED") {
+      Alert.alert("Order Cancelled", "This order was cancelled, so it can't be paid.");
+      return;
+    }
     const cleanOrderId = String(orderId).trim();
     setPayingNow(true);
 
     try {
-      // Always generate a fresh checkout session to avoid Chapa "Retry failed" lock
-      let checkoutUrl = null;
-      const txRef = `MT${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-
-      // Chapa is initialized server-side (functions/index.js) so the secret key never ships in the app.
-      try {
-        const startCheckout = httpsCallable(getFunctions(app), "createChapaCheckout");
-        const res = await startCheckout({
-          orderIds: [cleanOrderId],
-          txRef,
-          amount: Number(order?.total || 100),
-          email: order?.customerEmail || "customer@gmail.com",
-          currency: "ETB",
-          returnUrl: "https://checkout.chapa.co/checkout/payment-receipt",
-        });
-        checkoutUrl = res?.data?.checkoutUrl;
-      } catch (cfErr) {
-        console.warn("createChapaCheckout error:", cfErr?.message);
-      }
-
-      if (checkoutUrl) {
+      // Fresh checkout session each time (avoids Chapa's "retry failed" lock)
+      const fullName = String(order?.customerName || "Customer User");
+      const started = await startChapaCheckout({
+        orderIds: [cleanOrderId],
+        amount: Number(order?.total || 0),
+        email: order?.customerEmail,
+        firstName: fullName.split(" ")[0],
+        lastName: fullName.split(" ").slice(1).join(" "),
+        phone: order?.customerPhone,
+        description: `Order ${cleanOrderId.slice(0, 8).toUpperCase()}`,
+      });
+      // The server writes the reference itself; the app fallback must save it so payment can be verified
+      if (started.via === "app") {
         await updateDoc(doc(db, "orders", cleanOrderId), {
-          chapaCheckoutUrl: checkoutUrl,
-        }).catch(() => {});
-        setActiveCheckoutUrl(checkoutUrl);
-        setChapaModalVisible(true);
-      } else {
-        Alert.alert(
-          "Chapa Checkout",
-          "Could not initialize Chapa checkout. Please ensure your internet connection is active, or tap Check Payment Status."
-        );
+          chapaMerchantReference: started.txRef,
+          chapaCheckoutUrl: started.checkoutUrl,
+          updatedAt: serverTimestamp(),
+        });
       }
+      setOrder((prev) => ({ ...(prev || {}), chapaMerchantReference: started.txRef, chapaCheckoutUrl: started.checkoutUrl }));
+      setActiveCheckoutUrl(started.checkoutUrl);
+      setChapaModalVisible(true);
     } catch (err) {
-      console.warn("handlePayNowWithChapa note:", err?.message);
+      console.warn("handlePayNowWithChapa:", err?.code, err?.message);
+      const code = String(err?.code || "");
       Alert.alert(
-        "Chapa Payment",
-        err?.message || "Could not launch Chapa checkout. If you completed payment, tap Check Payment Status."
+        "Online Payment Unavailable",
+        code === "chapa/unavailable" || code.includes("not-found")
+          ? "Online payment is temporarily unavailable. You can cancel this order and order again with Cash on Delivery."
+          : err?.message || "Could not open Chapa checkout. Please check your connection and try again."
       );
     } finally {
       setPayingNow(false);
@@ -288,74 +286,55 @@ export default function PreparingOrderScreen() {
     setVerifying(true);
 
     try {
-      // 1. First check if Firestore document was already fulfilled as PAID by backend or webhook
+      // Already confirmed?
       const snap = await getDoc(doc(db, "orders", cleanOrderId));
       if (snap.exists() && snap.data()?.paymentStatus === "PAID") {
         setChapaModalVisible(false);
         setOrder((prev) => ({ ...(prev || {}), ...snap.data() }));
-        Alert.alert(
-          "Payment Confirmed",
-          "Your payment has been successfully received and verified! The restaurant is preparing your order."
-        );
-        setVerifying(false);
+        Alert.alert("Payment Confirmed", "Your payment has been received. The store is reviewing your order.");
         return;
       }
 
-      // 2. Query secure backend Cloud Function
-      let data = null;
-      try {
-        const fn = httpsCallable(getFunctions(app), "verifyChapaPayment");
-        const res = await fn({
-          orderId: cleanOrderId,
-          tx_ref: order?.chapaMerchantReference || "",
-        });
-        data = res?.data;
-      } catch (cfErr) {
-        console.warn("verifyChapaPayment CF note:", cfErr?.message);
-      }
+      const txRef = snap.data()?.chapaMerchantReference || order?.chapaMerchantReference || "";
+      const result = await verifyChapaPayment({ orderId: cleanOrderId, txRef, uid: authUser?.uid });
 
-      if (data?.verified || data?.paymentStatus === "PAID") {
+      if (result?.verified || result?.paymentStatus === "PAID") {
         setChapaModalVisible(false);
         setOrder((prev) => ({ ...(prev || {}), paymentStatus: "PAID", status: "PENDING" }));
-        Alert.alert(
-          "Payment Confirmed",
-          "Your payment was confirmed by Chapa! The restaurant has received your order."
+        (result.orders || []).forEach((o) =>
+          notifyMerchant(o, "New Paid Order 🛎️", `ETB ${Number(o.total || 0).toFixed(2)} · paid with Chapa`)
         );
-        setVerifying(false);
+        Alert.alert("Payment Confirmed 🎉", "Chapa confirmed your payment. The store has received your order.");
         return;
       }
 
-      if (data?.paymentStatus === "FAILED") {
-        Alert.alert(
-          "Payment Unsuccessful",
-          "The transaction was not completed. You can retry paying with Chapa.",
-          [
-            { text: "Dismiss", style: "cancel" },
-            { text: "Retry Payment", onPress: () => handlePayNowWithChapa() },
-          ]
-        );
-        setVerifying(false);
+      if (result?.paymentStatus === "FAILED") {
+        Alert.alert("Payment Unsuccessful", "The transaction was not completed. You can retry paying with Chapa.", [
+          { text: "Dismiss", style: "cancel" },
+          { text: "Retry Payment", onPress: () => handlePayNowWithChapa() },
+        ]);
         return;
       }
 
-      // 4. Payment still pending confirmation with bank / mobile wallet
+      if (result?.paymentStatus === "AMOUNT_MISMATCH") {
+        Alert.alert(
+          "Payment Amount Mismatch",
+          "Chapa reports a different amount than your order total. Please contact MyTruck support with your payment receipt."
+        );
+        return;
+      }
+
       Alert.alert(
         "Payment In Progress",
-        "Payment is currently processing with your bank or mobile wallet. If you authorized via Telebirr or CBE Birr, please allow 15-30 seconds and tap 'Check Payment Status' again.",
+        "Your payment is still processing with your bank or wallet. If you paid with Telebirr or CBE Birr, wait 15–30 seconds and tap 'Check Payment Status' again.",
         [
           { text: "OK", style: "cancel" },
-          {
-            text: "Pay Now with Chapa",
-            onPress: () => handlePayNowWithChapa(),
-          },
+          { text: "Pay Now with Chapa", onPress: () => handlePayNowWithChapa() },
         ]
       );
     } catch (err) {
-      console.warn("handleVerifyChapa error:", err?.message);
-      Alert.alert(
-        "Payment Processing",
-        "Payment confirmation is currently updating. Please allow a few moments and tap Check Payment Status."
-      );
+      console.warn("handleVerifyChapa error:", err?.code, err?.message);
+      Alert.alert("Payment Check", "Couldn't check the payment right now. Please wait a moment and tap Check Payment Status again.");
     } finally {
       setVerifying(false);
     }
