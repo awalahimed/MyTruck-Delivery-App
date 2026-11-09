@@ -86,7 +86,8 @@ export async function startChapaCheckout({
       ...base,
       customization: {
         title: "MyTruck Delivery",
-        description: String(description || "MyTruck order").replace(/[^A-Za-z0-9 ._,-]/g, "").slice(0, 50),
+        // Chapa allows only letters, numbers, spaces, hyphens, underscores and dots here
+        description: String(description || "MyTruck order").replace(/[^A-Za-z0-9 ._-]/g, " ").replace(/\s+/g, " ").trim().slice(0, 50) || "MyTruck order",
       },
     }),
   });
@@ -96,7 +97,10 @@ export async function startChapaCheckout({
   }
   const checkoutUrl = result?.data?.checkout_url;
   if (!checkoutUrl) {
-    const err = new Error(result?.message ? String(result.message) : "Could not start Chapa checkout.");
+    // Chapa returns validation errors as an object or a string; surface it so problems are visible
+    const raw = result?.message;
+    const detail = typeof raw === "string" ? raw : raw ? JSON.stringify(raw) : "";
+    const err = new Error(detail ? `Chapa: ${detail}` : "Could not start Chapa checkout (no response from Chapa).");
     err.code = "chapa/initialize-failed";
     throw err;
   }

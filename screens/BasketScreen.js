@@ -646,6 +646,7 @@ export default function BasketScreen() {
 
         let checkoutUrl = null;
         let usedTxRef = txRef;
+        let chapaErrorText = "";
         try {
           // Server functions first (secret stays off the phone); falls back to the app key if not deployed
           const fullName = String(dbUser?.fullName || user?.displayName || "Customer User");
@@ -662,6 +663,7 @@ export default function BasketScreen() {
           usedTxRef = started.txRef;
         } catch (initErr) {
           console.warn("Chapa init error:", initErr?.code, initErr?.message);
+          chapaErrorText = String(initErr?.message || "");
           const code = String(initErr?.code || "");
           if (code.includes("not-found") || code.includes("unimplemented") || code === "chapa/unavailable") setChapaLive(false);
         }
@@ -671,7 +673,11 @@ export default function BasketScreen() {
           setIsSubmitting(false);
           Alert.alert(
             "Payment Unavailable",
-            "Online payment could not be started. Please try again, or choose Cash on Delivery if it is available.",
+            `Online payment could not be started.${chapaErrorText ? `
+
+Reason: ${chapaErrorText.slice(0, 200)}` : ""}
+
+Please try again, or choose Cash on Delivery.`,
             [{ text: "Retry", onPress: handlePlaceOrder }, { text: "Cancel", style: "cancel" }]
           );
           return;
