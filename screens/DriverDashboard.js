@@ -121,6 +121,10 @@ export default function DriverDashboard() {
   const [earningsRange, setEarningsRange] = useState("Today");
   const [loadingAvailable, setLoadingAvailable] = useState(false);
   const [loadingActive, setLoadingActive] = useState(true);
+  const [activeError, setActiveError] = useState("");
+  const [activeRetry, setActiveRetry] = useState(0);
+  const [pickingUp, setPickingUp] = useState(false);
+  const [completing, setCompleting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [gpsActive, setGpsActive] = useState(false);
   const [rawOpenOrders, setRawOpenOrders] = useState([]);
@@ -466,33 +470,41 @@ export default function DriverDashboard() {
   }, [reportDriverLocation]);
 
   // Listen for active delivery in real-time
+  // (No orderBy: the project has no composite index for driverId+status+updatedAt,
+  //  which made this listener fail silently and the Active Mission tab stay empty.
+  //  Equality + "in" filters need no composite index; newest is picked here.)
   useEffect(() => {
     if (!user?.uid) return;
+    setLoadingActive(true);
+    setActiveError("");
     const q = query(
       collection(db, "orders"),
       where("driverId", "==", user.uid),
-      where("status", "in", DRIVER_ACTIVE_STATUSES),
-      orderBy("updatedAt", "desc"),
-      limit(1)
+      where("status", "in", DRIVER_ACTIVE_STATUSES)
     );
     const unsub = onSnapshot(
       q,
       (snap) => {
-        if (!snap.empty) {
-          const d = snap.docs[0];
-          setActiveOrder({ id: d.id, ...d.data() });
-        } else {
-          setActiveOrder(null);
-        }
+        const mine = [];
+        snap.forEach((d) => mine.push({ id: d.id, ...d.data() }));
+        // Most advanced first (on the road beats waiting), then most recently updated
+        const rank = { DRIVERPICKEDUP: 3, DRIVERACCEPTED: 2, READY: 2, PREPARING: 1 };
+        mine.sort(
+          (a, b) =>
+            (rank[b.status] || 0) - (rank[a.status] || 0) ||
+            tsMillis(b.updatedAt || b.driverAcceptedAt) - tsMillis(a.updatedAt || a.driverAcceptedAt)
+        );
+        setActiveOrder(mine[0] || null);
         setLoadingActive(false);
       },
       (e) => {
-        console.warn("DriverDashboard: active order listener note:", e?.message);
+        console.warn("DriverDashboard: active order listener error:", e?.message);
+        setActiveError(e?.message || "Could not load your active delivery.");
         setLoadingActive(false);
       }
     );
     return unsub;
-  }, [user?.uid]);
+  }, [user?.uid, activeRetry]);
 
   // Earnings summary and completed orders history with authoritative 20% platform cut
   const fetchEarnings = useCallback(async () => {
@@ -690,7 +702,8 @@ export default function DriverDashboard() {
 
   // Pickup: only the assigned driver, only once the merchant has marked it ready
   const updateOrderStatus = async (orderId, newStatus) => {
-    if (newStatus !== "DRIVERPICKEDUP") return;
+    if (newStatus !== "DRIVERPICKEDUP" || pickingUp) return;
+    setPickingUp(true);
     try {
       const picked = await runTransaction(db, async (tx) => {
         const ref = doc(db, "orders", orderId);
@@ -708,8 +721,16 @@ export default function DriverDashboard() {
         return { id: snap.id, ...o };
       });
       notifyCustomer(picked, "On the Way 🛵", "Your driver picked up your order and is heading to you. Have your delivery PIN ready.");
+      Alert.alert(
+        "Pickup Confirmed ✓",
+        picked.paymentStatus === "PAID"
+          ? "Head to the customer. This order is already paid online."
+          : `Head to the customer and collect ETB ${Number(picked.total || 0).toFixed(2)} in cash.`
+      );
     } catch (e) {
       Alert.alert("Update Error", e?.message || "Could not update delivery status.");
+    } finally {
+      setPickingUp(false);
     }
   };
 
@@ -725,7 +746,8 @@ export default function DriverDashboard() {
       setOtpError("Please enter the 4-digit PIN provided by customer.");
       return;
     }
-    if (!activeOrder?.id) return;
+    if (!activeOrder?.id || completing) return;
+    setCompleting(true);
 
     try {
       // PIN is checked against the live order inside the transaction; there is no bypass code.
@@ -773,6 +795,8 @@ export default function DriverDashboard() {
       }
       setOtpModalVisible(false);
       Alert.alert("Delivery Completion Error", e?.message || "Could not complete delivery.");
+    } finally {
+      setCompleting(false);
     }
   };
 
@@ -812,6 +836,18 @@ export default function DriverDashboard() {
       setRejectModalVisible(false);
       Alert.alert("Error", e?.message || "Could not release order.");
     }
+  };
+
+  // Turn-by-turn directions in Google Maps (app if installed, otherwise browser)
+  const openDirections = (lat, lng, label) => {
+    const la = Number(lat);
+    const ln = Number(lng);
+    if (!Number.isFinite(la) || !Number.isFinite(ln) || la === 0) {
+      Alert.alert("Location Unavailable", `${label || "This place"} has no map location. Use the address or call instead.`);
+      return;
+    }
+    const url = `https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=driving`;
+    Linking.openURL(url).catch(() => Alert.alert("Maps Unavailable", "Could not open maps on this phone."));
   };
 
   const makeCall = (phone) => {
@@ -1150,6 +1186,15 @@ export default function DriverDashboard() {
                 <ActivityIndicator size="large" color={TEAL} />
                 <Text style={s.emptySub}>Retrieving active mission details…</Text>
               </View>
+            ) : activeError ? (
+              <View style={s.emptyCard}>
+                <MaterialCommunityIcons name="wifi-alert" size={54} color="#F59E0B" />
+                <Text style={s.emptyTitle}>Couldn't Load Your Delivery</Text>
+                <Text style={s.emptySub}>Check your connection and try again.</Text>
+                <TouchableOpacity onPress={() => setActiveRetry((n) => n + 1)} style={s.emptyActionBtn}>
+                  <Text style={s.emptyActionBtnTxt}>Retry</Text>
+                </TouchableOpacity>
+              </View>
             ) : !activeOrder ? (
               <View style={s.emptyCard}>
                 <MaterialCommunityIcons name="truck-check-outline" size={54} color="#CBD5E1" />
@@ -1206,14 +1251,38 @@ export default function DriverDashboard() {
                   <Text style={s.sectionName}>{activeOrder.restaurantName || "Partner Store"}</Text>
                   <Text style={s.sectionAddress}>{activeOrder.pickupAddress || activeOrder.restaurantAddress || "Addis Ababa"}</Text>
 
-                  {Boolean(activeOrder.restaurantPhone) && (
-                    <TouchableOpacity
-                      onPress={() => makeCall(activeOrder.restaurantPhone)}
-                      style={s.sectionCallBtn}
-                    >
-                      <MaterialCommunityIcons name="phone" size={14} color={TEAL} />
-                      <Text style={s.sectionCallBtnTxt}>Call Restaurant ({activeOrder.restaurantPhone})</Text>
-                    </TouchableOpacity>
+                  <View style={{ flexDirection: "row", gap: 8, marginTop: 6 }}>
+                    {isAwaitingPickup(activeOrder) && (
+                      <TouchableOpacity
+                        onPress={() =>
+                          openDirections(
+                            activeOrder.restaurantLat ?? activeOrder.pickupCoords?.latitude,
+                            activeOrder.restaurantLng ?? activeOrder.pickupCoords?.longitude,
+                            activeOrder.restaurantName
+                          )
+                        }
+                        style={[s.sectionCallBtn, { flex: 1, backgroundColor: "#E6F7F1", borderColor: TEAL }]}
+                        activeOpacity={0.8}
+                      >
+                        <MaterialCommunityIcons name="navigation-variant" size={16} color={TEAL} />
+                        <Text style={[s.sectionCallBtnTxt, { color: TEAL, fontWeight: "800" }]}>Navigate to Store</Text>
+                      </TouchableOpacity>
+                    )}
+                    {Boolean(activeOrder.restaurantPhone) && (
+                      <TouchableOpacity
+                        onPress={() => makeCall(activeOrder.restaurantPhone)}
+                        style={[s.sectionCallBtn, { flex: 1 }]}
+                        activeOpacity={0.8}
+                      >
+                        <MaterialCommunityIcons name="phone" size={14} color={TEAL} />
+                        <Text style={s.sectionCallBtnTxt}>Call Store</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  {activeOrder.pickupLocationVerified === false && (
+                    <Text style={{ fontSize: 11, color: "#B45309", marginTop: 6 }}>
+                      This store hasn't pinned its exact location yet — confirm the address by phone.
+                    </Text>
                   )}
                 </View>
 
@@ -1222,8 +1291,8 @@ export default function DriverDashboard() {
                   const custName = activeOrder.customerName || `${activeOrder.userFirstName || ""} ${activeOrder.userLastName || ""}`.trim() || "Customer";
                   const custPhone = activeOrder.customerPhone || activeOrder.userPhoneNumber || activeOrder.phone || "";
                   const dropAddress = activeOrder.dropoffAddress || activeOrder.deliveryAddress || activeOrder.userAddress || "Standard delivery address";
-                  const tripDistance = activeOrder.deliveryDistanceKm || 3.5;
-                  const tripEta = activeOrder.deliveryEtaMinutes || 25;
+                  const tripDistance = activeOrder.deliveryDistanceKm != null ? activeOrder.deliveryDistanceKm : "—";
+                  const tripEta = activeOrder.deliveryEtaMinutes != null ? activeOrder.deliveryEtaMinutes : "—";
                   const deliveryFeeVal = Number(activeOrder.deliveryFee || 60);
                   const commVal = Number(activeOrder.deliveryCommission != null ? activeOrder.deliveryCommission : (deliveryFeeVal * 0.20));
                   const riderEarningsVal = Number(activeOrder.driverEarnings != null ? activeOrder.driverEarnings : (deliveryFeeVal - commVal));
@@ -1248,6 +1317,23 @@ export default function DriverDashboard() {
                             </Text>
                           </View>
                         </View>
+
+                        {activeOrder.status === "DRIVERPICKEDUP" && (
+                          <TouchableOpacity
+                            onPress={() =>
+                              openDirections(
+                                activeOrder.deliveryLat ?? activeOrder.deliveryCoords?.latitude,
+                                activeOrder.deliveryLng ?? activeOrder.deliveryCoords?.longitude,
+                                "The customer"
+                              )
+                            }
+                            style={[s.sectionCallBtn, { backgroundColor: "#E6F7F1", borderColor: TEAL, marginBottom: 6 }]}
+                            activeOpacity={0.8}
+                          >
+                            <MaterialCommunityIcons name="navigation-variant" size={16} color={TEAL} />
+                            <Text style={[s.sectionCallBtnTxt, { color: TEAL, fontWeight: "800" }]}>Navigate to Customer</Text>
+                          </TouchableOpacity>
+                        )}
 
                         {/* Customer Contact Actions: Call & SMS */}
                         {Boolean(custPhone) && (
@@ -1325,13 +1411,15 @@ export default function DriverDashboard() {
                     <View style={{ flexDirection: "row", gap: 10 }}>
                       <TouchableOpacity
                         onPress={() => updateOrderStatus(activeOrder.id, "DRIVERPICKEDUP")}
-                        disabled={activeOrder.status === "PREPARING"}
+                        disabled={activeOrder.status === "PREPARING" || pickingUp}
                         style={[
                           s.primaryActionBtn,
                           { backgroundColor: activeOrder.status === "PREPARING" ? "#94A3B8" : ORANGE },
+                          pickingUp && { opacity: 0.7 },
                         ]}
                         activeOpacity={0.8}
                       >
+                        {pickingUp ? <ActivityIndicator size="small" color="#FFFFFF" /> : null}
                         <MaterialCommunityIcons
                           name={activeOrder.status === "PREPARING" ? "chef-hat" : "package-variant-closed"}
                           size={18}
@@ -1696,8 +1784,9 @@ export default function DriverDashboard() {
               <TouchableOpacity
                 style={s.verifyBtn}
                 onPress={handleVerifyOtpAndComplete}
+                disabled={completing}
               >
-                <Text style={s.verifyBtnTxt}>Verify & Complete</Text>
+                <Text style={s.verifyBtnTxt}>{completing ? "Verifying…" : "Verify & Complete"}</Text>
               </TouchableOpacity>
             </View>
           </View>

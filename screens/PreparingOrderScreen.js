@@ -551,8 +551,10 @@ export default function PreparingOrderScreen() {
                 ? "Awaiting Online Payment"
                 : order?.status === "DRIVERPICKEDUP" || order?.status === "ON_THE_WAY"
                 ? "Your order is on the way"
-                : order?.status === "DRIVERACCEPTED" || order?.status === "READY"
+                : order?.status === "DRIVERACCEPTED" || (order?.status === "READY" && order?.driverId)
                 ? "Driver is picking up your order"
+                : order?.status === "READY"
+                ? "Your order is ready"
                 : order?.status === "ACCEPTED" || order?.status === "PREPARING"
                 ? "Restaurant is preparing your order"
                 : "Order Placed & Awaiting Confirmation"}
@@ -568,8 +570,10 @@ export default function PreparingOrderScreen() {
                 ? "Please complete payment via Telebirr, CBE, or Card to begin preparation."
                 : order?.status === "DRIVERPICKEDUP" || order?.status === "ON_THE_WAY"
                 ? "Driver is heading to your location"
-                : order?.status === "DRIVERACCEPTED" || order?.status === "READY"
+                : order?.status === "DRIVERACCEPTED" || (order?.status === "READY" && order?.driverId)
                 ? "Your driver is at or heading to the store"
+                : order?.status === "READY"
+                ? "Packed and waiting — assigning the nearest driver"
                 : order?.status === "ACCEPTED" || order?.status === "PREPARING"
                 ? order?.driverId
                   ? "Kitchen is preparing your items · driver already assigned"
