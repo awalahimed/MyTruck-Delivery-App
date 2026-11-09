@@ -3,7 +3,7 @@
     "name": "MyTruck Delivery",
     "slug": "ebhan",
     "owner": "ebbanufs-team",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -48,7 +48,7 @@
         "backgroundColor": "#0B2A26"
       },
       "package": "com.mytruck.delivery",
-      "versionCode": 7,
+      "versionCode": 8,
       "softwareKeyboardLayoutMode": "pan",
       "config": {
         "googleMaps": {

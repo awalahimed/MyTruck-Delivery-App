@@ -15,12 +15,24 @@ function cleanChapaKey(raw) {
   return v;
 }
 
-module.exports = ({ config }) => ({
-  ...config,
-  extra: {
-    ...config.extra,
-    chapaSecretKey: cleanChapaKey(process.env.CHAPA_SECRET_KEY),
-  },
-});
+module.exports = ({ config }) => {
+  const chapaSecretKey = cleanChapaKey(process.env.CHAPA_SECRET_KEY);
+  // Only a Chapa SECRET key (CHASECK-…) can start payments. A public key (CHAPUBK-…)
+  // makes Chapa answer "Invalid API Key" for every customer, so stop the build instead.
+  if (chapaSecretKey && !chapaSecretKey.startsWith("CHASECK-")) {
+    throw new Error(
+      `CHAPA_SECRET_KEY must be your Chapa SECRET key (starts with "CHASECK-"), ` +
+        `but it starts with "${chapaSecretKey.slice(0, 8)}". Update it with: ` +
+        `eas env:update preview --variable-name CHAPA_SECRET_KEY`
+    );
+  }
+  return {
+    ...config,
+    extra: {
+      ...config.extra,
+      chapaSecretKey,
+    },
+  };
+};
 
 module.exports.cleanChapaKey = cleanChapaKey;
