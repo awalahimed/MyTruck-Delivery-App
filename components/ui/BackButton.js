@@ -3,6 +3,7 @@ import { TouchableOpacity, Animated, StyleSheet, Platform } from "react-native";
 import { ArrowLeftIcon } from "react-native-heroicons/solid";
 import { useNavigation } from "@react-navigation/native";
 import { UserAuth } from "../../contexts/AuthContext";
+import { getRoleInfo, homeRouteFor } from "../../utils/roles";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -26,10 +27,14 @@ export default function BackButton({
 }) {
   const navigation = useNavigation();
   let dbUser = null;
+  let authUser = null;
   try {
     const auth = UserAuth();
     dbUser = auth?.dbUser;
+    authUser = auth?.user;
   } catch (_) {}
+  // Where "home" is for this account (drivers/stores/admins have their own dashboards)
+  const roleHome = homeRouteFor(getRoleInfo(authUser, dbUser));
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
   const handlePressIn = () => {
@@ -65,6 +70,10 @@ export default function BackButton({
     } catch (_) {}
 
     // 2. Fallback route handling (nested-aware for React Navigation v6)
+    // Non-customers never fall back into the customer app
+    if (roleHome !== "Home" && (!fallbackRoute || fallbackRoute === "HomeTab" || fallbackRoute === "Home")) {
+      try { navigation.navigate(roleHome); return; } catch (_) {}
+    }
     if (fallbackRoute) {
       if (fallbackRoute === "HomeTab" || fallbackRoute === "Home") {
         try {

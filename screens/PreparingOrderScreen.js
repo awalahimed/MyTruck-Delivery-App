@@ -24,6 +24,8 @@ import { StarIcon } from "react-native-heroicons/solid";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { db, app } from "../firebase";
 import { notifyMerchant } from "../services/orderNotifications";
+import { UserAuth } from "../contexts/AuthContext";
+import { getRoleInfo } from "../utils/roles";
 import { MAP_TILE_URL, isWithinEthiopia } from "../utils/mapService";
 import BackButton from "../components/ui/BackButton";
 
@@ -38,6 +40,9 @@ const TRACK_MAP_ROUTE = require("../assets/cropped/track_map_route.png");
 
 export default function PreparingOrderScreen() {
   const navigation = useNavigation();
+  const { user: authUser, dbUser: authProfile } = UserAuth();
+  const viewerIsStaff = getRoleInfo(authUser, authProfile).isStaffAdmin;
+  const [accessDenied, setAccessDenied] = useState(false);
   const route = useRoute();
   const orderId = route.params?.id || route.params?.orderId;
 
@@ -105,10 +110,18 @@ export default function PreparingOrderScreen() {
     const unsub = onSnapshot(doc(db, "orders", cleanId), (snap) => {
       if (snap.exists()) {
         const d = snap.data();
+        // Only the customer who placed it (or staff) may track an order
+        if (d.userId && authUser?.uid && d.userId !== authUser.uid && !viewerIsStaff) {
+          setAccessDenied(true);
+          setOrder(null);
+          return;
+        }
+        setAccessDenied(false);
         setOrder({ id: snap.id, ...d });
       }
     }, (err) => {
       console.warn("PreparingOrderScreen order listener notice:", err?.message);
+      if (String(err?.code || "").includes("permission-denied")) setAccessDenied(true);
     });
     return unsub;
   }, [orderId]);
@@ -352,6 +365,25 @@ export default function PreparingOrderScreen() {
     if (navigation.canGoBack()) navigation.goBack();
     else navigation.navigate("HomeTab");
   };
+
+  if (accessDenied) {
+    return (
+      <View style={[s.root, { alignItems: "center", justifyContent: "center", padding: 24 }]}>
+        <StatusBar style="dark" />
+        <MaterialCommunityIcons name="lock-outline" size={42} color={TEAL} />
+        <Text style={{ fontSize: 17, fontWeight: "800", color: "#0B2A26", marginTop: 10 }}>Order not available</Text>
+        <Text style={{ fontSize: 13, color: "#64748B", marginTop: 6, textAlign: "center" }}>
+          You can only track orders placed from your own account.
+        </Text>
+        <TouchableOpacity
+          onPress={() => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Home"))}
+          style={{ marginTop: 18, backgroundColor: TEAL, paddingVertical: 12, paddingHorizontal: 24, borderRadius: 12 }}
+        >
+          <Text style={{ color: "#FFFFFF", fontWeight: "800" }}>Go Back</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <View style={s.root}>

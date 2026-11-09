@@ -182,8 +182,8 @@ export default function SellerHome() {
         navigation.goBack();
         return true;
       }
-      navigation.navigate("Home");
-      return true;
+      // Dashboard is this role's home: let Android minimise the app (never open customer Home)
+      return false;
     };
     const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
     return () => sub.remove();
@@ -799,14 +799,12 @@ export default function SellerHome() {
         <View style={s.headerTopRow}>
           {/* Storefront preview / Back to customer app button */}
           <TouchableOpacity
+            // This dashboard is the role's home: only go back when there is a previous screen
             onPress={() => {
-              if (navigation.canGoBack()) {
-                navigation.goBack();
-              } else {
-                navigation.navigate("Home");
-              }
+              if (navigation.canGoBack()) navigation.goBack();
             }}
-            style={s.headerBackBtn}
+            disabled={!navigation.canGoBack()}
+            style={[s.headerBackBtn, !navigation.canGoBack() && { opacity: 0 }]}
             activeOpacity={0.8}
             accessibilityLabel="Preview Customer Storefront"
           >
@@ -1531,15 +1529,6 @@ export default function SellerHome() {
               </TouchableOpacity>
             </View>
 
-            {/* Storefront Preview Button */}
-            <TouchableOpacity
-              onPress={() => navigation.navigate("Home")}
-              style={s.previewStorefrontBtn}
-              activeOpacity={0.8}
-            >
-              <MaterialCommunityIcons name="eye-outline" size={20} color={TEAL} />
-              <Text style={s.previewStorefrontBtnTxt}>Switch to Customer Storefront View</Text>
-            </TouchableOpacity>
 
             {/* Sign Out Button */}
             <TouchableOpacity

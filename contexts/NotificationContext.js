@@ -70,7 +70,7 @@ export function NotificationProvider({ children }) {
     const targetRoute = data.targetRoute;
     const orderId = data.orderId || data.params?.orderId;
 
-    if (targetRoute === "TrackOrder" || orderId) {
+    if (targetRoute === "TrackOrder" || (!targetRoute && orderId)) {
       navigate("TrackOrder", { orderId });
     } else if (targetRoute === "SellerHome") {
       navigate("SellerHome");

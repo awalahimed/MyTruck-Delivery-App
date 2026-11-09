@@ -208,11 +208,15 @@ export default function DriverDashboard() {
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
         aspect: [1, 1],
-        quality: 0.6,
+        quality: 0.3,
         base64: true,
       });
       if (!res.canceled && res.assets?.[0]) {
         const asset = res.assets[0];
+        if (asset.base64 && asset.base64.length > 600000) {
+          Alert.alert("Photo Too Large", "Please choose a smaller photo or crop it closer to your face.");
+          return;
+        }
         if (asset.base64) {
           setDriverPhotoUri(`data:image/jpeg;base64,${asset.base64}`);
         } else if (asset.uri) {
@@ -240,10 +244,9 @@ export default function DriverDashboard() {
     }
     setSavingDriverProfile(true);
     try {
+      // phoneNumber/phone identify the account (login, lookups) — never overwrite them here
       const updates = {
         workingPhone: driverPhone.trim(),
-        phone: driverPhone.trim(),
-        phoneNumber: driverPhone.trim(),
         telebirrPhone: driverTelebirr.trim(),
         bankName: driverBank,
         accountNumber: driverAccount.trim(),
@@ -282,8 +285,8 @@ export default function DriverDashboard() {
         navigation.goBack();
         return true;
       }
-      navigation.navigate("Home");
-      return true;
+      // Dashboard is this role's home: let Android minimise the app (never open customer Home)
+      return false;
     };
     const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
     return () => sub.remove();
@@ -516,7 +519,7 @@ export default function DriverDashboard() {
             collection(db, "orders"),
             where("driverId", "==", user.uid),
             where("status", "==", "COMPLETE"),
-            limit(100)
+            limit(500)
           )
         ),
         getDocs(
@@ -528,6 +531,8 @@ export default function DriverDashboard() {
       ]);
 
       let totalEarned = 0;
+      let onlineEarned = 0; // MyTruck owes the driver these (customer paid online)
+      let cashHeld = 0;     // COD: cash collected minus the driver's own share — owed to MyTruck
       let totalKmAllTime = 0;
       let todayKm = 0;
       const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
@@ -539,6 +544,13 @@ export default function DriverDashboard() {
         const riderNet = Number(data.driverEarnings != null ? data.driverEarnings : (dFee * 0.80));
         const distKm = Number(data.deliveryDistanceKm || data.distanceKm || 0);
         totalEarned += riderNet;
+        const isCash = data.paymentMethod !== "CHAPA";
+        if (isCash) {
+          const collected = Number(data.cashCollectedAmount != null ? data.cashCollectedAmount : data.total || 0);
+          cashHeld += Math.max(0, collected - riderNet);
+        } else {
+          onlineEarned += riderNet;
+        }
         totalKmAllTime += distKm;
         // Track today's km
         const ts = data.deliveredAt?.seconds
@@ -556,7 +568,8 @@ export default function DriverDashboard() {
         }
       });
 
-      const outstandingBalance = Math.max(0, totalEarned - totalTransferred);
+      // Positive: MyTruck owes the driver. Negative: the driver owes MyTruck (cash still held).
+      const netSettlement = onlineEarned - totalTransferred - cashHeld;
 
       history.sort((a, b) => {
         const tA = a.deliveredAt?.toMillis ? a.deliveredAt.toMillis() : (a.updatedAt?.seconds ? a.updatedAt.seconds * 1000 : 0);
@@ -568,7 +581,8 @@ export default function DriverDashboard() {
         count: snap.size,
         total: Number(totalEarned.toFixed(2)),
         totalTransferred: Number(totalTransferred.toFixed(2)),
-        outstandingBalance: Number(outstandingBalance.toFixed(2)),
+        cashHeld: Number(cashHeld.toFixed(2)),
+        netSettlement: Number(netSettlement.toFixed(2)),
         totalKmAllTime: Number(totalKmAllTime.toFixed(1)),
         todayKm: Number(todayKm.toFixed(1)),
       });
@@ -655,7 +669,7 @@ export default function DriverDashboard() {
         tx.update(ref, {
           driverId: user.uid,
           driverName: `${dbUser?.firstName || "Driver"} ${dbUser?.lastName || ""}`.trim(),
-          driverPhone: dbUser?.phone || dbUser?.phoneNumber || dbUser?.mobileNumber || "",
+          driverPhone: dbUser?.workingPhone || dbUser?.phone || dbUser?.phoneNumber || dbUser?.mobileNumber || "",
           status: nextStatus,
           driverAcceptedAt: serverTimestamp(),
           offeredDriverId: null,
@@ -881,14 +895,12 @@ export default function DriverDashboard() {
         <View style={s.headerTopRow}>
           {/* Storefront preview / Back to customer app button */}
           <TouchableOpacity
+            // This dashboard is the role's home: only go back when there is a previous screen
             onPress={() => {
-              if (navigation.canGoBack()) {
-                navigation.goBack();
-              } else {
-                navigation.navigate("Home");
-              }
+              if (navigation.canGoBack()) navigation.goBack();
             }}
-            style={s.headerBackBtn}
+            disabled={!navigation.canGoBack()}
+            style={[s.headerBackBtn, !navigation.canGoBack() && { opacity: 0 }]}
             activeOpacity={0.8}
             accessibilityLabel="Preview Customer Storefront"
           >
@@ -1519,11 +1531,22 @@ export default function DriverDashboard() {
                 </View>
                 <View style={{ width: 1, backgroundColor: "rgba(255,255,255,0.2)" }} />
                 <View style={{ flex: 1, alignItems: "center" }}>
-                  <Text style={{ fontSize: 11, color: "#FEF3C7", fontWeight: "600" }}>Outstanding Balance</Text>
+                  <Text style={{ fontSize: 11, color: "#FEF3C7", fontWeight: "600" }}>Cash to Hand In</Text>
                   <Text style={{ fontSize: 14, fontWeight: "800", color: "#FEF08A", marginTop: 2 }}>
-                    ETB {Number(earnings.outstandingBalance != null ? earnings.outstandingBalance : earnings.total).toFixed(2)}
+                    {`ETB ${Number(earnings.cashHeld || 0).toFixed(2)}`}
                   </Text>
                 </View>
+              </View>
+              <View style={{ backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 12, padding: 10, marginBottom: 12, alignItems: "center" }}>
+                <Text style={{ fontSize: 11, color: "#CCFBF1", fontWeight: "600" }}>
+                  {Number(earnings.netSettlement || 0) >= 0 ? "MyTruck Owes You" : "You Owe MyTruck"}
+                </Text>
+                <Text style={{ fontSize: 16, fontWeight: "900", color: "#FFFFFF", marginTop: 2 }}>
+                  {`ETB ${Math.abs(Number(earnings.netSettlement || 0)).toFixed(2)}`}
+                </Text>
+                <Text style={{ fontSize: 10.5, color: "#CCFBF1", marginTop: 2, textAlign: "center" }}>
+                  Online-paid earnings − payouts received − cash you collected for MyTruck
+                </Text>
               </View>
 
               <View style={s.earningsStatsRow}>
@@ -1536,8 +1559,8 @@ export default function DriverDashboard() {
                   <Text style={s.earningsStatLabel}>Your Split</Text>
                 </View>
                 <View style={s.earningsStatBox}>
-                  <Text style={s.earningsStatNum}>Instant</Text>
-                  <Text style={s.earningsStatLabel}>Telebirr Payout</Text>
+                  <Text style={s.earningsStatNum}>Telebirr</Text>
+                  <Text style={s.earningsStatLabel}>Settled by Admin</Text>
                 </View>
               </View>
             </View>
@@ -1709,15 +1732,6 @@ export default function DriverDashboard() {
               </TouchableOpacity>
             </View>
 
-            {/* Customer Storefront View Button */}
-            <TouchableOpacity
-              onPress={() => navigation.navigate("Home")}
-              style={s.previewStorefrontBtn}
-              activeOpacity={0.8}
-            >
-              <MaterialCommunityIcons name="storefront-outline" size={20} color={TEAL} />
-              <Text style={s.previewStorefrontBtnTxt}>Switch to Customer Storefront View</Text>
-            </TouchableOpacity>
 
             {/* Sign Out Button */}
             <TouchableOpacity

@@ -13,6 +13,7 @@ import {
   StyleSheet,
 } from "react-native";
 import { UserAuth } from "../contexts/AuthContext";
+import { getRoleInfo, homeRouteFor } from "../utils/roles";
 import { db } from "../firebase";
 import { doc, setDoc, getDoc } from "firebase/firestore";
 import { useNavigation } from "@react-navigation/native";
@@ -147,7 +148,7 @@ export default function UserDetails() {
           text: "Continue",
           onPress: () => {
             if (navigation.canGoBack()) navigation.goBack();
-            else navigation.navigate("Home");
+            else navigation.reset({ index: 0, routes: [{ name: homeRouteFor(getRoleInfo(user, dbUser)) }] });
           },
         },
       ]);

@@ -14,13 +14,11 @@ const normRole = (role) => String(role || "").toLowerCase().replace(/[-_\s]/g, "
 
 export function getRoleInfo(user, dbUser) {
   const role = normRole(dbUser?.role);
-  const email = String(user?.email || dbUser?.email || "").toLowerCase().trim();
-  const phone = String(dbUser?.phoneNumber || dbUser?.phone || "").replace(/\D/g, "");
-
+  // Owner identity comes from the sign-in account only — never from editable profile fields
+  // (anyone can type the owner's number into their own profile phone).
+  const authEmail = String(user?.email || "").toLowerCase().trim();
   const isOwnerAccount =
-    SUPER_ADMIN_EMAILS.includes(email) ||
-    email.startsWith(`${SUPER_ADMIN_PHONE}@`) ||
-    phone === SUPER_ADMIN_PHONE;
+    SUPER_ADMIN_EMAILS.includes(authEmail) || authEmail === `${SUPER_ADMIN_PHONE}@login.mytruck.local`;
 
   const isMiniAdmin = role === "miniadmin" || dbUser?.isMiniAdmin === true;
   const isStaffAdmin =
@@ -33,12 +31,14 @@ export function getRoleInfo(user, dbUser) {
 
   const isDriver = role === "driver";
   const isSeller = ["pendingseller", "shop", "restaurant", "seller"].includes(role);
+  // Anyone who isn't staff, a driver or a store is a customer (new accounts may have no role yet)
+  const isCustomer = !isStaffAdmin && !isDriver && !isSeller;
 
   const status = String(dbUser?.accountStatus || "").toUpperCase();
   // Admins can't lock themselves out
   const isBlocked = !isStaffAdmin && (status === "BANNED" || status === "SUSPENDED");
 
-  return { role, isOwnerAccount, isMiniAdmin, isStaffAdmin, isDriver, isSeller, isBlocked, accountStatus: status };
+  return { role, isOwnerAccount, isMiniAdmin, isStaffAdmin, isDriver, isSeller, isCustomer, isBlocked, accountStatus: status };
 }
 
 export function homeRouteFor(info) {

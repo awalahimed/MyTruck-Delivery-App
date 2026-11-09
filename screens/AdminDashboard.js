@@ -263,8 +263,8 @@ export default function AdminDashboard() {
         navigation.goBack();
         return true;
       }
-      navigation.navigate("Home");
-      return true;
+      // Dashboard is this role's home: let Android minimise the app (never open customer Home)
+      return false;
     };
     const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
     return () => sub.remove();
@@ -685,8 +685,11 @@ export default function AdminDashboard() {
             name: dName,
             deliveredCount: 0,
             earnings: 0,
+            onlineEarnings: 0, // customer paid online: MyTruck owes these
+            cashHeld: 0,       // COD cash collected minus the driver's share: driver owes MyTruck
             transferred: 0,
             outstanding: 0,
+            owesPlatform: 0,
             phone: o.driverPhone || "",
             plate: o.vehiclePlate || "",
           });
@@ -697,6 +700,12 @@ export default function AdminDashboard() {
           const dFee = Number(o.deliveryFee || 60);
           const riderEarnings = Number(o.driverEarnings != null ? o.driverEarnings : (dFee * 0.80));
           dEntry.earnings += riderEarnings;
+          if (o.paymentMethod === "CHAPA") {
+            dEntry.onlineEarnings += riderEarnings;
+          } else {
+            const collected = Number(o.cashCollectedAmount != null ? o.cashCollectedAmount : o.total || 0);
+            dEntry.cashHeld += Math.max(0, collected - riderEarnings);
+          }
         }
       }
     }
@@ -706,13 +715,18 @@ export default function AdminDashboard() {
       const driverObj = allUsers.find((u) => u.id === d.id || u.uid === d.id);
       d.telebirrPhone = driverObj?.telebirrPhone || "";
       d.bankName = driverObj?.bankName || "";
-      d.bankAccountNumber = driverObj?.bankAccountNumber || "";
+      d.bankAccountNumber = driverObj?.bankAccountNumber || driverObj?.accountNumber || "";
 
       const transferred = driverPayouts
         .filter((p) => p.driverId === d.id && (p.status === "TRANSFERRED" || p.status === "COMPLETED" || p.status === "PAID"))
         .reduce((sum, p) => sum + Number(p.amount || 0), 0);
       d.transferred = Number(transferred.toFixed(2));
-      d.outstanding = Math.max(0, Number((d.earnings - transferred).toFixed(2)));
+      d.cashHeld = Number(d.cashHeld.toFixed(2));
+      // Drivers keep their share of COD fares from the cash; only online-paid earnings are paid out,
+      // and cash still held for MyTruck is netted off.
+      const net = d.onlineEarnings - transferred - d.cashHeld;
+      d.outstanding = Math.max(0, Number(net.toFixed(2)));
+      d.owesPlatform = Math.max(0, Number((-net).toFixed(2)));
     }
 
     return {
@@ -2623,8 +2637,8 @@ export default function AdminDashboard() {
                       <Text style={{ fontSize: 11, color: "#16A34A", fontWeight: "700" }}>
                         ✓ {d.deliveredCount} deliveries · Transferred: ETB {d.transferred.toFixed(2)}
                       </Text>
-                      <Text style={{ fontSize: 11.5, fontWeight: "800", color: d.outstanding > 0 ? "#DC2626" : "#166534" }}>
-                        Due: ETB {d.outstanding.toFixed(2)}
+                      <Text style={{ fontSize: 11.5, fontWeight: "800", color: d.outstanding > 0 ? "#DC2626" : d.owesPlatform > 0 ? "#B45309" : "#166534" }}>
+                        {d.owesPlatform > 0 ? `Owes MyTruck: ETB ${d.owesPlatform.toFixed(2)}` : `Due: ETB ${d.outstanding.toFixed(2)}`}
                       </Text>
                     </View>
                     {/* Settlement Transfer Action */}
@@ -2635,7 +2649,7 @@ export default function AdminDashboard() {
                       <TouchableOpacity
                         onPress={() => {
                           setPayoutModalDriver(d);
-                          setPayoutAmountInput(String(d.outstanding > 0 ? d.outstanding : d.earnings));
+                          setPayoutAmountInput(String(d.outstanding > 0 ? d.outstanding : 0));
                           setPayoutRefInput(`PAY-${Date.now().toString(36).toUpperCase()}`);
                         }}
                         style={{
@@ -4254,7 +4268,7 @@ export default function AdminDashboard() {
                   <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 8, paddingTop: 6, borderTopWidth: 1, borderTopColor: "#DCFCE7" }}>
                     <Text style={{ fontSize: 12, color: "#166534", fontWeight: "700" }}>Total Due to Rider:</Text>
                     <Text style={{ fontSize: 14, fontWeight: "900", color: "#166534" }}>
-                      ETB {payoutModalDriver.outstanding > 0 ? payoutModalDriver.outstanding.toFixed(2) : payoutModalDriver.earnings.toFixed(2)}
+                      ETB {Number(payoutModalDriver.outstanding || 0).toFixed(2)}
                     </Text>
                   </View>
                 </View>

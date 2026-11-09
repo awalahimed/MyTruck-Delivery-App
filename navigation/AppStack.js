@@ -25,6 +25,19 @@ const GatedSellerHome = withRoleGate(SellerHome, (r) => r.isSeller || r.isStaffA
 const GatedDriverDashboard = withRoleGate(DriverDashboard, (r) => r.isDriver || r.isStaffAdmin, "Drivers");
 const GatedAdminDashboard = withRoleGate(AdminDashboard, (r) => r.isStaffAdmin, "Administrators");
 
+// Shopping, checkout and order tracking are for customers (staff may open them to support customers).
+// Drivers and stores have their own dashboards; shared screens (profile, settings, notifications) stay open.
+const forCustomers = (r) => r.isCustomer || r.isStaffAdmin;
+const GatedCustomerTabs = withRoleGate(CustomerTabNavigator, forCustomers, "Customers");
+const GatedRestaurants = withRoleGate(RestaurantsScreen, forCustomers, "Customers");
+const GatedShops = withRoleGate(ShopsScreen, forCustomers, "Customers");
+const GatedRestaurantDetails = withRoleGate(RestaurantDetails, forCustomers, "Customers");
+const GatedBasket = withRoleGate(BasketScreen, forCustomers, "Customers");
+const GatedTracking = withRoleGate(PreparingOrderScreen, forCustomers, "Customers");
+const GatedMyOrders = withRoleGate(OrderDetailsScreen, forCustomers, "Customers");
+const GatedProductDelivery = withRoleGate(ProductDeliveryScreen, forCustomers, "Customers");
+const GatedDeliveryAddresses = withRoleGate(DeliveryAddressesScreen, forCustomers, "Customers");
+
 export default function AppStack({ initialRoute = "Home" }) {
   return (
     <Stack.Navigator
@@ -37,7 +50,7 @@ export default function AppStack({ initialRoute = "Home" }) {
       {/* Root: bottom tab navigator */}
       <Stack.Screen
         name="Home"
-        component={CustomerTabNavigator}
+        component={GatedCustomerTabs}
       />
 
       {/* Role-specific home screens */}
@@ -53,44 +66,44 @@ export default function AppStack({ initialRoute = "Home" }) {
       {/* Main Feature Screens */}
       <Stack.Screen
         name="Restaurants"
-        component={RestaurantsScreen}
+        component={GatedRestaurants}
       />
       <Stack.Screen
         name="Shops"
-        component={ShopsScreen}
+        component={GatedShops}
       />
       <Stack.Screen
         name="Restaurant"
-        component={RestaurantDetails}
+        component={GatedRestaurantDetails}
       />
       <Stack.Screen
         name="RestaurantDetails"
-        component={RestaurantDetails}
+        component={GatedRestaurantDetails}
       />
       <Stack.Screen
         name="Basket"
-        component={BasketScreen}
+        component={GatedBasket}
         options={{ presentation: "modal" }}
       />
       <Stack.Screen
         name="PreparingOrderScreen"
-        component={PreparingOrderScreen}
+        component={GatedTracking}
       />
       <Stack.Screen
         name="TrackOrder"
-        component={PreparingOrderScreen}
+        component={GatedTracking}
       />
       <Stack.Screen
         name="Order Details"
-        component={OrderDetailsScreen}
+        component={GatedMyOrders}
       />
       <Stack.Screen
         name="MyOrders"
-        component={OrderDetailsScreen}
+        component={GatedMyOrders}
       />
       <Stack.Screen
         name="ProductDelivery"
-        component={ProductDeliveryScreen}
+        component={GatedProductDelivery}
       />
 
       {/* Profile & Settings Screens */}
@@ -100,7 +113,7 @@ export default function AppStack({ initialRoute = "Home" }) {
       />
       <Stack.Screen
         name="DeliveryAddresses"
-        component={DeliveryAddressesScreen}
+        component={GatedDeliveryAddresses}
       />
       <Stack.Screen
         name="User Details"
