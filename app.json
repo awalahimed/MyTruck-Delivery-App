@@ -24,7 +24,8 @@
       ],
       [
         "expo-image-picker"
-      ]
+      ],
+      "./plugins/withGradleBinDistribution"
     ],
     "splash": {
       "image": "./assets/splash.png",
