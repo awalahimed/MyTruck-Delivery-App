@@ -318,6 +318,17 @@ service cloud.firestore {
     }
 
     // ── Money ─────────────────────────────────────────────────────────────
+    // How much of each Chapa payment has been used to accept orders (written by the store
+    // app after it confirms the payment with Chapa). Customers can't read or change it.
+    match /chapaPayments/{txRef} {
+      allow read: if isSeller() || isStaff();
+      allow create, update: if (isSeller() || isStaff()) &&
+        request.resource.data.amount is number &&
+        request.resource.data.allocations is map &&
+        request.resource.data.txRef == txRef;
+      allow delete: if isStaff();
+    }
+
     match /driver_payouts/{payoutId} {
       allow read: if signedIn() && (isStaff() || resource.data.get('driverId', '') == uid());
       allow write: if isStaff();

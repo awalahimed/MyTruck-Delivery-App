@@ -42,6 +42,7 @@ import {
 } from "firebase/firestore";
 import DeliveryLocationModal from "../components/DeliveryLocationModal";
 import { notifyCustomer } from "../services/orderNotifications";
+import { checkChapaPaymentForStore } from "../services/chapaClient";
 import NotificationBell from "../components/ui/NotificationBell";
 import SmartImage from "../components/ui/SmartImage";
 
@@ -384,7 +385,55 @@ export default function SellerHome() {
     READY: ["PREPARING"],
   };
 
+  // Orders the customer's own app marked as paid (no payment server yet) must be
+  // confirmed with Chapa by the store before they are accepted.
+  const needsChapaCheck = (o) =>
+    o && o.paymentMethod === "CHAPA" && o.paymentStatus === "PAID" && o.paymentVerifiedBy === "app";
+  const [checkingPaymentId, setCheckingPaymentId] = useState(null);
+
   const updateOrderStatus = async (orderId, newStatus) => {
+    let chapaConfirmed = null; // { txRef, amount } when this accept spends a Chapa payment
+    if (newStatus === "ACCEPTED") {
+      try {
+        const fresh = await getDoc(doc(db, "orders", orderId));
+        const o = fresh.exists() ? { id: fresh.id, ...fresh.data() } : null;
+        if (needsChapaCheck(o)) {
+          setCheckingPaymentId(orderId);
+          const check = await checkChapaPaymentForStore(o.chapaMerchantReference);
+          setCheckingPaymentId(null);
+          if (!check.ok || check.amount + 0.01 < Number(o.total || 0)) {
+            const reason = !check.ok
+              ? check.reason
+              : `Chapa received ETB ${check.amount.toFixed(2)}, but this order is ETB ${Number(o.total || 0).toFixed(2)}.`;
+            Alert.alert(
+              "Payment Not Confirmed ⚠️",
+              `Don't prepare this order yet.\n\n${reason}`,
+              check.retry
+                ? [{ text: "OK", style: "cancel" }]
+                : [
+                    { text: "Keep for Now", style: "cancel" },
+                    {
+                      text: "Decline Order",
+                      style: "destructive",
+                      onPress: () => {
+                        setRejectingOrder(o);
+                        setMerchantRejectReason("Online payment not confirmed by Chapa");
+                        setMerchantRejectModalVisible(true);
+                      },
+                    },
+                  ]
+            );
+            return;
+          }
+          chapaConfirmed = { txRef: o.chapaMerchantReference, amount: check.amount };
+        }
+      } catch (e) {
+        setCheckingPaymentId(null);
+        Alert.alert("Update Error", e?.message || "Could not check this order's payment.");
+        return;
+      }
+    }
+
     try {
       const updated = await runTransaction(db, async (tx) => {
         const ref = doc(db, "orders", orderId);
@@ -395,6 +444,31 @@ export default function SellerHome() {
         const allowedFrom = MERCHANT_TRANSITIONS[newStatus];
         if (allowedFrom && !allowedFrom.includes(current.status)) {
           throw new Error("This order was already updated. Pull to refresh.");
+        }
+        // One Chapa payment can't pay for more than it covered (e.g. its reference copied onto other orders)
+        if (chapaConfirmed) {
+          const payRef = doc(db, "chapaPayments", chapaConfirmed.txRef);
+          const paySnap = await tx.get(payRef);
+          const allocations = (paySnap.exists() && paySnap.data().allocations) || {};
+          const usedByOthers = Object.entries(allocations)
+            .filter(([id]) => id !== orderId)
+            .reduce((sum, [, amt]) => sum + Number(amt || 0), 0);
+          const thisTotal = Number(current.total || 0);
+          if (usedByOthers + thisTotal > chapaConfirmed.amount + 0.01) {
+            throw new Error(
+              `This Chapa payment (ETB ${chapaConfirmed.amount.toFixed(2)}) was already used for other orders. Don't prepare this order — decline it as payment not received.`
+            );
+          }
+          tx.set(
+            payRef,
+            {
+              txRef: chapaConfirmed.txRef,
+              amount: chapaConfirmed.amount,
+              allocations: { [orderId]: thisTotal },
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
         }
         const updates = { status: newStatus, updatedAt: serverTimestamp() };
         if (newStatus === "ACCEPTED") updates.acceptedAt = serverTimestamp();
@@ -1129,7 +1203,9 @@ export default function SellerHome() {
                               activeOpacity={0.8}
                             >
                               <Text style={[s.actionBtnTxt, isDecline ? s.actionBtnTxtDecline : s.actionBtnTxtPrimary]}>
-                                {ACTION_LABELS[act] || act}
+                                {act === "ACCEPTED" && checkingPaymentId === order.id
+                                  ? "Checking payment…"
+                                  : ACTION_LABELS[act] || act}
                               </Text>
                             </TouchableOpacity>
                           );

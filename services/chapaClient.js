@@ -159,3 +159,31 @@ export async function verifyChapaPayment({ orderId, txRef, uid }) {
   }
   return { verified: true, paymentStatus: "PAID", orders: toForward };
 }
+
+/**
+ * Store-side check before accepting an order the customer's app marked as paid.
+ * Asks Chapa directly (the customer can't fake this — it runs on the store's phone).
+ * Returns { ok: true, amount } or { ok: false, reason, retry? }.
+ */
+export async function checkChapaPaymentForStore(txRef) {
+  if (!txRef) return { ok: false, reason: "This order has no Chapa payment reference." };
+  if (!hasAppChapaKey()) {
+    return { ok: false, reason: "This app version can't contact Chapa to confirm the payment. Update the app." };
+  }
+  let result;
+  try {
+    result = await chapaFetch(`/transaction/verify/${encodeURIComponent(txRef)}`);
+  } catch (e) {
+    return { ok: false, retry: true, reason: "Couldn't reach Chapa to confirm the payment. Check your connection and try again." };
+  }
+  const status = String(result?.data?.status || "").toUpperCase();
+  if (result?.status !== "success" || status !== "SUCCESS") {
+    return {
+      ok: false,
+      reason: status ? `Chapa reports this payment as ${status}, not completed.` : "Chapa has no completed payment for this order.",
+    };
+  }
+  const currency = String(result.data.currency || "ETB").toUpperCase();
+  if (currency !== "ETB") return { ok: false, reason: `The payment was made in ${currency}, not ETB.` };
+  return { ok: true, amount: Number(result.data.amount) || 0 };
+}
