@@ -1299,11 +1299,34 @@ export default function DriverDashboard() {
                 {/* Pickup Details Section */}
                 <View style={s.missionSection}>
                   <View style={s.sectionHeader}>
-                    <MaterialCommunityIcons name="storefront" size={18} color={TEAL} />
-                    <Text style={s.sectionTitle}>Merchant Pickup Point</Text>
+                    <MaterialCommunityIcons
+                      name={activeOrder.orderType === "PACKAGE" ? "package-variant-closed" : "storefront"}
+                      size={18}
+                      color={TEAL}
+                    />
+                    <Text style={s.sectionTitle}>
+                      {activeOrder.orderType === "PACKAGE" ? "Package Pickup · Sender" : "Merchant Pickup Point"}
+                    </Text>
                   </View>
-                  <Text style={s.sectionName}>{activeOrder.restaurantName || "Partner Store"}</Text>
+                  <Text style={s.sectionName}>
+                    {activeOrder.orderType === "PACKAGE"
+                      ? activeOrder.senderName || activeOrder.customerName || "Sender"
+                      : activeOrder.restaurantName || "Partner Store"}
+                  </Text>
                   <Text style={s.sectionAddress}>{activeOrder.pickupAddress || activeOrder.restaurantAddress || "Addis Ababa"}</Text>
+                  {activeOrder.orderType === "PACKAGE" && (
+                    <View style={{ backgroundColor: "#FFF7ED", borderRadius: 10, padding: 10, marginTop: 6, borderWidth: 1, borderColor: "#FED7AA" }}>
+                      <Text style={{ fontSize: 12, fontWeight: "800", color: DARK }}>📦 {activeOrder.packageType || "Package"}</Text>
+                      {Boolean(activeOrder.packageNotes) && (
+                        <Text style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>{activeOrder.packageNotes}</Text>
+                      )}
+                      {activeOrder.paymentMethod !== "CHAPA" && activeOrder.paymentStatus !== "PAID" && (
+                        <Text style={{ fontSize: 12, color: "#B45309", fontWeight: "700", marginTop: 4 }}>
+                          Collect ETB {Number(activeOrder.total || 0).toFixed(2)} cash from the sender at pickup.
+                        </Text>
+                      )}
+                    </View>
+                  )}
 
                   <View style={{ flexDirection: "row", gap: 8, marginTop: 6 }}>
                     {isAwaitingPickup(activeOrder) && (
@@ -1319,7 +1342,9 @@ export default function DriverDashboard() {
                         activeOpacity={0.8}
                       >
                         <MaterialCommunityIcons name="navigation-variant" size={16} color={TEAL} />
-                        <Text style={[s.sectionCallBtnTxt, { color: TEAL, fontWeight: "800" }]}>Navigate to Store</Text>
+                        <Text style={[s.sectionCallBtnTxt, { color: TEAL, fontWeight: "800" }]}>
+                          {activeOrder.orderType === "PACKAGE" ? "Navigate to Pickup" : "Navigate to Store"}
+                        </Text>
                       </TouchableOpacity>
                     )}
                     {Boolean(activeOrder.restaurantPhone) && (
@@ -1329,7 +1354,7 @@ export default function DriverDashboard() {
                         activeOpacity={0.8}
                       >
                         <MaterialCommunityIcons name="phone" size={14} color={TEAL} />
-                        <Text style={s.sectionCallBtnTxt}>Call Store</Text>
+                        <Text style={s.sectionCallBtnTxt}>{activeOrder.orderType === "PACKAGE" ? "Call Sender" : "Call Store"}</Text>
                       </TouchableOpacity>
                     )}
                   </View>
@@ -1342,8 +1367,15 @@ export default function DriverDashboard() {
 
                 {/* Drop-off Details Section with Prominent Customer Contact */}
                 {(() => {
-                  const custName = activeOrder.customerName || `${activeOrder.userFirstName || ""} ${activeOrder.userLastName || ""}`.trim() || "Customer";
-                  const custPhone = activeOrder.customerPhone || activeOrder.userPhoneNumber || activeOrder.phone || "";
+                  // Package orders are handed to the recipient, not to the account holder who sent them
+                  const isPkg = activeOrder.orderType === "PACKAGE";
+                  const who = isPkg ? "Recipient" : "Customer";
+                  const custName = isPkg
+                    ? activeOrder.recipientName || "Recipient"
+                    : activeOrder.customerName || `${activeOrder.userFirstName || ""} ${activeOrder.userLastName || ""}`.trim() || "Customer";
+                  const custPhone = isPkg
+                    ? activeOrder.recipientPhone || ""
+                    : activeOrder.customerPhone || activeOrder.userPhoneNumber || activeOrder.phone || "";
                   const dropAddress = activeOrder.dropoffAddress || activeOrder.deliveryAddress || activeOrder.userAddress || "Standard delivery address";
                   // Road figures for the current leg when the map has them; otherwise the stored estimate
                   const tripDistance = missionRoute ? missionRoute.distanceKm : activeOrder.deliveryDistanceKm != null ? activeOrder.deliveryDistanceKm : "—";
@@ -1358,7 +1390,7 @@ export default function DriverDashboard() {
                       <View style={s.missionSection}>
                         <View style={s.sectionHeader}>
                           <MaterialCommunityIcons name="map-marker-account" size={18} color={ORANGE} />
-                          <Text style={s.sectionTitle}>Customer Drop-off Point & Contact</Text>
+                          <Text style={s.sectionTitle}>{who} Drop-off Point & Contact</Text>
                         </View>
                         <Text style={s.sectionName}>{custName}</Text>
                         <Text style={s.sectionAddress}>{dropAddress}</Text>
@@ -1367,7 +1399,7 @@ export default function DriverDashboard() {
                         <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#F8FAFC", padding: 10, borderRadius: 10, marginVertical: 8, borderWidth: 1, borderColor: "#E2E8F0" }}>
                           <MaterialCommunityIcons name="phone-classic" size={18} color={TEAL} style={{ marginRight: 8 }} />
                           <View style={{ flex: 1 }}>
-                            <Text style={{ fontSize: 11, color: "#64748B", fontWeight: "600" }}>Customer Phone Number</Text>
+                            <Text style={{ fontSize: 11, color: "#64748B", fontWeight: "600" }}>{who} Phone Number</Text>
                             <Text style={{ fontSize: 14, fontWeight: "800", color: DARK }}>
                               {custPhone || "Phone not provided"}
                             </Text>
@@ -1387,7 +1419,7 @@ export default function DriverDashboard() {
                             activeOpacity={0.8}
                           >
                             <MaterialCommunityIcons name="navigation-variant" size={16} color={TEAL} />
-                            <Text style={[s.sectionCallBtnTxt, { color: TEAL, fontWeight: "800" }]}>Navigate to Customer</Text>
+                            <Text style={[s.sectionCallBtnTxt, { color: TEAL, fontWeight: "800" }]}>Navigate to {who}</Text>
                           </TouchableOpacity>
                         )}
 
@@ -1400,7 +1432,7 @@ export default function DriverDashboard() {
                               activeOpacity={0.8}
                             >
                               <MaterialCommunityIcons name="phone" size={16} color={TEAL} />
-                              <Text style={[s.sectionCallBtnTxt, { color: TEAL, fontWeight: "800" }]}>Call Customer</Text>
+                              <Text style={[s.sectionCallBtnTxt, { color: TEAL, fontWeight: "800" }]}>Call {who}</Text>
                             </TouchableOpacity>
 
                             <TouchableOpacity
@@ -1409,7 +1441,7 @@ export default function DriverDashboard() {
                               activeOpacity={0.8}
                             >
                               <MaterialCommunityIcons name="message-text-outline" size={16} color={ORANGE} />
-                              <Text style={[s.sectionCallBtnTxt, { color: ORANGE, fontWeight: "800" }]}>SMS Customer</Text>
+                              <Text style={[s.sectionCallBtnTxt, { color: ORANGE, fontWeight: "800" }]}>SMS {who}</Text>
                             </TouchableOpacity>
                           </View>
                         )}
@@ -1446,7 +1478,7 @@ export default function DriverDashboard() {
                             ETB {riderEarningsVal.toFixed(2)}
                           </Text>
                           <Text style={{ fontSize: 10.5, color: "#64748B", marginTop: 2 }}>
-                            Delivery Fare: ETB {deliveryFeeVal.toFixed(2)} · Platform Cut (20%): -ETB {commVal.toFixed(2)}
+                            Delivery Fare: ETB {deliveryFeeVal.toFixed(2)} · Platform Cut ({Number(activeOrder.deliveryCommissionPercent ?? 20)}%): -ETB {commVal.toFixed(2)}
                           </Text>
                         </View>
                         <View style={s.paymentStatusBadge}>

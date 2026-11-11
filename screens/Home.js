@@ -39,6 +39,7 @@ import {
   FAR_DISTANCE_NOTICE,
   isFarDistance,
 } from "../utils/pricing";
+import { usePricingConfig } from "../utils/usePricingConfig";
 
 const { width } = Dimensions.get("window");
 const TEAL = "#179B83";
@@ -100,6 +101,8 @@ const isOrderableDish = (d) => {
 };
 
 export default function Home() {
+  // Re-render with the Super Admin's live pricing
+  const pricingConfig = usePricingConfig();
   const { user, dbUser } = UserAuth();
   const reduxUser = useSelector(selectUser);
   const dispatch = useDispatch();
@@ -433,7 +436,7 @@ export default function Home() {
         restaurantName: deal.restaurantName,
         name: deal.name,
         price: info.customerSellingPrice,
-        merchantBasePrice: deal.price,
+        merchantBasePrice: info.rawSellingPrice,
         originalPrice: info.customerOriginalPrice,
         discountedPrice: info.customerSellingPrice,
         hasDiscount: true,

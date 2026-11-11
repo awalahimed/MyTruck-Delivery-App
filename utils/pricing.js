@@ -14,8 +14,89 @@ export const DEFAULT_PRICING_CONFIG = {
   minimumDeliveryFee: 50, // Minimum delivery fee (2 km equivalent)
   serviceFee: 15,        // Platform service fee (ETB)
   deliveryCommissionPercent: 20, // 20% company cut from delivery fee
-  commissionRate: 15,    // Platform catalog commission %
+  commissionRate: 15,    // Legacy catalog commission % (reports only)
+  // Package courier (send-a-package) pricing
+  packageBaseFee: 60,    // Flat pickup fee for every package
+  packageRatePerKm: 25,  // ETB per km between pickup and drop-off
+  packageMinimumFee: 80, // Minimum package delivery fee
+  packageTypeSurcharges: {
+    "Documents / Envelope": 0,
+    "Small Box (< 3kg)": 20,
+    "Medium Box (3-10kg)": 50,
+    "Fragile Item": 80,
+  },
 };
+
+export const PACKAGE_TYPES = Object.keys(DEFAULT_PRICING_CONFIG.packageTypeSurcharges);
+
+// ── Live pricing configuration (set by the Super Admin in platformSettings/config) ──
+// Every price helper below reads this when no explicit config is passed, so the admin's
+// settings apply app-wide. App.js keeps it in sync with Firestore.
+
+/** A non-negative number, or the fallback when the value is missing/invalid. 0 is kept. */
+function num(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/**
+ * Turns a platformSettings/config document into a complete pricing config.
+ * Accepts the admin's field names (baseFee / perKmFee) and the engine's names.
+ */
+export function normalizePricingConfig(raw = {}) {
+  const d = DEFAULT_PRICING_CONFIG;
+  const r = raw || {};
+  const surcharges = { ...d.packageTypeSurcharges };
+  if (r.packageTypeSurcharges && typeof r.packageTypeSurcharges === "object") {
+    for (const k of Object.keys(surcharges)) {
+      surcharges[k] = num(r.packageTypeSurcharges[k], surcharges[k]);
+    }
+  }
+  return {
+    itemMarkupPercent: Math.min(500, num(r.itemMarkupPercent, d.itemMarkupPercent)),
+    itemMarkupFlat: num(r.itemMarkupFlat, d.itemMarkupFlat),
+    deliveryRatePerKm: num(r.deliveryRatePerKm ?? r.perKmFee, d.deliveryRatePerKm),
+    minimumDeliveryFee: num(r.minimumDeliveryFee ?? r.baseFee, d.minimumDeliveryFee),
+    serviceFee: num(r.serviceFee, d.serviceFee),
+    deliveryCommissionPercent: Math.min(100, num(r.deliveryCommissionPercent, d.deliveryCommissionPercent)),
+    commissionRate: Math.min(100, num(r.commissionRate, d.commissionRate)),
+    packageBaseFee: num(r.packageBaseFee, d.packageBaseFee),
+    packageRatePerKm: num(r.packageRatePerKm, d.packageRatePerKm),
+    packageMinimumFee: num(r.packageMinimumFee, d.packageMinimumFee),
+    packageTypeSurcharges: surcharges,
+  };
+}
+
+let livePricingConfig = normalizePricingConfig();
+const pricingListeners = new Set();
+
+/** Current platform pricing config (admin settings merged over defaults). */
+export function getPricingConfig() {
+  return livePricingConfig;
+}
+
+/** Replaces the live pricing config (called with the platformSettings/config document). */
+export function setPricingConfig(raw) {
+  livePricingConfig = normalizePricingConfig(raw);
+  pricingListeners.forEach((fn) => {
+    try {
+      fn(livePricingConfig);
+    } catch (_) {}
+  });
+}
+
+/** Subscribe to pricing changes; returns an unsubscribe function. */
+export function subscribePricingConfig(listener) {
+  pricingListeners.add(listener);
+  return () => pricingListeners.delete(listener);
+}
+
+/** Resolves an optional partial config against the live config. */
+function resolveConfig(config) {
+  if (!config) return livePricingConfig;
+  return normalizePricingConfig({ ...livePricingConfig, ...config });
+}
 
 export const MAX_CUSTOMER_ORDER_DISTANCE_KM = 15;
 export const FAR_DISTANCE_NOTICE =
@@ -98,9 +179,10 @@ export function calculateDeliveryQuote(origin, destination, options = {}) {
 
   const isIntercity = Boolean(options.forceIntercity || distanceKm > 20 || cityMismatch);
 
-  // Distance-based rate: 25 ETB/km, minimum 50 ETB
-  const ratePerKm = Number(options.deliveryRatePerKm || DEFAULT_PRICING_CONFIG.deliveryRatePerKm || 25);
-  const minimumFee = Number(options.minimumDeliveryFee || DEFAULT_PRICING_CONFIG.minimumDeliveryFee || 50);
+  // Distance-based rate (admin "Per-KM rate"), never below the admin "Minimum delivery fee"
+  const cfg = resolveConfig(options.config);
+  const ratePerKm = num(options.deliveryRatePerKm, cfg.deliveryRatePerKm);
+  const minimumFee = num(options.minimumDeliveryFee, cfg.minimumDeliveryFee);
 
   const rawFee = distanceKm * ratePerKm;
   const deliveryFee = Math.max(minimumFee, Math.round(rawFee));
@@ -143,16 +225,17 @@ export function calculateDeliveryQuote(origin, destination, options = {}) {
  */
 export function calculateOrderFinancials({
   subtotal = 0,
-  deliveryFee = 50,
-  serviceFee = 15,
-  deliveryCommissionPercent = 20,
+  deliveryFee = null,
+  serviceFee = null,
+  deliveryCommissionPercent = null,
   merchantBaseSubtotal = null, // merchant's own prices; when given, the item markup is platform revenue
   promoDiscount = 0,           // promo-code discount, absorbed by the platform
 } = {}) {
-  const cleanSubtotal = Number((Number(subtotal) || 0).toFixed(2));
-  const cleanDeliveryFee = Number((Number(deliveryFee) || 50).toFixed(2));
-  const cleanServiceFee = Number((Number(serviceFee) != null ? Number(serviceFee) : 15).toFixed(2));
-  const cleanCommPct = Number(deliveryCommissionPercent != null ? deliveryCommissionPercent : 20);
+  const cfg = livePricingConfig;
+  const cleanSubtotal = Number(num(subtotal, 0).toFixed(2));
+  const cleanDeliveryFee = Number(num(deliveryFee, cfg.minimumDeliveryFee).toFixed(2));
+  const cleanServiceFee = Number(num(serviceFee, cfg.serviceFee).toFixed(2));
+  const cleanCommPct = Math.min(100, num(deliveryCommissionPercent, cfg.deliveryCommissionPercent));
   const cleanPromo = Math.max(0, Number((Number(promoDiscount) || 0).toFixed(2)));
 
   // Total paid by customer (after any promo discount)
@@ -196,6 +279,29 @@ export function calculateOrderFinancials({
     totalOwedOut,
     isBalanced,
   };
+}
+
+/**
+ * Financial breakdown of a stored order, using the fees the order was placed with
+ * (older orders without stored values fall back to the original 50/15/20% defaults).
+ */
+export function financialsFromOrder(o = {}) {
+  const deliveryFee = num(o.deliveryFee, 50);
+  const serviceFee = num(o.serviceFee, 15);
+  const subtotal =
+    o.subtotal != null
+      ? num(o.subtotal, 0)
+      : num(o.merchantBaseSubtotal, Math.max(0, num(o.total, 0) - deliveryFee - serviceFee));
+  return calculateOrderFinancials({
+    subtotal,
+    deliveryFee,
+    serviceFee,
+    deliveryCommissionPercent: num(o.deliveryCommissionPercent, 20),
+    // Only orders written with the current pricing rules carry platformItemMarkup;
+    // older orders keep the rules they were placed under.
+    merchantBaseSubtotal: o.platformItemMarkup != null ? o.merchantBaseSubtotal : null,
+    promoDiscount: o.promoDiscount || 0,
+  });
 }
 
 /**
@@ -244,22 +350,7 @@ export function aggregateFinancialMetrics(orders = [], driverPayouts = []) {
 
     completedOrdersCount += 1;
 
-    // Resolve order financial figures
-    const subtotal = Number(o.subtotal || o.merchantBaseSubtotal || (o.total ? o.total - 75 : 0)) || 0;
-    const deliveryFee = Number(o.deliveryFee || 50);
-    const serviceFee = Number(o.serviceFee != null ? o.serviceFee : 15);
-    const commPct = Number(o.deliveryCommissionPercent != null ? o.deliveryCommissionPercent : 20);
-
-    const fin = calculateOrderFinancials({
-      subtotal,
-      deliveryFee,
-      serviceFee,
-      deliveryCommissionPercent: commPct,
-      // Only orders written with the current pricing rules carry platformItemMarkup;
-      // older orders keep the rules they were placed under.
-      merchantBaseSubtotal: o.platformItemMarkup != null ? o.merchantBaseSubtotal : null,
-      promoDiscount: o.promoDiscount || 0,
-    });
+    const fin = financialsFromOrder(o);
 
     totalReceived += fin.total;
     restaurantBalancePayable += fin.restaurantEarnings;
@@ -319,9 +410,9 @@ export function getCustomerPrice(merchantBasePrice, config = null) {
   const base = Number(merchantBasePrice || 0);
   if (base <= 0) return 0;
 
-  const cfg = config || DEFAULT_PRICING_CONFIG;
-  const markupPercent = Number(cfg.itemMarkupPercent != null ? cfg.itemMarkupPercent : DEFAULT_PRICING_CONFIG.itemMarkupPercent);
-  const markupFlat = Number(cfg.itemMarkupFlat != null ? cfg.itemMarkupFlat : DEFAULT_PRICING_CONFIG.itemMarkupFlat);
+  const cfg = resolveConfig(config);
+  const markupPercent = cfg.itemMarkupPercent;
+  const markupFlat = cfg.itemMarkupFlat;
 
   // Example: 500 + (500 * 0.20 = 100) + 100 = 700 ETB
   const markedUp = Math.round(base * (1 + markupPercent / 100) + markupFlat);
@@ -405,3 +496,48 @@ export function getItemDiscountInfo(item, config = null) {
 }
 
 
+
+/**
+ * Package courier quote (send-a-package), from the admin's package pricing:
+ * delivery fee = max(minimum, base + distance x rate) + package-type surcharge,
+ * plus the platform service fee. The rider/company split uses the delivery commission %.
+ *
+ * @param {Object} pickup { latitude, longitude }
+ * @param {Object} dropoff { latitude, longitude }
+ * @param {string} packageType One of PACKAGE_TYPES
+ * @param {Object} [config]
+ */
+export function calculatePackageQuote(pickup, dropoff, packageType, config = null) {
+  const cfg = resolveConfig(config);
+  const pLat = pickup?.latitude ?? pickup?.lat;
+  const pLng = pickup?.longitude ?? pickup?.lng;
+  const dLat = dropoff?.latitude ?? dropoff?.lat;
+  const dLng = dropoff?.longitude ?? dropoff?.lng;
+  const hasCoords = [pLat, pLng, dLat, dLng].every((v) => v != null && v !== "" && Number.isFinite(Number(v)));
+  const distanceKm = hasCoords ? calculateDistanceKm(pLat, pLng, dLat, dLng) : null;
+
+  const surcharge = num(cfg.packageTypeSurcharges?.[packageType], 0);
+  const distancePart = distanceKm != null ? distanceKm * cfg.packageRatePerKm : 0;
+  const deliveryFee = Math.round(Math.max(cfg.packageMinimumFee, cfg.packageBaseFee + distancePart) + surcharge);
+  const fin = calculateOrderFinancials({
+    subtotal: 0,
+    deliveryFee,
+    serviceFee: cfg.serviceFee,
+    deliveryCommissionPercent: cfg.deliveryCommissionPercent,
+    merchantBaseSubtotal: 0,
+  });
+  return {
+    distanceKm,
+    hasDistance: distanceKm != null,
+    baseFee: cfg.packageBaseFee,
+    ratePerKm: cfg.packageRatePerKm,
+    minimumFee: cfg.packageMinimumFee,
+    distanceCharge: Math.round(distancePart),
+    typeSurcharge: surcharge,
+    deliveryFee,
+    serviceFee: fin.serviceFee,
+    total: fin.total,
+    etaMinutes: distanceKm != null ? Math.max(20, Math.round(20 + distanceKm * 3)) : null,
+    financials: fin,
+  };
+}

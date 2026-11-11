@@ -49,6 +49,8 @@ export default function PreparingOrderScreen() {
   const orderId = route.params?.id || route.params?.orderId;
 
   const [order, setOrder] = useState(null);
+  // Package (courier) orders have no store step: paid/cash packages go straight to drivers
+  const isPackage = order?.orderType === "PACKAGE" || order?.orderType === "PACKAGE_DELIVERY" || order?.sellerType === "courier";
   const [routeInfo, setRouteInfo] = useState({ distanceKm: null, etaMinutes: null });
 
   const restaurantCoord = useMemo(() => ({
@@ -153,7 +155,9 @@ export default function PreparingOrderScreen() {
   // Allowed only before the merchant accepts and before a driver is assigned.
   const CUSTOMER_CANCELLABLE = ["AWAITING_PAYMENT", "PENDING", "AWAITING_MERCHANT", "MERCHANT_REJECTED"];
   const [cancelling, setCancelling] = useState(false);
-  const canCancel = Boolean(order) && CUSTOMER_CANCELLABLE.includes(order.status) && !order.driverId;
+  const isCancellableStatus = (o) =>
+    CUSTOMER_CANCELLABLE.includes(o?.status) || (o?.orderType === "PACKAGE" && o?.status === "READY");
+  const canCancel = Boolean(order) && isCancellableStatus(order) && !order.driverId;
 
   const cancelOrder = async (reason) => {
     if (!orderId) return;
@@ -165,8 +169,12 @@ export default function PreparingOrderScreen() {
         if (!snap.exists()) throw new Error("Order not found.");
         const o = snap.data();
         // Re-check against the live order: the store may have accepted it a moment ago
-        if (!CUSTOMER_CANCELLABLE.includes(o.status) || o.driverId) {
-          throw new Error("The store has already accepted this order, so it can no longer be cancelled here. Please contact support.");
+        if (!isCancellableStatus(o) || o.driverId) {
+          throw new Error(
+            o.orderType === "PACKAGE"
+              ? "A driver has already taken this package, so it can no longer be cancelled here. Please contact support."
+              : "The store has already accepted this order, so it can no longer be cancelled here. Please contact support."
+          );
         }
         const paid = o.paymentStatus === "PAID";
         tx.update(ref, {
@@ -177,7 +185,7 @@ export default function PreparingOrderScreen() {
           ...(paid ? { refundStatus: "REQUESTED", refundAmount: Number(o.total || 0) } : {}),
           updatedAt: serverTimestamp(),
         });
-        return { paid, storeSawIt: o.status !== "AWAITING_PAYMENT", order: { id: snap.id, ...o } };
+        return { paid, storeSawIt: o.status !== "AWAITING_PAYMENT" && o.orderType !== "PACKAGE", order: { id: snap.id, ...o } };
       });
       if (result.storeSawIt) {
         notifyMerchant(result.order, "Order Cancelled ❌", "The customer cancelled this order before it was accepted. No action needed.");
@@ -328,12 +336,21 @@ Save order: ${t.saveMs ?? "-"} ms`
           if (check.data) {
             setOrder((prev) => ({ ...(prev || {}), ...check.data }));
           } else {
-            setOrder((prev) => ({ ...(prev || {}), paymentStatus: "PAID", status: "PENDING" }));
+            setOrder((prev) => ({
+              ...(prev || {}),
+              paymentStatus: "PAID",
+              status: prev?.orderType === "PACKAGE" ? "READY" : "PENDING",
+            }));
             (check.result?.orders || []).forEach((o) =>
               notifyMerchant(o, "New Paid Order 🛎️", `ETB ${Number(o.total || 0).toFixed(2)} · paid with Chapa`)
             );
           }
-          Alert.alert("Payment Confirmed 🎉", "Chapa confirmed your payment. The store has received your order.");
+          Alert.alert(
+            "Payment Confirmed 🎉",
+            isPackage
+              ? "Chapa confirmed your payment. We're assigning the nearest driver to pick up your package."
+              : "Chapa confirmed your payment. The store has received your order."
+          );
           return;
         }
         if (check.state === "failed") {
@@ -495,7 +512,7 @@ Save order: ${t.saveMs ?? "-"} ms`
           {/* Pickup Point */}
           <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
             <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: "#E6F7F1", alignItems: "center", justifyContent: "center", marginTop: 2 }}>
-              <MaterialCommunityIcons name="storefront" size={16} color={TEAL} />
+              <MaterialCommunityIcons name={isPackage ? "package-variant-closed" : "storefront"} size={16} color={TEAL} />
             </View>
             <View style={{ flex: 1, marginLeft: 10 }}>
               <Text style={{ fontSize: 11, fontWeight: "700", color: "#64748B", textTransform: "uppercase" }}>Pickup Location</Text>
@@ -530,7 +547,11 @@ Save order: ${t.saveMs ?? "-"} ms`
               <Text style={s.otpTitle}>Delivery Confirmation PIN</Text>
             </View>
             <Text style={s.otpDesc}>
-              {order?.paymentMethod === "CHAPA"
+              {isPackage
+                ? `Send this 4-digit code to ${order?.recipientName || "the recipient"}${
+                    order?.paymentMethod === "CHAPA" ? "" : ` and pay the driver ETB ${Number(order?.total || 0).toFixed(2)} in cash at pickup`
+                  }. The driver needs it to complete the delivery.`
+                : order?.paymentMethod === "CHAPA"
                 ? "Share this 4-digit code with your driver upon arrival to confirm the handover."
                 : `Pay ETB ${Number(order?.total || 0).toFixed(2)} in cash, then share this 4-digit code with your driver to confirm the handover.`}
             </Text>
@@ -594,28 +615,30 @@ Save order: ${t.saveMs ?? "-"} ms`
                 : order?.status === "DRIVERPICKEDUP" || order?.status === "ON_THE_WAY"
                 ? "Your order is on the way"
                 : order?.status === "DRIVERACCEPTED" || (order?.status === "READY" && order?.driverId)
-                ? "Driver is picking up your order"
+                ? isPackage ? "Driver is heading to pick up your package" : "Driver is picking up your order"
                 : order?.status === "READY"
-                ? "Your order is ready"
+                ? isPackage ? "Finding a driver for your package" : "Your order is ready"
                 : order?.status === "ACCEPTED" || order?.status === "PREPARING"
                 ? "Restaurant is preparing your order"
                 : "Order Placed & Awaiting Confirmation"}
             </Text>
             <Text style={s.statusSubtitle}>
               {order?.status === "COMPLETE" || order?.status === "DELIVERED"
-                ? "Delivered successfully! Enjoy your meal."
+                ? isPackage ? `Delivered to ${order?.recipientName || "the recipient"}.` : "Delivered successfully! Enjoy your meal."
                 : order?.status === "CANCELLED"
                 ? order?.refundStatus === "REQUESTED"
                   ? "Cancelled · refund in progress"
                   : "This order was cancelled"
                 : order?.paymentMethod === "CHAPA" && order?.paymentStatus !== "PAID"
-                ? "Please complete payment via Telebirr, CBE, or Card to begin preparation."
+                ? isPackage
+                  ? "Complete payment via Telebirr, CBE, or Card so we can send a driver."
+                  : "Please complete payment via Telebirr, CBE, or Card to begin preparation."
                 : order?.status === "DRIVERPICKEDUP" || order?.status === "ON_THE_WAY"
                 ? "Driver is heading to your location"
                 : order?.status === "DRIVERACCEPTED" || (order?.status === "READY" && order?.driverId)
-                ? "Your driver is at or heading to the store"
+                ? isPackage ? "Have the package ready at the pickup point" : "Your driver is at or heading to the store"
                 : order?.status === "READY"
-                ? "Packed and waiting — assigning the nearest driver"
+                ? isPackage ? "Assigning the nearest available driver" : "Packed and waiting — assigning the nearest driver"
                 : order?.status === "ACCEPTED" || order?.status === "PREPARING"
                 ? order?.driverId
                   ? "Kitchen is preparing your items · driver already assigned"
@@ -767,7 +790,7 @@ Save order: ${t.saveMs ?? "-"} ms`
                   isAlert: true,
                 },
                 {
-                  title: "Restaurant preparing",
+                  title: isPackage ? "Driver assignment" : "Restaurant preparing",
                   time: "Awaiting payment",
                   done: false,
                   active: false,
@@ -793,8 +816,10 @@ Save order: ${t.saveMs ?? "-"} ms`
                   active: order?.status === "PENDING",
                 },
                 {
-                  title: "Restaurant preparing",
-                  time: ["ACCEPTED", "PREPARING", "READY", "DRIVERACCEPTED", "DRIVERPICKEDUP", "ON_THE_WAY", "COMPLETE", "DELIVERED"].includes(order?.status) ? "Kitchen active" : "Pending",
+                  title: isPackage ? "Driver assigned" : "Restaurant preparing",
+                  time: isPackage
+                    ? order?.driverId ? order?.driverName || "Assigned" : "Searching"
+                    : ["ACCEPTED", "PREPARING", "READY", "DRIVERACCEPTED", "DRIVERPICKEDUP", "ON_THE_WAY", "COMPLETE", "DELIVERED"].includes(order?.status) ? "Kitchen active" : "Pending",
                   done: ["ACCEPTED", "PREPARING", "READY", "DRIVERACCEPTED", "DRIVERPICKEDUP", "ON_THE_WAY", "COMPLETE", "DELIVERED"].includes(order?.status),
                   active: ["ACCEPTED", "PREPARING", "READY", "DRIVERACCEPTED"].includes(order?.status),
                 },
@@ -878,46 +903,83 @@ Save order: ${t.saveMs ?? "-"} ms`
             </Text>
           </View>
 
-          {/* Price Breakdown with Strikethrough Old Price and Discounted Total */}
-          {(() => {
-            const subtotal = Number(order?.subtotal || order?.total || 0);
-            const origSubtotal = order?.originalSubtotal && Number(order.originalSubtotal) > subtotal
-              ? Number(order.originalSubtotal)
-              : Math.round(subtotal * 1.25);
-            const discountSavings = order?.totalDiscountAmount && Number(order.totalDiscountAmount) > 0
-              ? Number(order.totalDiscountAmount)
-              : Math.max(0, origSubtotal - subtotal);
-
-            return (
-              <>
-                {origSubtotal > subtotal ? (
-                  <View style={s.breakdownRow}>
-                    <Text style={s.breakdownLabel}>Original Subtotal</Text>
-                    <Text style={[s.breakdownVal, { textDecorationLine: "line-through", color: "#94A3B8" }]}>
-                      {origSubtotal.toFixed(2)} ETB
-                    </Text>
-                  </View>
-                ) : null}
+          {isPackage ? (
+            <>
+              <View style={s.breakdownRow}>
+                <Text style={s.breakdownLabel}>Package</Text>
+                <Text style={s.breakdownVal}>{order?.packageType || "Package"}</Text>
+              </View>
+              <View style={s.breakdownRow}>
+                <Text style={s.breakdownLabel}>Recipient</Text>
+                <Text style={s.breakdownVal}>
+                  {order?.recipientName || "—"}
+                  {order?.recipientPhone ? ` · ${order.recipientPhone}` : ""}
+                </Text>
+              </View>
+              {order?.packageNotes ? (
                 <View style={s.breakdownRow}>
-                  <Text style={s.breakdownLabel}>Subtotal</Text>
-                  <Text style={s.breakdownVal}>{subtotal.toFixed(2)} ETB</Text>
+                  <Text style={s.breakdownLabel}>Notes</Text>
+                  <Text style={[s.breakdownVal, { flex: 1, textAlign: "right", marginLeft: 12 }]} numberOfLines={3}>
+                    {order.packageNotes}
+                  </Text>
                 </View>
-                {discountSavings > 0 ? (
+              ) : null}
+            </>
+          ) : (
+            /* Price Breakdown with Strikethrough Old Price and Discounted Total */
+            (() => {
+              const subtotal = Number(order?.subtotal ?? 0);
+              // Only show a crossed-out price the order actually recorded (never an invented one)
+              const origSubtotal = order?.originalSubtotal && Number(order.originalSubtotal) > subtotal
+                ? Number(order.originalSubtotal)
+                : subtotal;
+              const discountSavings = order?.totalDiscountAmount && Number(order.totalDiscountAmount) > 0
+                ? Number(order.totalDiscountAmount)
+                : Math.max(0, origSubtotal - subtotal);
+  
+              return (
+                <>
+                  {origSubtotal > subtotal ? (
+                    <View style={s.breakdownRow}>
+                      <Text style={s.breakdownLabel}>Original Subtotal</Text>
+                      <Text style={[s.breakdownVal, { textDecorationLine: "line-through", color: "#94A3B8" }]}>
+                        {origSubtotal.toFixed(2)} ETB
+                      </Text>
+                    </View>
+                  ) : null}
                   <View style={s.breakdownRow}>
-                    <Text style={[s.breakdownLabel, { color: "#E11D48", fontWeight: "700" }]}>Special Deal Savings</Text>
-                    <Text style={[s.breakdownVal, { color: "#E11D48", fontWeight: "700" }]}>
-                      -{discountSavings.toFixed(2)} ETB
-                    </Text>
+                    <Text style={s.breakdownLabel}>Subtotal</Text>
+                    <Text style={s.breakdownVal}>{subtotal.toFixed(2)} ETB</Text>
                   </View>
-                ) : null}
-              </>
-            );
-          })()}
+                  {discountSavings > 0 ? (
+                    <View style={s.breakdownRow}>
+                      <Text style={[s.breakdownLabel, { color: "#E11D48", fontWeight: "700" }]}>Special Deal Savings</Text>
+                      <Text style={[s.breakdownVal, { color: "#E11D48", fontWeight: "700" }]}>
+                        -{discountSavings.toFixed(2)} ETB
+                      </Text>
+                    </View>
+                  ) : null}
+                </>
+              );
+            })()
+          )}
 
           <View style={s.breakdownRow}>
             <Text style={s.breakdownLabel}>Delivery Fee</Text>
-            <Text style={s.breakdownVal}>{Number(order?.deliveryFee || 50)} ETB</Text>
+            <Text style={s.breakdownVal}>{Number(order?.deliveryFee ?? 50)} ETB</Text>
           </View>
+          {order?.serviceFee != null ? (
+            <View style={s.breakdownRow}>
+              <Text style={s.breakdownLabel}>Service Fee</Text>
+              <Text style={s.breakdownVal}>{Number(order.serviceFee)} ETB</Text>
+            </View>
+          ) : null}
+          {Number(order?.promoDiscount || 0) > 0 ? (
+            <View style={s.breakdownRow}>
+              <Text style={[s.breakdownLabel, { color: "#E11D48" }]}>Promo{order?.promoCode ? ` (${order.promoCode})` : ""}</Text>
+              <Text style={[s.breakdownVal, { color: "#E11D48" }]}>-{Number(order.promoDiscount).toFixed(2)} ETB</Text>
+            </View>
+          ) : null}
           <View style={[s.breakdownRow, s.breakdownTotal]}>
             <Text style={s.totalLabel}>Total Amount</Text>
             <Text style={s.totalVal}>{Number(order?.total || 0)} ETB</Text>

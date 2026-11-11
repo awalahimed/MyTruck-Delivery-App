@@ -1,4 +1,5 @@
 import { createSlice } from "@reduxjs/toolkit";
+import { getCustomerPrice } from "../utils/pricing";
 
 const initialState = {
   items: [],
@@ -33,6 +34,27 @@ export const basketSlice = createSlice({
     clearBasket: (state) => {
       state.items = [];
     },
+
+    // Re-applies the platform markup (payload = pricing config) to items already in the cart,
+    // so the cart and the order always use the Super Admin's current prices.
+    repriceBasket: (state, action) => {
+      const cfg = action.payload || null;
+      for (const item of state.items) {
+        if (item.merchantBasePrice == null) continue;
+        const base = Number(item.merchantBasePrice);
+        if (!Number.isFinite(base) || base <= 0) continue;
+        const oldPrice = Number(item.price || 0);
+        const newPrice = getCustomerPrice(base, cfg);
+        if (newPrice === oldPrice) continue;
+        const oldOriginal = Number(item.originalPrice || oldPrice);
+        const ratio = oldPrice > 0 ? oldOriginal / oldPrice : 1;
+        const newOriginal = Math.max(newPrice, Math.round(newPrice * ratio));
+        item.price = newPrice;
+        item.discountedPrice = newPrice;
+        item.originalPrice = newOriginal;
+        item.savingsAmount = Math.max(0, newOriginal - newPrice);
+      }
+    },
   },
 });
 
@@ -41,6 +63,7 @@ export const {
   removeFromBasket,
   removeMerchantFromBasket,
   clearBasket,
+  repriceBasket,
 } = basketSlice.actions;
 
 export const selectBasketItems = (state) => state.basket.items;

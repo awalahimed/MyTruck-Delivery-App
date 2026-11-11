@@ -15,8 +15,11 @@ import {
 } from "../features/basketSlice";
 import { useDispatch, useSelector } from "react-redux";
 import { getItemDiscountInfo } from "../utils/pricing";
+import { usePricingConfig } from "../utils/usePricingConfig";
 
 const DishRow = ({ id, name, description, price, originalPrice, image, restaurantId }) => {
+  // Re-render with the Super Admin's live pricing
+  const pricingConfig = usePricingConfig();
   const [isPressed, setIsPressed] = useState(false);
 
   const dispatch = useDispatch();

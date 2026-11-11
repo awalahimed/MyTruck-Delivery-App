@@ -33,6 +33,7 @@ import {
   isFarDistance,
   calculateDistanceKm,
 } from "../utils/pricing";
+import { usePricingConfig } from "../utils/usePricingConfig";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -69,6 +70,8 @@ const isRestaurantOpen = (info) => {
 };
 
 export default function RestaurantDetails() {
+  // Re-render with the Super Admin's live pricing
+  const pricingConfig = usePricingConfig();
   const navigation = useNavigation();
   // Full-bleed hero: float the back button and toast below the status bar / notch
   const insets = useSafeAreaInsets();

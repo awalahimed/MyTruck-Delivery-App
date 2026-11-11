@@ -113,23 +113,51 @@ service cloud.firestore {
     }
     function isOrderDriver() { return resource.data.get('driverId', null) == uid(); }
 
+    function isPackageData(d) { return d.get('orderType', '') == 'PACKAGE'; }
+    // Fee floors set by the Super Admin (platformSettings/config); 0 when not configured
+    function platformCfg() {
+      return exists(/databases/$(database)/documents/platformSettings/config)
+        ? get(/databases/$(database)/documents/platformSettings/config).data
+        : {};
+    }
+    function feesAtLeastPlatformMinimum(d) {
+      let cfg = platformCfg();
+      return d.deliveryFee >= (isPackageData(d)
+               ? cfg.get('packageMinimumFee', 0)
+               : cfg.get('minimumDeliveryFee', cfg.get('baseFee', 0))) &&
+             d.serviceFee >= cfg.get('serviceFee', 0);
+    }
+    // Package (courier) orders have no store: zero items, no seller, placeholder store id
+    function validPackageShape(d) {
+      return d.subtotal == 0 &&
+             d.get('merchantOwnerUid', null) == null &&
+             d.restaurantId is string && d.restaurantId.matches('package_.*');
+    }
+
     function validNewOrder() {
       let d = request.resource.data;
       return d.userId == uid() &&
-             d.status in ['PENDING', 'AWAITING_PAYMENT'] &&
+             (isPackageData(d)
+               // cash packages go straight to drivers; online-paid packages wait for payment
+               ? validPackageShape(d) &&
+                 ((d.status == 'READY' && d.paymentMethod == 'COD' && d.paymentStatus == 'PENDING') ||
+                  (d.status == 'AWAITING_PAYMENT' && d.paymentMethod == 'CHAPA'))
+               : d.status in ['PENDING', 'AWAITING_PAYMENT']) &&
+             feesAtLeastPlatformMinimum(d) &&
              d.paymentStatus in ['PENDING', 'UNPAID'] &&
              d.get('driverId', null) == null &&
              !('cashCollected' in d) && !('refundStatus' in d) && !('paidAt' in d) &&
              d.total is number && d.subtotal is number && d.deliveryFee is number && d.serviceFee is number &&
-             d.deliveryFee >= 50 && d.serviceFee >= 0 && d.total >= 0 &&
+             d.deliveryFee >= 0 && d.serviceFee >= 0 && d.total >= 0 &&
              // total must add up (promo discount is the only reduction)
              math.abs(d.total - (d.subtotal + d.deliveryFee + d.serviceFee - d.get('promoDiscount', 0))) < 0.05;
     }
 
-    // Customer: cancel before the store accepts and before a driver is assigned
+    // Customer: cancel before the store accepts (packages: before a driver takes it)
     function customerCancels() {
       return isOrderCustomer() &&
-             resource.data.status in ['AWAITING_PAYMENT', 'PENDING', 'AWAITING_MERCHANT', 'MERCHANT_REJECTED'] &&
+             (resource.data.status in ['AWAITING_PAYMENT', 'PENDING', 'AWAITING_MERCHANT', 'MERCHANT_REJECTED'] ||
+              (resource.data.status == 'READY' && isPackageData(resource.data))) &&
              resource.data.get('driverId', null) == null &&
              request.resource.data.status == 'CANCELLED' &&
              request.resource.data.paymentStatus == resource.data.paymentStatus &&
@@ -149,11 +177,13 @@ service cloud.firestore {
              resource.data.status == 'AWAITING_PAYMENT' &&
              resource.data.get('paymentMethod', '') == 'CHAPA' &&
              resource.data.get('chapaMerchantReference', '') != '' &&
-             request.resource.data.status == 'PENDING' &&
+             // packages skip the store and go straight to drivers
+             request.resource.data.status == (isPackageData(resource.data) ? 'READY' : 'PENDING') &&
              request.resource.data.paymentStatus == 'PAID' &&
              request.resource.data.chapaVerifiedAmount is number &&
              request.resource.data.chapaVerifiedAmount + 0.01 >= resource.data.total &&
-             onlyChanges(['status', 'paymentStatus', 'paidAt', 'chapaVerifiedAmount', 'paymentVerifiedBy', 'updatedAt']);
+             onlyChanges(['status', 'paymentStatus', 'paidAt', 'chapaVerifiedAmount', 'paymentVerifiedBy', 'updatedAt',
+                          'readyAt', 'dispatchStartedAt']);
     }
 
     // Store: accept / decline / prepare / ready, in order

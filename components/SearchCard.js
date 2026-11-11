@@ -7,8 +7,11 @@ import Txt from "./ui/Txt";
 import { useTheme } from "../theme/theme";
 import { money } from "../utils/format";
 import { getCustomerPrice, getItemDiscountInfo } from "../utils/pricing";
+import { usePricingConfig } from "../utils/usePricingConfig";
 
 const SearchCard = ({ results }) => {
+  // Re-render with the Super Admin's live pricing
+  const pricingConfig = usePricingConfig();
   const navigation = useNavigation();
   const { c } = useTheme();
   const id = results.restaurantId ? results.restaurantId : results.id;

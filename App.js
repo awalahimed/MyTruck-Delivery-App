@@ -8,12 +8,14 @@ import { AuthContextProvder } from "./contexts/AuthContext";
 import { NotificationProvider } from "./contexts/NotificationContext";
 import { navigationRef } from "./navigation/RootNavigation";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { PricingConfigSync } from "./utils/usePricingConfig";
 
 export default function App() {
   return (
     <ErrorBoundary>
       <NavigationContainer ref={navigationRef}>
         <AuthContextProvder>
+          <PricingConfigSync />
           <NotificationProvider>
             <Provider store={store}>
               <RootNavigator />

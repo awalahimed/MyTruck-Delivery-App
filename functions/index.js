@@ -196,7 +196,12 @@ exports.verifyChapaPayment = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (requ
     batch.update(d.ref, {
       paymentStatus: "PAID",
       // Only move orders still waiting on payment; never undo a cancel or later stage.
-      ...(d.data().status === "AWAITING_PAYMENT" ? { status: "PENDING" } : {}),
+      // (package orders have no store step: once paid they go straight to drivers)
+      ...(d.data().status === "AWAITING_PAYMENT"
+        ? d.data().orderType === "PACKAGE"
+          ? { status: "READY", readyAt: FieldValue.serverTimestamp(), dispatchStartedAt: FieldValue.serverTimestamp() }
+          : { status: "PENDING" }
+        : {}),
       // Paid after the customer cancelled: money must go back
       ...(cancelled ? { refundStatus: "REQUESTED", refundAmount: Number(d.data().total || 0) } : {}),
       paidAt: FieldValue.serverTimestamp(),

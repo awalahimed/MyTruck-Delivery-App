@@ -62,6 +62,7 @@ import {
   FAR_DISTANCE_NOTICE,
   isFarDistance,
 } from "../utils/pricing";
+import { usePricingConfig } from "../utils/usePricingConfig";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -89,6 +90,8 @@ function CartItemImage({ uri, style }) {
 }
 
 export default function BasketScreen() {
+  // Re-render with the Super Admin's live pricing
+  const pricingConfig = usePricingConfig();
   const navigation = useNavigation();
   const dispatch = useDispatch();
   const items = useSelector(selectBasketItems) || [];
@@ -106,12 +109,21 @@ export default function BasketScreen() {
   const [cartSearch, setCartSearch] = useState("");
   const [selectedMerchantIds, setSelectedMerchantIds] = useState([]);
 
-  // Payment configuration from Super Admin Settings
+  // Payment & platform pricing configuration from Super Admin Settings
   const [paymentConfig, setPaymentConfig] = useState({
     chapaEnabled: true,
     telebirrEnabled: false,
     cbeBirrEnabled: false,
     codEnabled: false,
+  });
+  const [platformPricing, setPlatformPricing] = useState({
+    baseFee: 50,
+    perKmFee: 25,
+    serviceFee: 15,
+    itemMarkupPercent: 20,
+    itemMarkupFlat: 100,
+    commissionRate: 15,
+    deliveryCommissionPercent: 20,
   });
 
   useEffect(() => {
@@ -125,6 +137,15 @@ export default function BasketScreen() {
             telebirrEnabled: d.telebirrEnabled === true,
             cbeBirrEnabled: d.cbeBirrEnabled === true,
             codEnabled: d.codEnabled === true,
+          });
+          setPlatformPricing({
+            baseFee: Number(d.baseFee) || 50,
+            perKmFee: Number(d.perKmFee) || 25,
+            serviceFee: Number(d.serviceFee != null ? d.serviceFee : 15),
+            itemMarkupPercent: Number(d.itemMarkupPercent != null ? d.itemMarkupPercent : 20),
+            itemMarkupFlat: Number(d.itemMarkupFlat != null ? d.itemMarkupFlat : 100),
+            commissionRate: Number(d.commissionRate != null ? d.commissionRate : 15),
+            deliveryCommissionPercent: Number(d.deliveryCommissionPercent != null ? d.deliveryCommissionPercent : 20),
           });
         }
       },
@@ -303,7 +324,7 @@ export default function BasketScreen() {
     return selectedGroups.reduce((sum, g) => sum + g.subtotal, 0);
   }, [selectedGroups]);
 
-  // Authoritative delivery and service fees — 25 ETB/km, minimum 50 ETB
+  // Authoritative delivery and service fees — per-km rate and minimum fee set by the Super Admin
   const deliveryQuotes = selectedGroups.map((g) =>
     calculateDeliveryQuote(
       { latitude: g.merchantLat, longitude: g.merchantLng, city: g.merchantCity },
@@ -311,11 +332,11 @@ export default function BasketScreen() {
     )
   );
 
-  const deliveryFee = deliveryQuotes.reduce((acc, q) => acc + (q.deliveryFee || 50), 0) || (selectedGroups.length * 50);
+  const deliveryFee = deliveryQuotes.reduce((acc, q) => acc + Number(q.deliveryFee ?? pricingConfig.minimumDeliveryFee), 0);
   const totalDistanceKm = deliveryQuotes.reduce((acc, q) => acc + (q.distanceKm || 2), 0);
 
-  // Each store becomes its own order, and each order carries the 15 ETB service fee
-  const serviceFee = 15 * selectedGroups.length;
+  // Each store becomes its own order, and each order carries the admin-configured service fee
+  const serviceFee = pricingConfig.serviceFee * selectedGroups.length;
 
   const discountAmount = useMemo(() => {
     if (!appliedPromo) return 0;
@@ -448,7 +469,7 @@ export default function BasketScreen() {
 
     // Spread the promo discount across the store orders (FREESHIP by delivery fee, others by items)
     const promoTotal = Number((discountAmount || 0).toFixed(2));
-    const weightOf = (g) => (appliedPromo?.code === "FREESHIP" ? g.quote.deliveryFee || 50 : g.sellSubtotal);
+    const weightOf = (g) => (appliedPromo?.code === "FREESHIP" ? Number(g.quote.deliveryFee || 0) : g.sellSubtotal);
     const weightSum = groups.reduce((sum, g) => sum + weightOf(g), 0) || 1;
     let allocated = 0;
     return groups.map((g, i) => {
@@ -459,9 +480,9 @@ export default function BasketScreen() {
       allocated += share;
       const fin = calculateOrderFinancials({
         subtotal: Number(g.sellSubtotal.toFixed(2)),
-        deliveryFee: g.quote.deliveryFee || 50,
-        serviceFee: 15,
-        deliveryCommissionPercent: 20,
+        deliveryFee: g.quote.deliveryFee,
+        serviceFee: pricingConfig.serviceFee,
+        deliveryCommissionPercent: pricingConfig.deliveryCommissionPercent,
         merchantBaseSubtotal: Number(g.baseSubtotal.toFixed(2)),
         promoDiscount: share,
       });
@@ -1170,15 +1191,17 @@ Please try again, or choose Cash on Delivery.`,
               <View style={s.deliveryBreakdownRow}>
                 <MaterialCommunityIcons name="speedometer" size={15} color="#179B83" />
                 <Text style={s.deliveryBreakdownLabel}>Rate</Text>
-                <Text style={s.deliveryBreakdownVal}>25 ETB / km</Text>
+                <Text style={s.deliveryBreakdownVal}>{pricingConfig.deliveryRatePerKm} ETB / km</Text>
               </View>
               <View style={[s.deliveryBreakdownRow, { borderTopWidth: 0.5, borderTopColor: "#CBD5E1", marginTop: 4, paddingTop: 6 }]}>
                 <MaterialCommunityIcons name="truck-fast" size={15} color="#0B2A26" />
                 <Text style={[s.deliveryBreakdownLabel, { fontWeight: "700", color: "#0B2A26" }]}>Delivery Fee</Text>
                 <Text style={[s.deliveryBreakdownVal, { fontWeight: "700", color: "#0B2A26" }]}>{formatETB(deliveryFee)}</Text>
               </View>
-              {totalDistanceKm < 2 && (
-                <Text style={s.deliveryMinNote}>* Minimum delivery fee applies (50 ETB)</Text>
+              {deliveryQuotes.some((q) => q.distanceKm * q.ratePerKm < q.minimumDeliveryFee) && (
+                <Text style={s.deliveryMinNote}>
+                  * Minimum delivery fee applies ({pricingConfig.minimumDeliveryFee} ETB)
+                </Text>
               )}
             </View>
 

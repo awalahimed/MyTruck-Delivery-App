@@ -34,6 +34,7 @@ import {
   FAR_DISTANCE_NOTICE,
   isFarDistance,
 } from "../utils/pricing";
+import { usePricingConfig } from "../utils/usePricingConfig";
 
 const { width } = Dimensions.get("window");
 const TEAL = "#179B83";
@@ -54,6 +55,8 @@ const SHOP_CATEGORIES = [
 const DEFAULT_SHOP_IMAGE = require("../assets/cropped/banner_burger.png");
 
 export default function ShopsScreen() {
+  // Re-render with the Super Admin's live pricing
+  const pricingConfig = usePricingConfig();
   const navigation = useNavigation();
   const dispatch = useDispatch();
   const basketItems = useSelector(selectBasketItems);

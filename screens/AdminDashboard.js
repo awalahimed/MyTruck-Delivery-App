@@ -43,7 +43,15 @@ import BackButton from "../components/ui/BackButton";
 import NotificationBell from "../components/ui/NotificationBell";
 import SmartImage from "../components/ui/SmartImage";
 import { triggerLocalTestAlert } from "../services/notificationService";
-import { calculateOrderFinancials, aggregateFinancialMetrics, calculateDistanceKm } from "../utils/pricing";
+import {
+  aggregateFinancialMetrics,
+  calculateDistanceKm,
+  financialsFromOrder,
+  getCustomerPrice,
+  normalizePricingConfig,
+  PACKAGE_TYPES,
+  DEFAULT_PRICING_CONFIG,
+} from "../utils/pricing";
 import { notifyUser, notifyCustomer } from "../services/orderNotifications";
 
 const TEAL = "#179B83";
@@ -147,12 +155,19 @@ export default function AdminDashboard() {
   const [activeDocBiz, setActiveDocBiz] = useState(null);
 
   // Platform configuration state
-  const [baseFee, setBaseFee] = useState("40");
-  const [perKmFee, setPerKmFee] = useState("15");
-  const [commissionRate, setCommissionRate] = useState("15");
-  const [itemMarkupPercent, setItemMarkupPercent] = useState("20");
-  const [itemMarkupFlat, setItemMarkupFlat] = useState("100");
-  const [serviceFeeConfig, setServiceFeeConfig] = useState("15");
+  // (strings while editing; validated and normalized on save — see utils/pricing.js)
+  const [baseFee, setBaseFee] = useState(String(DEFAULT_PRICING_CONFIG.minimumDeliveryFee)); // minimum delivery fee
+  const [perKmFee, setPerKmFee] = useState(String(DEFAULT_PRICING_CONFIG.deliveryRatePerKm)); // ETB per km
+  const [deliveryCommissionPct, setDeliveryCommissionPct] = useState(String(DEFAULT_PRICING_CONFIG.deliveryCommissionPercent));
+  const [itemMarkupPercent, setItemMarkupPercent] = useState(String(DEFAULT_PRICING_CONFIG.itemMarkupPercent));
+  const [itemMarkupFlat, setItemMarkupFlat] = useState(String(DEFAULT_PRICING_CONFIG.itemMarkupFlat));
+  const [serviceFeeConfig, setServiceFeeConfig] = useState(String(DEFAULT_PRICING_CONFIG.serviceFee));
+  const [packageBaseFee, setPackageBaseFee] = useState(String(DEFAULT_PRICING_CONFIG.packageBaseFee));
+  const [packageRatePerKm, setPackageRatePerKm] = useState(String(DEFAULT_PRICING_CONFIG.packageRatePerKm));
+  const [packageMinimumFee, setPackageMinimumFee] = useState(String(DEFAULT_PRICING_CONFIG.packageMinimumFee));
+  const [packageSurcharges, setPackageSurcharges] = useState(() =>
+    Object.fromEntries(PACKAGE_TYPES.map((t) => [t, String(DEFAULT_PRICING_CONFIG.packageTypeSurcharges[t])]))
+  );
   const [codEnabled, setCodEnabled] = useState(false);
   const [telebirrEnabled, setTelebirrEnabled] = useState(true);
   const [cbeBirrEnabled, setCbeBirrEnabled] = useState(true);
@@ -239,12 +254,20 @@ export default function AdminDashboard() {
       // Configuration
       if (cfgSnap.exists()) {
         const cfg = cfgSnap.data();
-        if (cfg.baseFee) setBaseFee(String(cfg.baseFee));
-        if (cfg.perKmFee) setPerKmFee(String(cfg.perKmFee));
-        if (cfg.commissionRate) setCommissionRate(String(cfg.commissionRate));
-        if (cfg.itemMarkupPercent !== undefined) setItemMarkupPercent(String(cfg.itemMarkupPercent));
-        if (cfg.itemMarkupFlat !== undefined) setItemMarkupFlat(String(cfg.itemMarkupFlat));
-        if (cfg.serviceFee !== undefined) setServiceFeeConfig(String(cfg.serviceFee));
+        // Same normalization the customer app uses, so the form shows exactly what customers pay
+        const pc = normalizePricingConfig(cfg);
+        setBaseFee(String(pc.minimumDeliveryFee));
+        setPerKmFee(String(pc.deliveryRatePerKm));
+        setDeliveryCommissionPct(String(pc.deliveryCommissionPercent));
+        setItemMarkupPercent(String(pc.itemMarkupPercent));
+        setItemMarkupFlat(String(pc.itemMarkupFlat));
+        setServiceFeeConfig(String(pc.serviceFee));
+        setPackageBaseFee(String(pc.packageBaseFee));
+        setPackageRatePerKm(String(pc.packageRatePerKm));
+        setPackageMinimumFee(String(pc.packageMinimumFee));
+        setPackageSurcharges(
+          Object.fromEntries(PACKAGE_TYPES.map((t) => [t, String(pc.packageTypeSurcharges[t])]))
+        );
         if (cfg.codEnabled !== undefined) setCodEnabled(Boolean(cfg.codEnabled));
         if (cfg.telebirrEnabled !== undefined) setTelebirrEnabled(Boolean(cfg.telebirrEnabled));
         if (cfg.cbeBirrEnabled !== undefined) setCbeBirrEnabled(Boolean(cfg.cbeBirrEnabled));
@@ -631,7 +654,7 @@ export default function AdminDashboard() {
       if (match) {
         const val = Number(o.total || 0);
         match.gmv += val;
-        match.commission += (val * Number(commissionRate || 15)) / 100;
+        match.commission += financialsFromOrder(o).companyProfit;
         match.orders += 1;
       }
     }
@@ -645,7 +668,7 @@ export default function AdminDashboard() {
       maxDayGmv,
       growthPct: "+14.8%",
     };
-  }, [allOrders, commissionRate]);
+  }, [allOrders]);
 
   // Daily Merchant & Fleet Performance aggregation matching user mandate
   const merchantFleetDailyMetrics = useMemo(() => {
@@ -1109,15 +1132,55 @@ export default function AdminDashboard() {
 
   // Action: Save Platform Configuration
   const handleSavePlatformConfig = async () => {
-    setSavingConfig(true);
     try {
+      // Validate every number: blank/negative/non-numeric values are rejected instead of
+      // silently replaced (0 is a valid value, e.g. no service fee).
+      const fields = [
+        ["Minimum delivery fee", baseFee, 100000],
+        ["Per-KM delivery rate", perKmFee, 10000],
+        ["Rider delivery commission %", deliveryCommissionPct, 100],
+        ["Item percentage markup", itemMarkupPercent, 500],
+        ["Item flat markup", itemMarkupFlat, 100000],
+        ["Customer service fee", serviceFeeConfig, 100000],
+        ["Package base fee", packageBaseFee, 100000],
+        ["Package per-KM rate", packageRatePerKm, 10000],
+        ["Package minimum fee", packageMinimumFee, 100000],
+        ...PACKAGE_TYPES.map((t) => [`${t} surcharge`, packageSurcharges[t], 100000]),
+      ];
+      for (const [label, raw, max] of fields) {
+        const str = String(raw ?? "").trim();
+        const n = Number(str);
+        if (str === "" || !Number.isFinite(n) || n < 0 || n > max) {
+          Alert.alert("Invalid value", `${label} must be a number between 0 and ${max}.`);
+          return;
+        }
+      }
+      const pc = normalizePricingConfig({
+        minimumDeliveryFee: baseFee,
+        deliveryRatePerKm: perKmFee,
+        deliveryCommissionPercent: deliveryCommissionPct,
+        itemMarkupPercent,
+        itemMarkupFlat,
+        serviceFee: serviceFeeConfig,
+        packageBaseFee,
+        packageRatePerKm,
+        packageMinimumFee,
+        packageTypeSurcharges: packageSurcharges,
+      });
       const payload = {
-        baseFee: Number(baseFee) || 40,
-        perKmFee: Number(perKmFee) || 15,
-        commissionRate: Number(commissionRate) || 15,
-        itemMarkupPercent: Number(itemMarkupPercent) || 20,
-        itemMarkupFlat: Number(itemMarkupFlat) || 100,
-        serviceFee: Number(serviceFeeConfig) || 15,
+        // legacy names kept in sync for older app versions
+        baseFee: pc.minimumDeliveryFee,
+        perKmFee: pc.deliveryRatePerKm,
+        minimumDeliveryFee: pc.minimumDeliveryFee,
+        deliveryRatePerKm: pc.deliveryRatePerKm,
+        deliveryCommissionPercent: pc.deliveryCommissionPercent,
+        itemMarkupPercent: pc.itemMarkupPercent,
+        itemMarkupFlat: pc.itemMarkupFlat,
+        serviceFee: pc.serviceFee,
+        packageBaseFee: pc.packageBaseFee,
+        packageRatePerKm: pc.packageRatePerKm,
+        packageMinimumFee: pc.packageMinimumFee,
+        packageTypeSurcharges: pc.packageTypeSurcharges,
         codEnabled,
         telebirrEnabled,
         cbeBirrEnabled,
@@ -1126,8 +1189,12 @@ export default function AdminDashboard() {
         updatedAt: serverTimestamp(),
         updatedBy: dbUser?.email || "superadmin",
       };
+      setSavingConfig(true);
       await setDoc(doc(db, "platformSettings", "config"), payload, { merge: true });
-      Alert.alert("Settings Saved", "Platform configuration and pricing rules updated successfully!");
+      Alert.alert(
+        "Settings Saved",
+        "Pricing and payment settings are live. Customers see the new prices immediately; orders already placed keep the prices they were placed with."
+      );
     } catch (err) {
       Alert.alert("Save Failed", err?.message || "Could not persist settings.");
     } finally {
@@ -2706,12 +2773,7 @@ export default function AdminDashboard() {
               filteredLedgerOrders
                 .slice((ledgerPage - 1) * 5, ledgerPage * 5)
                 .map((ord) => {
-                  const fin = calculateOrderFinancials({
-                    subtotal: ord.subtotal || ord.merchantBaseSubtotal || (Number(ord.total || 0) > 75 ? Number(ord.total) - 75 : 0),
-                    deliveryFee: ord.deliveryFee || 60,
-                    serviceFee: ord.serviceFee != null ? ord.serviceFee : 15,
-                    deliveryCommissionPercent: ord.deliveryCommissionPercent != null ? ord.deliveryCommissionPercent : 20,
-                  });
+                  const fin = financialsFromOrder(ord);
                   const isPaid = ord.paymentStatus === "PAID" || ord.status === "COMPLETE";
                   return (
                     <TouchableOpacity
@@ -3256,29 +3318,49 @@ export default function AdminDashboard() {
           <>
             <Text style={s.sectionHeader}>Delivery Pricing Rules</Text>
             <View style={s.configCard}>
-              <Text style={s.configLabel}>Base Delivery Fee (ETB)</Text>
-              <TextInput
-                style={s.configInput}
-                value={baseFee}
-                onChangeText={setBaseFee}
-                keyboardType="numeric"
-              />
-
-              <Text style={s.configLabel}>Per-KM Distance Surcharge (ETB)</Text>
+              <Text style={s.configLabel}>Delivery Rate per KM (ETB)</Text>
               <TextInput
                 style={s.configInput}
                 value={perKmFee}
                 onChangeText={setPerKmFee}
                 keyboardType="numeric"
+                placeholder={String(DEFAULT_PRICING_CONFIG.deliveryRatePerKm)}
               />
 
-              <Text style={s.configLabel}>Merchant Platform Commission Rate (%)</Text>
+              <Text style={s.configLabel}>Minimum Delivery Fee (ETB)</Text>
               <TextInput
                 style={s.configInput}
-                value={commissionRate}
-                onChangeText={setCommissionRate}
+                value={baseFee}
+                onChangeText={setBaseFee}
                 keyboardType="numeric"
+                placeholder={String(DEFAULT_PRICING_CONFIG.minimumDeliveryFee)}
               />
+
+              <Text style={s.configLabel}>Company Cut of Delivery Fee (%)</Text>
+              <TextInput
+                style={s.configInput}
+                value={deliveryCommissionPct}
+                onChangeText={setDeliveryCommissionPct}
+                keyboardType="numeric"
+                placeholder={String(DEFAULT_PRICING_CONFIG.deliveryCommissionPercent)}
+              />
+
+              {(() => {
+                const km = 4;
+                const fee = Math.max(Number(baseFee) || 0, Math.round(km * (Number(perKmFee) || 0)));
+                const cut = Number(((fee * (Number(deliveryCommissionPct) || 0)) / 100).toFixed(2));
+                return (
+                  <View style={{ backgroundColor: "#F0FDFA", borderWidth: 1, borderColor: "#99F6E4", borderRadius: 12, padding: 12, marginTop: 10 }}>
+                    <Text style={{ fontSize: 12, fontWeight: "800", color: DARK, marginBottom: 4 }}>Example: {km} km delivery</Text>
+                    <Text style={{ fontSize: 12, color: "#0F766E" }}>
+                      Customer pays delivery: ETB {fee} (max of {Number(baseFee) || 0} minimum and {km} km × {Number(perKmFee) || 0})
+                    </Text>
+                    <Text style={{ fontSize: 12, color: "#0F766E" }}>
+                      Rider earns: ETB {(fee - cut).toFixed(2)} · Company keeps: ETB {cut.toFixed(2)}
+                    </Text>
+                  </View>
+                );
+              })()}
             </View>
 
             <Text style={s.sectionHeader}>Customer Price Markup & Platform Fees</Text>
@@ -3289,7 +3371,7 @@ export default function AdminDashboard() {
                 value={itemMarkupPercent}
                 onChangeText={setItemMarkupPercent}
                 keyboardType="numeric"
-                placeholder="20"
+                placeholder={String(DEFAULT_PRICING_CONFIG.itemMarkupPercent)}
               />
 
               <Text style={s.configLabel}>Item Flat Markup / Surcharge (ETB)</Text>
@@ -3298,44 +3380,111 @@ export default function AdminDashboard() {
                 value={itemMarkupFlat}
                 onChangeText={setItemMarkupFlat}
                 keyboardType="numeric"
-                placeholder="100"
+                placeholder={String(DEFAULT_PRICING_CONFIG.itemMarkupFlat)}
               />
 
-              <Text style={s.configLabel}>Customer Service Fee (ETB)</Text>
+              <Text style={s.configLabel}>Customer Service Fee per Order (ETB)</Text>
               <TextInput
                 style={s.configInput}
                 value={serviceFeeConfig}
                 onChangeText={setServiceFeeConfig}
                 keyboardType="numeric"
-                placeholder="15"
+                placeholder={String(DEFAULT_PRICING_CONFIG.serviceFee)}
               />
 
-              {/* Dynamic Live Formula Preview Card */}
-              <View style={{ backgroundColor: "#F0FDFA", borderWidth: 1, borderColor: "#99F6E4", borderRadius: 12, padding: 12, marginTop: 10 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 6 }}>
-                  <MaterialCommunityIcons name="calculator" size={16} color={TEAL} style={{ marginRight: 6 }} />
-                  <Text style={{ fontSize: 12, fontWeight: "800", color: DARK }}>Live Pricing Formula Preview</Text>
+              {/* Live preview — computed with the exact same function the customer app uses */}
+              {(() => {
+                const sample = 500;
+                const pct = Number(itemMarkupPercent) || 0;
+                const flat = Number(itemMarkupFlat) || 0;
+                const customer = getCustomerPrice(sample, { itemMarkupPercent: pct, itemMarkupFlat: flat });
+                return (
+                  <View style={{ backgroundColor: "#F0FDFA", borderWidth: 1, borderColor: "#99F6E4", borderRadius: 12, padding: 12, marginTop: 10 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 6 }}>
+                      <MaterialCommunityIcons name="calculator" size={16} color={TEAL} style={{ marginRight: 6 }} />
+                      <Text style={{ fontSize: 12, fontWeight: "800", color: DARK }}>Live Pricing Formula Preview</Text>
+                    </View>
+                    <Text style={{ fontSize: 12, color: "#334155", lineHeight: 18 }}>
+                      If a restaurant lists a food item at <Text style={{ fontWeight: "800", color: DARK }}>{sample} ETB</Text>:
+                    </Text>
+                    <Text style={{ fontSize: 12, color: "#0F766E", marginTop: 2 }}>
+                      + {pct}% Markup = {Math.round((sample * pct) / 100)} ETB
+                    </Text>
+                    <Text style={{ fontSize: 12, color: "#0F766E" }}>+ Flat Surcharge = {flat} ETB</Text>
+                    <View style={{ height: 1, backgroundColor: "#CCFBF1", marginVertical: 6 }} />
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <Text style={{ fontSize: 13, fontWeight: "800", color: DARK }}>Customer Sees & Pays:</Text>
+                      <Text style={{ fontSize: 15, fontWeight: "900", color: "#E11D48" }}>ETB {customer}</Text>
+                    </View>
+                    <Text style={{ fontSize: 11, color: "#166534", marginTop: 3 }}>
+                      ✓ Merchant receives their base price: {sample} ETB net · Platform keeps {customer - sample} ETB
+                    </Text>
+                    <Text style={{ fontSize: 11, color: "#64748B", marginTop: 3 }}>
+                      Plus delivery fee and a {Number(serviceFeeConfig) || 0} ETB service fee per order at checkout.
+                    </Text>
+                  </View>
+                );
+              })()}
+            </View>
+
+            <Text style={s.sectionHeader}>Package Delivery Pricing</Text>
+            <View style={s.configCard}>
+              <Text style={s.configLabel}>Package Base Pickup Fee (ETB)</Text>
+              <TextInput
+                style={s.configInput}
+                value={packageBaseFee}
+                onChangeText={setPackageBaseFee}
+                keyboardType="numeric"
+                placeholder={String(DEFAULT_PRICING_CONFIG.packageBaseFee)}
+              />
+
+              <Text style={s.configLabel}>Package Rate per KM (ETB)</Text>
+              <TextInput
+                style={s.configInput}
+                value={packageRatePerKm}
+                onChangeText={setPackageRatePerKm}
+                keyboardType="numeric"
+                placeholder={String(DEFAULT_PRICING_CONFIG.packageRatePerKm)}
+              />
+
+              <Text style={s.configLabel}>Package Minimum Fee (ETB)</Text>
+              <TextInput
+                style={s.configInput}
+                value={packageMinimumFee}
+                onChangeText={setPackageMinimumFee}
+                keyboardType="numeric"
+                placeholder={String(DEFAULT_PRICING_CONFIG.packageMinimumFee)}
+              />
+
+              {PACKAGE_TYPES.map((t) => (
+                <View key={t}>
+                  <Text style={s.configLabel}>Surcharge: {t} (ETB)</Text>
+                  <TextInput
+                    style={s.configInput}
+                    value={packageSurcharges[t]}
+                    onChangeText={(v) => setPackageSurcharges((prev) => ({ ...prev, [t]: v }))}
+                    keyboardType="numeric"
+                    placeholder={String(DEFAULT_PRICING_CONFIG.packageTypeSurcharges[t])}
+                  />
                 </View>
-                <Text style={{ fontSize: 12, color: "#334155", lineHeight: 18 }}>
-                  If a restaurant lists a food item at <Text style={{ fontWeight: "800", color: DARK }}>500 ETB</Text>:
-                </Text>
-                <Text style={{ fontSize: 12, color: "#0F766E", marginTop: 2 }}>
-                  + {itemMarkupPercent || 0}% Markup = {Math.round(500 * (Number(itemMarkupPercent || 0) / 100))} ETB
-                </Text>
-                <Text style={{ fontSize: 12, color: "#0F766E" }}>
-                  + Flat Surcharge = {Number(itemMarkupFlat || 0)} ETB
-                </Text>
-                <View style={{ height: 1, backgroundColor: "#CCFBF1", marginVertical: 6 }} />
-                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                  <Text style={{ fontSize: 13, fontWeight: "800", color: DARK }}>Customer Sees & Pays:</Text>
-                  <Text style={{ fontSize: 15, fontWeight: "900", color: "#E11D48" }}>
-                    ETB {500 + Math.round(500 * (Number(itemMarkupPercent || 0) / 100)) + Number(itemMarkupFlat || 0)}
-                  </Text>
-                </View>
-                <Text style={{ fontSize: 11, color: "#166534", marginTop: 3 }}>
-                  ✓ Merchant receives their base price: 500 ETB net
-                </Text>
-              </View>
+              ))}
+
+              {(() => {
+                const km = 5;
+                const t = PACKAGE_TYPES[1];
+                const fee = Math.round(
+                  Math.max(Number(packageMinimumFee) || 0, (Number(packageBaseFee) || 0) + km * (Number(packageRatePerKm) || 0)) +
+                    (Number(packageSurcharges[t]) || 0)
+                );
+                return (
+                  <View style={{ backgroundColor: "#F0FDFA", borderWidth: 1, borderColor: "#99F6E4", borderRadius: 12, padding: 12, marginTop: 10 }}>
+                    <Text style={{ fontSize: 12, fontWeight: "800", color: DARK, marginBottom: 4 }}>Example: {t}, {km} km</Text>
+                    <Text style={{ fontSize: 12, color: "#0F766E" }}>
+                      Delivery: ETB {fee} + service fee ETB {Number(serviceFeeConfig) || 0} = ETB {fee + (Number(serviceFeeConfig) || 0)}
+                    </Text>
+                  </View>
+                );
+              })()}
             </View>
 
             <Text style={s.sectionHeader}>Payment Providers</Text>
@@ -3790,12 +3939,12 @@ export default function AdminDashboard() {
                   </View>
                   <View style={s.finRow}>
                     <Text style={s.finLabel}>Delivery Fee</Text>
-                    <Text style={s.finVal}>ETB {Number(selectedOrderDetail.deliveryFee || baseFee).toFixed(2)}</Text>
+                    <Text style={s.finVal}>ETB {Number(selectedOrderDetail.deliveryFee ?? 0).toFixed(2)}</Text>
                   </View>
                   <View style={s.finRow}>
-                    <Text style={s.finLabel}>Platform Commission ({commissionRate}%)</Text>
+                    <Text style={s.finLabel}>Platform Revenue (markup + fees)</Text>
                     <Text style={[s.finVal, { color: TEAL }]}>
-                      ETB {((Number(selectedOrderDetail.total || 0) * Number(commissionRate || 15)) / 100).toFixed(2)}
+                      ETB {financialsFromOrder(selectedOrderDetail).companyProfit.toFixed(2)}
                     </Text>
                   </View>
                   <View style={s.txDivider} />
@@ -4076,7 +4225,7 @@ export default function AdminDashboard() {
                   <View style={s.finRow}>
                     <Text style={s.finLabel}>Delivery Fee</Text>
                     <Text style={s.finVal}>
-                      ETB {Number(receiptModalTx.deliveryFee || baseFee).toFixed(2)}
+                      ETB {Number(receiptModalTx.deliveryFee ?? 0).toFixed(2)}
                     </Text>
                   </View>
                   <View style={s.finRow}>

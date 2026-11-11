@@ -162,7 +162,10 @@ export async function verifyChapaPayment({ orderId, txRef, uid }) {
     toForward.forEach((o) =>
       batch.update(doc(db, "orders", o.id), {
         paymentStatus: "PAID",
-        status: "PENDING",
+        // Package orders have no store step: once paid they go straight to drivers
+        ...(o.orderType === "PACKAGE"
+          ? { status: "READY", readyAt: serverTimestamp(), dispatchStartedAt: serverTimestamp() }
+          : { status: "PENDING" }),
         paidAt: serverTimestamp(),
         chapaVerifiedAmount: paid,
         paymentVerifiedBy: "app",
