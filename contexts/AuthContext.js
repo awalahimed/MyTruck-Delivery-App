@@ -10,6 +10,7 @@ import {
 } from "firebase/auth";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { auth, db, app } from "../firebase";
+import { sendSignupCode } from "../services/otpClient";
 import { doc, getDoc, setDoc, updateDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -124,7 +125,7 @@ export const formatAuthError = (
 
   // Weak password
   if (code.includes("weak-password") || rawMsg.includes("weak-password")) {
-    return "Password is too weak. Please use at least 6 characters with letters and numbers.";
+    return "Password is too weak. Use at least 8 characters with letters and numbers.";
   }
 
   // Invalid email format
@@ -468,16 +469,19 @@ export const AuthContextProvder = ({ children }) => {
    * Creates the Firebase Auth account, writes the Firestore profile,
    * updates state, and sets dbUser so RootNavigator seamlessly renders AppStack.
    */
-  const registerCustomer = useCallback(async ({ fullName, phone, password }) => {
+  const registerCustomer = useCallback(async ({ fullName, phone, password, email, proof }) => {
     const norm = normalizeEthiopianPhone(phone);
     if (!norm.isValid) throw new Error(norm.error);
+    // Email is required: it's the account's sign-in and the address password reset goes to
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) throw new Error("Enter a valid email address.");
 
     setAuthLoading(true);
     let createdUid = null;
 
     try {
       // 1. Create Firebase Auth user
-      const userCred = await createUserWithEmailAndPassword(auth, norm.authEmail, password);
+      const userCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
       createdUid = userCred.user.uid;
 
       // 2. Prepare profile
@@ -491,7 +495,8 @@ export const AuthContextProvder = ({ children }) => {
         firstName,
         lastName,
         phoneNumber: norm.intlNumber,
-        phoneVerified: true,
+        email: cleanEmail,
+        phoneVerified: Boolean(proof),
         role: "customer",
         address: "Bole, Addis Ababa",
         latitude: 8.9806,
@@ -701,207 +706,19 @@ export const AuthContextProvder = ({ children }) => {
   }, []);
 
   // ── Custom SMS OTP Authentication (Zero Firebase Phone Auth Billing) ────────
+  // ── Phone verification for sign-up (server-side: see services/otpClient.js) ──
+  // The SMS key and the code check now live on the server, so nothing secret is in the app.
   const requestOtp = useCallback(async (phoneInput) => {
     const norm = normalizeEthiopianPhone(phoneInput);
     if (!norm.isValid) throw new Error(norm.error);
-
-    // Compute robust digits directly
-    const rawClean = String(phoneInput || "").replace(/\D/g, "");
-    let fallbackDigits = rawClean;
-    if (fallbackDigits.startsWith("251") && fallbackDigits.length === 12) {
-      // good
-    } else if (fallbackDigits.startsWith("0") && fallbackDigits.length === 10) {
-      fallbackDigits = "251" + fallbackDigits.slice(1);
-    } else if (fallbackDigits.length === 9) {
-      fallbackDigits = "251" + fallbackDigits;
-    }
-    const cleanDigits = String(norm?.cleanDigits || norm?.rawDigits || fallbackDigits).replace(/\D/g, "");
-    const intlNumber = String(norm?.intlNumber || `+${cleanDigits}`);
-    const challengeDocId = `challenge_${cleanDigits}`;
-
-    // Generate secure 6-digit code
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-
-    // Persist challenge record in Firestore
-    await setDoc(doc(db, "phoneOtpChallenges", challengeDocId), {
-      phoneNumber: intlNumber,
-      cleanDigits,
-      code,
-      expiresAt: Date.now() + 5 * 60 * 1000,
-      attempts: 0,
-      consumed: false,
-      updatedAt: serverTimestamp(),
-    }, { merge: true });
-
-    // Send real SMS to Ethiopian mobile
-    const smsRes = await fetch("https://smsethiopia.com/api/v2/sms/send", {
-      method: "POST",
-      headers: {
-        KEY: "01ATJJKPX5H5QEPWXGQ28YYPHQI1FHR6F8JEKDB7",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        msisdn: cleanDigits,
-        text: `Your MyTruck verification code is ${code}. It expires in 5 minutes. Do not share this code with anyone.`,
-      }),
-    });
-
-    if (!smsRes.ok) {
-      const errText = await smsRes.text().catch(() => "");
-      console.warn("SMSEthiopia dispatch error:", smsRes.status, errText);
-      throw new Error("SMS dispatch failed. Please verify your phone number and network.");
-    }
-
-    return {
-      success: true,
-      sent: true,
-      phoneNumber: intlNumber,
-      expiresInSeconds: 300,
-      resendCooldownSeconds: 60,
-    };
+    await sendSignupCode(norm.intlNumber);
+    return { success: true, sent: true, phoneNumber: norm.intlNumber, expiresInSeconds: 300, resendCooldownSeconds: 60 };
   }, []);
 
-  const signInWithOtp = useCallback(async (phoneInput, code) => {
-    const norm = normalizeEthiopianPhone(phoneInput);
-    if (!norm.isValid) throw new Error(norm.error);
-    const cleanCode = String(code).trim();
-    if (!/^\d{6}$/.test(cleanCode)) {
-      throw new Error("Enter a valid 6-digit verification code.");
-    }
-
-    // SECURITY: SMS-code sign-in is disabled until codes are sent and checked by a server.
-    // The previous flow signed users in with a password derived from their phone number,
-    // which let anyone sign in as any phone user. Sign-up SMS verification still works.
-    throw new Error(
-      "SMS code sign-in is turned off for your security. Please sign in with your phone number and password. " +
-        "If you have only ever used SMS codes, open MyTruck on a phone where you're still signed in and set a " +
-        "password in Settings → Security, or contact MyTruck support."
-    );
-
-    setAuthLoading(true);
-    try {
-      let customToken = null;
-      let isExistingUser = false;
-      let targetUid = null;
-
-      // 1. Try Cloud Function first
-      try {
-        const fn = httpsCallable(getFunctions(app), "verifyLoginOtp");
-        const res = await fn({
-          phoneNumber: norm.intlNumber,
-          code: cleanCode,
-        });
-        customToken = res?.data?.customToken;
-        isExistingUser = res?.data?.isExistingUser;
-        targetUid = res?.data?.uid;
-      } catch (cfErr) {
-        console.warn("verifyLoginOtp Cloud Function note, using direct Firestore verification:", cfErr?.message);
-      }
-
-      // 2. Direct Firestore challenge verification
-      if (!customToken) {
-        const rawClean = String(phoneInput || "").replace(/\D/g, "");
-        let fallbackDigits = rawClean;
-        if (fallbackDigits.startsWith("251") && fallbackDigits.length === 12) {
-          // good
-        } else if (fallbackDigits.startsWith("0") && fallbackDigits.length === 10) {
-          fallbackDigits = "251" + fallbackDigits.slice(1);
-        } else if (fallbackDigits.length === 9) {
-          fallbackDigits = "251" + fallbackDigits;
-        }
-        const cleanDigits = String(norm?.cleanDigits || norm?.rawDigits || fallbackDigits).replace(/\D/g, "");
-        const challengeDocId = `challenge_${cleanDigits}`;
-        const challengeRef = doc(db, "phoneOtpChallenges", challengeDocId);
-        const challengeSnap = await getDoc(challengeRef);
-
-        if (!challengeSnap.exists()) {
-          throw new Error("No verification request found for this number. Please request a new code.");
-        }
-
-        const data = challengeSnap.data();
-        if (data.consumed === true) {
-          throw new Error("This verification code has already been used. Please request a new code.");
-        }
-        if (Number(data.expiresAt) < Date.now()) {
-          throw new Error("Verification code has expired. Please request a new code.");
-        }
-        if (Number(data.attempts || 0) >= 5) {
-          throw new Error("Too many incorrect attempts. Please request a new code.");
-        }
-        if (String(data.code).trim() !== cleanCode) {
-          await updateDoc(challengeRef, { attempts: (Number(data.attempts || 0) + 1) }).catch(() => {});
-          throw new Error("Incorrect 6-digit verification code. Please check and try again.");
-        }
-
-        // Mark challenge consumed
-        await updateDoc(challengeRef, { consumed: true, verifiedAt: serverTimestamp() }).catch(() => {});
-      }
-
-      // 3. Resolve existing user profile from Firestore (/user and /users)
-      let resolvedProfile = null;
-      const [uSnap1, uSnap2] = await Promise.all([
-        getDocs(query(collection(db, "user"), where("phoneNumber", "==", norm.intlNumber), limit(1))),
-        getDocs(query(collection(db, "users"), where("phoneNumber", "==", norm.intlNumber), limit(1))),
-      ]);
-
-      if (!uSnap1.empty) {
-        resolvedProfile = { id: uSnap1.docs[0].id, ...uSnap1.docs[0].data() };
-        targetUid = uSnap1.docs[0].id;
-        isExistingUser = true;
-      } else if (!uSnap2.empty) {
-        resolvedProfile = { id: uSnap2.docs[0].id, ...uSnap2.docs[0].data() };
-        targetUid = uSnap2.docs[0].id;
-        isExistingUser = true;
-      }
-
-      // 4. Authenticate session
-      if (customToken) {
-        const userCred = await signInWithCustomToken(auth, customToken);
-        setUser(userCred.user);
-      } else {
-        // Removed: deterministic-password sign-in, auto account creation and anonymous fallback.
-        throw new Error("SMS code sign-in is turned off. Please sign in with your phone number and password.");
-      }
-
-      // 5. Load authoritative profile and verify roles
-      let profile = resolvedProfile;
-      if (auth.currentUser?.uid) {
-        profile = await loadProfileFromFirestore(auth.currentUser.uid, auth.currentUser.email || "");
-      }
-      if (!profile && resolvedProfile) {
-        profile = resolvedProfile;
-      }
-
-      // If completely new user, create initial customer profile
-      if (!profile && targetUid) {
-        profile = {
-          uid: targetUid,
-          phoneNumber: norm.intlNumber,
-          phoneVerified: true,
-          role: "customer",
-          isNewRegistration: true,
-          createdAt: serverTimestamp(),
-        };
-        await setDoc(doc(db, "user", targetUid), profile, { merge: true });
-        await setDoc(doc(db, "users", targetUid), profile, { merge: true });
-      }
-
-      setDbUser(profile);
-      setSessionPhoneVerified(true);
-      setOtpFlowInProgress(false);
-      setAuthLoading(false);
-
-      return {
-        user: auth.currentUser || { uid: targetUid || norm.cleanDigits },
-        profile,
-        isExistingUser: Boolean(resolvedProfile),
-        uid: targetUid,
-      };
-    } catch (err) {
-      setAuthLoading(false);
-      throw err;
-    }
-  }, [loadProfileFromFirestore]);
+  // Phone login by SMS code is off: sign-in uses phone/email + password (see signInUser).
+  const signInWithOtp = useCallback(async () => {
+    throw new Error("SMS code sign-in is turned off. Please sign in with your email and password.");
+  }, []);
 
   return (
     <UserContext.Provider

@@ -24,7 +24,6 @@ import { useDispatch, useSelector } from "react-redux";
 import { setUser, selectUser } from "../features/userSlice";
 import BackButton from "../components/ui/BackButton";
 import {
-  MAP_TILE_URL,
   requestGpsLocation,
   reverseGeocodeLocation,
 } from "../utils/mapService";

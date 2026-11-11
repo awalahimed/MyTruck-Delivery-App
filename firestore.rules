@@ -345,14 +345,10 @@ service cloud.firestore {
       allow read, delete: if signedIn() && (isStaff() || resource.data.get('uid', '') == uid());
     }
 
-    // ── Sign-up SMS verification (interim; replace with a server-side OTP) ─
-    // Readable by id only (no listing) so codes can't be bulk-downloaded.
+    // ── Phone verification codes ──────────────────────────────────────────
+    // Codes now live on the server (Supabase, table phone_otps). The app never reads or writes them.
     match /phoneOtpChallenges/{challengeId} {
-      allow get: if challengeId.matches('challenge_251[79][0-9]{8}');
-      allow create, update: if challengeId.matches('challenge_251[79][0-9]{8}') &&
-        request.resource.data.keys().hasOnly(['phoneNumber', 'cleanDigits', 'code', 'expiresAt',
-                                               'attempts', 'consumed', 'updatedAt', 'verifiedAt']);
-      allow list, delete: if false;
+      allow read, write: if false;
     }
 
     // Everything else is closed

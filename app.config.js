@@ -26,11 +26,26 @@ module.exports = ({ config }) => {
         `eas env:update preview --variable-name CHAPA_SECRET_KEY`
     );
   }
+  // Google Maps key: EAS variable GOOGLE_MAPS_API_KEY wins; app.json's googleMapsApiKey is the fallback.
+  // It is used for the native map (Android) and for Geocoding + Directions (addresses, road distance).
+  const googleMapsKey = String(process.env.GOOGLE_MAPS_API_KEY || config.extra?.googleMapsApiKey || "").trim();
+  if (!googleMapsKey) {
+    console.warn("[config] No Google Maps key: maps will be blank and distances will be straight-line.");
+  }
+
   return {
     ...config,
+    android: {
+      ...config.android,
+      config: {
+        ...(config.android?.config || {}),
+        googleMaps: { apiKey: googleMapsKey },
+      },
+    },
     extra: {
       ...config.extra,
       chapaSecretKey,
+      googleMapsWebKey: googleMapsKey,
     },
   };
 };

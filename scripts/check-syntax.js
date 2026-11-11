@@ -13,7 +13,6 @@ const files = [
   "screens/SignIn.js",
   "screens/SignUp.js",
   "screens/AdminDashboard.js",
-  "components/InteractiveMapView.js",
   "components/DishInfo.js",
   "components/Order.js",
   "components/Search.js",

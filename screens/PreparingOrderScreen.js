@@ -27,7 +27,7 @@ import { notifyMerchant } from "../services/orderNotifications";
 import { startChapaCheckout, verifyChapaPayment } from "../services/chapaClient";
 import { UserAuth } from "../contexts/AuthContext";
 import { getRoleInfo } from "../utils/roles";
-import { MAP_TILE_URL, isWithinEthiopia } from "../utils/mapService";
+import { isWithinEthiopia } from "../utils/mapService";
 import BackButton from "../components/ui/BackButton";
 
 const { width } = Dimensions.get("window");
@@ -77,31 +77,19 @@ export default function PreparingOrderScreen() {
   }), [order?.deliveryLat, order?.deliveryLng, order?.deliveryName, order?.customerName, order?.deliveryAddress, order?.customerAddress]);
 
   // Derive active driver location from live order, or dynamically position along active corridor
+  // Only a real, reported driver position is shown. (Previously a made-up courier dot was drawn
+  // along the route before a driver was assigned.)
   const activeDriverLocation = useMemo(() => {
     if (order?.driverLat && order?.driverLng && isWithinEthiopia(order?.driverLat, order?.driverLng)) {
       return {
         latitude: Number(order.driverLat),
         longitude: Number(order.driverLng),
-        title: order?.driverName ? `Courier (${order.driverName})` : "Delivery Courier (🛵)",
+        title: order?.driverName ? `Driver: ${order.driverName}` : "Your driver",
         status: order?.status,
       };
     }
-    // Dynamic corridor position between restaurant and customer
-    const rLat = restaurantCoord.latitude;
-    const rLng = restaurantCoord.longitude;
-    const dLat = deliveryCoord.latitude;
-    const dLng = deliveryCoord.longitude;
-    const isTransit = ["PICKED_UP", "OUT_FOR_DELIVERY", "IN_TRANSIT", "DELIVERING"].includes(
-      String(order?.status || "").toUpperCase()
-    );
-    const ratio = isTransit ? 0.6 : 0.25;
-    return {
-      latitude: Number((rLat + (dLat - rLat) * ratio).toFixed(6)),
-      longitude: Number((rLng + (dLng - rLng) * ratio).toFixed(6)),
-      title: order?.driverName ? `Courier (${order.driverName})` : "Delivery Courier (🛵)",
-      status: order?.status,
-    };
-  }, [order?.driverLat, order?.driverLng, order?.driverName, order?.status, restaurantCoord, deliveryCoord]);
+    return null;
+  }, [order?.driverLat, order?.driverLng, order?.driverName, order?.status]);
 
   // Listen to live order from Firestore if orderId provided
   useEffect(() => {
@@ -151,6 +139,8 @@ export default function PreparingOrderScreen() {
   };
 
   const [verifying, setVerifying] = useState(false);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
   const [payingNow, setPayingNow] = useState(false);
 
   const initialCheckoutUrl = route.params?.initialCheckoutUrl;
@@ -277,6 +267,26 @@ export default function PreparingOrderScreen() {
     }
   };
 
+  // Confirms a payment: keeps checking Chapa every 3 seconds (up to 2 minutes) so the customer
+  // doesn't have to tap again while their bank or wallet is still processing. Stops at the first
+  // clear answer: paid, failed or a wrong amount. Accuracy comes from the checks inside verifyChapaPayment
+  // (Chapa's own status, the currency, and the amount covering the order total).
+  const PAYMENT_POLL_MS = 3000;
+  const PAYMENT_POLL_TRIES = 40;
+
+  const checkPaymentOnce = async (cleanOrderId) => {
+    const snap = await getDoc(doc(db, "orders", cleanOrderId));
+    if (snap.exists() && snap.data()?.paymentStatus === "PAID") {
+      return { state: "paid", data: snap.data(), result: null };
+    }
+    const txRef = snap.data()?.chapaMerchantReference || order?.chapaMerchantReference || "";
+    const result = await verifyChapaPayment({ orderId: cleanOrderId, txRef, uid: authUser?.uid });
+    if (result?.verified || result?.paymentStatus === "PAID") return { state: "paid", data: null, result };
+    if (result?.paymentStatus === "FAILED") return { state: "failed", data: null, result };
+    if (result?.paymentStatus === "AMOUNT_MISMATCH") return { state: "mismatch", data: null, result };
+    return { state: "pending", data: null, result };
+  };
+
   const handleVerifyChapa = async () => {
     if (!orderId) {
       Alert.alert("Order Information", "No active order ID to verify.");
@@ -286,47 +296,51 @@ export default function PreparingOrderScreen() {
     setVerifying(true);
 
     try {
-      // Already confirmed?
-      const snap = await getDoc(doc(db, "orders", cleanOrderId));
-      if (snap.exists() && snap.data()?.paymentStatus === "PAID") {
-        setChapaModalVisible(false);
-        setOrder((prev) => ({ ...(prev || {}), ...snap.data() }));
-        Alert.alert("Payment Confirmed", "Your payment has been received. The store is reviewing your order.");
-        return;
-      }
+      for (let attempt = 1; attempt <= PAYMENT_POLL_TRIES; attempt++) {
+        if (!mountedRef.current) return;
+        let check;
+        try {
+          check = await checkPaymentOnce(cleanOrderId);
+        } catch (err) {
+          // A network blip shouldn't end the wait; try again on the next round
+          console.warn("payment check retry:", err?.code, err?.message);
+          check = { state: "pending" };
+        }
 
-      const txRef = snap.data()?.chapaMerchantReference || order?.chapaMerchantReference || "";
-      const result = await verifyChapaPayment({ orderId: cleanOrderId, txRef, uid: authUser?.uid });
-
-      if (result?.verified || result?.paymentStatus === "PAID") {
-        setChapaModalVisible(false);
-        setOrder((prev) => ({ ...(prev || {}), paymentStatus: "PAID", status: "PENDING" }));
-        (result.orders || []).forEach((o) =>
-          notifyMerchant(o, "New Paid Order 🛎️", `ETB ${Number(o.total || 0).toFixed(2)} · paid with Chapa`)
-        );
-        Alert.alert("Payment Confirmed 🎉", "Chapa confirmed your payment. The store has received your order.");
-        return;
-      }
-
-      if (result?.paymentStatus === "FAILED") {
-        Alert.alert("Payment Unsuccessful", "The transaction was not completed. You can retry paying with Chapa.", [
-          { text: "Dismiss", style: "cancel" },
-          { text: "Retry Payment", onPress: () => handlePayNowWithChapa() },
-        ]);
-        return;
-      }
-
-      if (result?.paymentStatus === "AMOUNT_MISMATCH") {
-        Alert.alert(
-          "Payment Amount Mismatch",
-          "Chapa reports a different amount than your order total. Please contact MyTruck support with your payment receipt."
-        );
-        return;
+        if (check.state === "paid") {
+          setChapaModalVisible(false);
+          if (check.data) {
+            setOrder((prev) => ({ ...(prev || {}), ...check.data }));
+          } else {
+            setOrder((prev) => ({ ...(prev || {}), paymentStatus: "PAID", status: "PENDING" }));
+            (check.result?.orders || []).forEach((o) =>
+              notifyMerchant(o, "New Paid Order 🛎️", `ETB ${Number(o.total || 0).toFixed(2)} · paid with Chapa`)
+            );
+          }
+          Alert.alert("Payment Confirmed 🎉", "Chapa confirmed your payment. The store has received your order.");
+          return;
+        }
+        if (check.state === "failed") {
+          Alert.alert("Payment Unsuccessful", "The transaction was not completed. You can retry paying with Chapa.", [
+            { text: "Dismiss", style: "cancel" },
+            { text: "Retry Payment", onPress: () => handlePayNowWithChapa() },
+          ]);
+          return;
+        }
+        if (check.state === "mismatch") {
+          Alert.alert(
+            "Payment Amount Mismatch",
+            "Chapa reports a different amount than your order total. Please contact MyTruck support with your payment receipt."
+          );
+          return;
+        }
+        // still pending: wait and check again
+        await new Promise((resolve) => setTimeout(resolve, PAYMENT_POLL_MS));
       }
 
       Alert.alert(
-        "Payment In Progress",
-        "Your payment is still processing with your bank or wallet. If you paid with Telebirr or CBE Birr, wait 15–30 seconds and tap 'Check Payment Status' again.",
+        "Still Processing",
+        "Your bank or wallet is still confirming the payment. It usually takes under a minute. Tap Check Payment Status again in a moment.",
         [
           { text: "OK", style: "cancel" },
           { text: "Pay Now with Chapa", onPress: () => handlePayNowWithChapa() },
@@ -336,7 +350,7 @@ export default function PreparingOrderScreen() {
       console.warn("handleVerifyChapa error:", err?.code, err?.message);
       Alert.alert("Payment Check", "Couldn't check the payment right now. Please wait a moment and tap Check Payment Status again.");
     } finally {
-      setVerifying(false);
+      if (mountedRef.current) setVerifying(false);
     }
   };
 
@@ -427,6 +441,7 @@ export default function PreparingOrderScreen() {
 
         {/* Real Road Route & Distance Badge with Intercity Support */}
         {(() => {
+          // Road distance and time from the map route when available; stored estimate otherwise
           const distVal = routeInfo.distanceKm || order?.deliveryDistanceKm || null;
           const etaVal = routeInfo.etaMinutes || order?.deliveryEtaMinutes || null;
           if (!distVal && !etaVal) return null;

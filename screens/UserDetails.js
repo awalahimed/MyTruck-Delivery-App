@@ -25,7 +25,6 @@ import BackButton from "../components/ui/BackButton";
 import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
 import {
-  MAP_TILE_URL,
   requestGpsLocation,
   reverseGeocodeLocation,
 } from "../utils/mapService";

@@ -1,6 +1,16 @@
 import * as Location from "expo-location";
 import Constants from "expo-constants";
 
+/**
+ * Map, address and route services — Google Maps Platform.
+ *
+ * The web key (Geocoding + Directions APIs) is injected at build time from the
+ * GOOGLE_MAPS_WEB_KEY EAS variable by app.config.js. The map tiles on Android use
+ * the Android key (GOOGLE_MAPS_ANDROID_KEY) through the native Google Maps SDK.
+ * Without a web key, addresses fall back to the device's own geocoder and routes
+ * fall back to straight-line distance.
+ */
+
 export const DEFAULT_COORDS = {
   latitude: 8.9806,
   longitude: 38.7578,
@@ -8,44 +18,34 @@ export const DEFAULT_COORDS = {
   longitudeDelta: 0.015,
 };
 
+const WEB_KEY = String(
+  Constants.expoConfig?.extra?.googleMapsWebKey || Constants.manifest?.extra?.googleMapsWebKey || ""
+).trim();
+
+export const hasGoogleMaps = () => WEB_KEY.length > 0;
+
 /**
  * Validates whether coordinates fall within Ethiopian national boundaries.
- * Covers the entire country: Tigray → Somali Region → Gambella → Afar.
- * Prevents non-Ethiopian simulator/VPN coordinates (e.g. Montana/USA) from hijacking delivery locations.
+ * Prevents non-Ethiopian simulator/VPN coordinates from hijacking delivery locations.
  */
 export function isWithinEthiopia(lat, lon) {
   const nLat = Number(lat);
   const nLon = Number(lon);
-  return (
-    !isNaN(nLat) &&
-    !isNaN(nLon) &&
-    nLat >= 3.0 &&
-    nLat <= 15.0 &&
-    nLon >= 33.0 &&
-    nLon <= 48.0
-  );
+  return !isNaN(nLat) && !isNaN(nLon) && nLat >= 3.0 && nLat <= 15.0 && nLon >= 33.0 && nLon <= 48.0;
 }
-
-export const GEBETA_KEY = Constants.expoConfig?.extra?.gebetaMapsApiKey || "";
-
-// Robust raster tile URL templates that render crisp street maps for Ethiopia (Zero watermark)
-export const MAP_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
-export const OSM_TILE_URL = "https://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png";
 
 // Quick-select delivery zones covering major Ethiopian cities
 export const ADDIS_DELIVERY_ZONES = [
-  // ── Addis Ababa ─────────────────────────────────────────────────────────
-  { id: "bole", name: "Bole", sub: "Atlas & Edna Mall", latitude: 8.9950, longitude: 38.7885 },
-  { id: "kazanchis", name: "Kazanchis", sub: "UN ECA & Intercontinental", latitude: 9.0180, longitude: 38.7660 },
-  { id: "sarbet", name: "Sarbet", sub: "AU & Karl Square", latitude: 8.9910, longitude: 38.7360 },
-  { id: "cmc", name: "CMC / Ayat", sub: "Michael Roundabout", latitude: 9.0190, longitude: 38.8370 },
-  { id: "piassa", name: "Piassa", sub: "Arada & Churchill", latitude: 9.0340, longitude: 38.7510 },
-  { id: "megenagna", name: "Megenagna", sub: "Zefmesh & Diaspora Square", latitude: 9.0200, longitude: 38.8020 },
-  { id: "gerji", name: "Gerji", sub: "Unity & Mebrat Hail", latitude: 8.9890, longitude: 38.8110 },
-  { id: "mexico", name: "Mexico Square", sub: "Genet Hotel & Kera", latitude: 9.0100, longitude: 38.7440 },
-  { id: "22mazoria", name: "22 Mazoria", sub: "Golagol & Axum Hotel", latitude: 9.0150, longitude: 38.7830 },
-  { id: "gotera", name: "Gotera / Lancha", sub: "NOC & Pepaps", latitude: 8.9830, longitude: 38.7560 },
-  // ── Other Major Ethiopian Cities ─────────────────────────────────────────
+  { id: "bole", name: "Bole", sub: "Atlas & Edna Mall", latitude: 8.995, longitude: 38.7885 },
+  { id: "kazanchis", name: "Kazanchis", sub: "UN ECA & Intercontinental", latitude: 9.018, longitude: 38.766 },
+  { id: "sarbet", name: "Sarbet", sub: "AU & Karl Square", latitude: 8.991, longitude: 38.736 },
+  { id: "cmc", name: "CMC / Ayat", sub: "Michael Roundabout", latitude: 9.019, longitude: 38.837 },
+  { id: "piassa", name: "Piassa", sub: "Arada & Churchill", latitude: 9.034, longitude: 38.751 },
+  { id: "megenagna", name: "Megenagna", sub: "Zefmesh & Diaspora Square", latitude: 9.02, longitude: 38.802 },
+  { id: "gerji", name: "Gerji", sub: "Unity & Mebrat Hail", latitude: 8.989, longitude: 38.811 },
+  { id: "mexico", name: "Mexico Square", sub: "Genet Hotel & Kera", latitude: 9.01, longitude: 38.744 },
+  { id: "22mazoria", name: "22 Mazoria", sub: "Golagol & Axum Hotel", latitude: 9.015, longitude: 38.783 },
+  { id: "gotera", name: "Gotera / Lancha", sub: "NOC & Pepaps", latitude: 8.983, longitude: 38.756 },
   { id: "dire-dawa", name: "Dire Dawa", sub: "Dire Dawa City Center", latitude: 9.5932, longitude: 41.8661 },
   { id: "mekelle", name: "Mekelle", sub: "Tigray Region Capital", latitude: 13.4967, longitude: 39.4753 },
   { id: "gondar", name: "Gondar", sub: "Amhara Region", latitude: 12.6031, longitude: 37.4661 },
@@ -57,108 +57,96 @@ export const ADDIS_DELIVERY_ZONES = [
   { id: "harar", name: "Harar", sub: "Harari Region", latitude: 9.3127, longitude: 42.1189 },
   { id: "arba-minch", name: "Arba Minch", sub: "Gamo Zone, SNNPR", latitude: 6.0381, longitude: 37.5503 },
   { id: "shashamane", name: "Shashemene", sub: "West Arsi, Oromia", latitude: 7.1998, longitude: 38.5979 },
-  { id: "nekemte", name: "Nekemte", sub: "East Wollega, Oromia", latitude: 9.0890, longitude: 36.5473 },
+  { id: "nekemte", name: "Nekemte", sub: "East Wollega, Oromia", latitude: 9.089, longitude: 36.5473 },
   { id: "dilla", name: "Dilla", sub: "Gedeo Zone, SNNPR", latitude: 6.4111, longitude: 38.3113 },
-  { id: "wolaita-sodo", name: "Wolaita Sodo", sub: "Wolaita Zone, SNNPR", latitude: 6.8503, longitude: 37.7570 },
+  { id: "wolaita-sodo", name: "Wolaita Sodo", sub: "Wolaita Zone, SNNPR", latitude: 6.8503, longitude: 37.757 },
 ];
 
+/** Straight-line (great-circle) distance in km. Used for listings and as a map fallback. */
+export function straightLineKm(lat1, lon1, lat2, lon2) {
+  const nums = [lat1, lon1, lat2, lon2].map(Number);
+  if (nums.some((n) => !Number.isFinite(n))) return null;
+  const [a1, o1, a2, o2] = nums;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const h =
+    Math.sin(toRad(a2 - a1) / 2) ** 2 + Math.cos(toRad(a1)) * Math.cos(toRad(a2)) * Math.sin(toRad(o2 - o1) / 2) ** 2;
+  return Number((6371 * 2 * Math.asin(Math.sqrt(h))).toFixed(1));
+}
+
+/** Fetch JSON with a timeout. Returns null on any failure (never throws). */
+async function fetchJson(url, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers: { Accept: "application/json" } });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** "Bole Rd, Addis Ababa, Ethiopia" -> "Bole Rd, Addis Ababa" */
+const shortAddress = (formatted) => {
+  const parts = String(formatted || "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => p && p.toLowerCase() !== "ethiopia");
+  return parts.slice(0, 2).join(", ") || String(formatted || "");
+};
+
+/** Nearest known Ethiopian city name (last resort). */
+function nearestZoneName(latitude, longitude) {
+  let best = "Ethiopia";
+  let min = Infinity;
+  for (const zone of ADDIS_DELIVERY_ZONES) {
+    const d = (zone.latitude - latitude) ** 2 + (zone.longitude - longitude) ** 2;
+    if (d < min) {
+      min = d;
+      best = zone.name;
+    }
+  }
+  return best;
+}
+
 /**
- * Reverse geocode latitude and longitude to a human-readable Ethiopian address.
- * Works for ANY location within Ethiopia — Addis Ababa, Mekelle, Hawassa, Dire Dawa, etc.
- * 1. Tries Gebeta Map Reverse Geocoding API if configured.
- * 2. Tries Expo Location reverseGeocodeAsync.
- * 3. Tries OpenStreetMap Nominatim (country-wide).
- * 4. Falls back to nearest known Ethiopian city name.
+ * Human-readable address for a point in Ethiopia.
+ * 1. Google Geocoding API.  2. Device geocoder.  3. Nearest known city.
  */
 export async function reverseGeocodeLocation(latitude, longitude) {
-  if (!latitude || !longitude || !isWithinEthiopia(latitude, longitude)) {
-    return "Ethiopia";
+  if (!latitude || !longitude || !isWithinEthiopia(latitude, longitude)) return "Ethiopia";
+
+  if (hasGoogleMaps()) {
+    const data = await fetchJson(
+      `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&language=en&key=${encodeURIComponent(WEB_KEY)}`
+    );
+    const formatted = data?.status === "OK" ? data.results?.[0]?.formatted_address : null;
+    if (formatted) return shortAddress(formatted);
   }
 
-  // Tier 1: Gebeta Map API
-  if (GEBETA_KEY) {
-    try {
-      const gebetaUrl = `https://mapapi.gebeta.app/api/v1/route/revgeocoding?lat=${latitude}&lon=${longitude}&apiKey=${encodeURIComponent(GEBETA_KEY)}`;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch(gebetaUrl, {
-        headers: {
-          "Authorization": `Bearer ${GEBETA_KEY}`,
-          "Accept": "application/json",
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        const data = await res.json();
-        const candidate = data?.data?.name || data?.data?.address || data?.address || data?.name;
-        if (candidate && typeof candidate === "string" && candidate.trim().length > 0) {
-          return candidate.trim();
-        }
-      }
-    } catch (_) {}
-  }
-
-  // Tier 2: Expo native Location
   try {
     const res = await Location.reverseGeocodeAsync({ latitude, longitude });
     if (res && res.length > 0) {
       const place = res[0];
-      const parts = [
-        place.name || place.street,
-        place.subregion || place.district || place.city,
-        place.region,
-      ].filter(Boolean);
+      const parts = [place.name || place.street, place.subregion || place.district || place.city, place.region].filter(Boolean);
       if (parts.length > 0) return parts.slice(0, 2).join(", ");
     }
   } catch (_) {}
 
-  // Tier 3: OpenStreetMap Nominatim (unrestricted — all Ethiopian cities)
-  try {
-    const url = `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&accept-language=en`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
-    const resp = await fetch(url, {
-      headers: { "User-Agent": "MyTruck-Delivery/1.0 (info@mytruck.et)" },
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    const data = await resp.json();
-    if (data && data.address) {
-      const a = data.address;
-      const sub = a.suburb || a.neighbourhood || a.city_district || a.quarter || a.road || "";
-      const city = a.city || a.town || a.village || a.county || a.state || "Ethiopia";
-      const result = [sub, city].filter(Boolean).join(", ");
-      return result || data.display_name.split(",").slice(0, 2).join(",").trim();
-    }
-  } catch (_) {}
-
-  // Tier 4: Nearest known Ethiopian city
-  let closestCity = "Ethiopia";
-  let minDistance = Infinity;
-  for (const zone of ADDIS_DELIVERY_ZONES) {
-    const dLat = zone.latitude - latitude;
-    const dLon = zone.longitude - longitude;
-    const dist = dLat * dLat + dLon * dLon;
-    if (dist < minDistance) {
-      minDistance = dist;
-      closestCity = zone.name;
-    }
-  }
-  return closestCity;
+  return nearestZoneName(latitude, longitude);
 }
 
 /**
- * Search for places / landmarks anywhere in Ethiopia.
- * 1. Checks predefined delivery zones for instant instant-match.
- * 2. Tries Gebeta Map Forward Geocoding.
- * 3. Tries OpenStreetMap Nominatim (country-wide, not Addis-only).
+ * Places matching a search, anywhere in Ethiopia.
+ * Local city/zone names first, then Google Geocoding (restricted to Ethiopia).
  */
 export async function searchPlaces(queryText) {
   if (!queryText || queryText.trim().length < 2) return [];
-  const clean = queryText.trim().toLowerCase();
+  const q = queryText.trim();
+  const clean = q.toLowerCase();
 
-  // Instant local zone matches (now covers 24 zones across all major Ethiopian cities)
   const localMatches = ADDIS_DELIVERY_ZONES.filter(
     (z) => z.name.toLowerCase().includes(clean) || z.sub.toLowerCase().includes(clean)
   ).map((z) => ({
@@ -169,73 +157,115 @@ export async function searchPlaces(queryText) {
     longitude: z.longitude,
   }));
 
-  // Tier 1: Gebeta Map Forward Geocoding
-  if (GEBETA_KEY) {
-    try {
-      const gebetaUrl = `https://mapapi.gebeta.app/api/v1/route/geocoding?name=${encodeURIComponent(queryText.trim())}&apiKey=${encodeURIComponent(GEBETA_KEY)}`;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3500);
-      const res = await fetch(gebetaUrl, {
-        headers: {
-          "Authorization": `Bearer ${GEBETA_KEY}`,
-          "Accept": "application/json",
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        const data = await res.json();
-        const list = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
-        if (list.length > 0) {
-          const remote = list.map((item, idx) => ({
-            id: `gebeta-${idx}`,
-            title: item.name || item.title || queryText,
-            fullAddress: item.address || item.formatted_address || item.name || queryText,
-            latitude: parseFloat(item.lat || item.latitude),
-            longitude: parseFloat(item.lon || item.longitude),
-          })).filter((x) => !isNaN(x.latitude) && !isNaN(x.longitude));
-          if (remote.length > 0) return [...localMatches, ...remote];
-        }
-      }
-    } catch (_) {
-      // Gebeta search fallback
-    }
-  }
+  if (!hasGoogleMaps()) return localMatches;
 
-  // Tier 2: OpenStreetMap Nominatim
+  const data = await fetchJson(
+    `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(q)}&components=country:ET&language=en&key=${encodeURIComponent(WEB_KEY)}`,
+    6000
+  );
+  const remote =
+    data?.status === "OK"
+      ? data.results.slice(0, 8).map((r, idx) => ({
+          id: `google-${r.place_id || idx}`,
+          title: shortAddress(r.formatted_address),
+          fullAddress: r.formatted_address,
+          latitude: r.geometry.location.lat,
+          longitude: r.geometry.location.lng,
+        }))
+      : [];
+
+  return [...localMatches, ...remote];
+}
+
+/** Decode a Google encoded polyline into { latitude, longitude } points. */
+export function decodePolyline(encoded) {
+  const points = [];
+  let index = 0;
+  let lat = 0;
+  let lng = 0;
+  const readValue = () => {
+    let result = 0;
+    let shift = 0;
+    let b;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    return result & 1 ? ~(result >> 1) : result >> 1;
+  };
+  while (index < encoded.length) {
+    lat += readValue();
+    lng += readValue();
+    points.push({ latitude: lat / 1e5, longitude: lng / 1e5 });
+  }
+  return points;
+}
+
+const routeCache = new Map();
+const ROUTE_CACHE_LIMIT = 60;
+
+/**
+ * Real road route between two points (Google Routes API, driving).
+ * Returns { distanceKm, etaMinutes, points } or null when unavailable.
+ * Results are cached by rounded coordinates to keep API use low.
+ */
+export async function getRoute(from, to) {
+  if (!hasGoogleMaps() || !from || !to) return null;
+  const fLat = Number(from.latitude);
+  const fLng = Number(from.longitude);
+  const tLat = Number(to.latitude);
+  const tLng = Number(to.longitude);
+  if (![fLat, fLng, tLat, tLng].every(Number.isFinite)) return null;
+
+  const key = [fLat, fLng, tLat, tLng].map((n) => n.toFixed(4)).join(",");
+  if (routeCache.has(key)) return routeCache.get(key);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  let data = null;
   try {
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
-      queryText.trim() + ", Ethiopia"
-    )}&format=json&limit=8&countrycodes=et&accept-language=en`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500);
-    const resp = await fetch(url, {
-      headers: { "User-Agent": "MyTruck-Delivery/1.0 (info@mytruck.et)" },
+    const res = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+      method: "POST",
       signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": WEB_KEY,
+        "X-Goog-FieldMask": "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline",
+      },
+      body: JSON.stringify({
+        origin: { location: { latLng: { latitude: fLat, longitude: fLng } } },
+        destination: { location: { latLng: { latitude: tLat, longitude: tLng } } },
+        travelMode: "DRIVE",
+        routingPreference: "TRAFFIC_UNAWARE",
+      }),
     });
-    clearTimeout(timeoutId);
-    const data = await resp.json();
-    if (Array.isArray(data)) {
-      const osmList = data.map((item) => ({
-        id: String(item.place_id || Math.random()),
-        title: item.display_name.split(",").slice(0, 2).join(",").trim(),
-        fullAddress: item.display_name,
-        latitude: parseFloat(item.lat),
-        longitude: parseFloat(item.lon),
-      }));
-      return [...localMatches, ...osmList];
-    }
-  } catch (err) {
-    // search fallback
+    if (res.ok) data = await res.json();
+  } catch (_) {
+    data = null;
+  } finally {
+    clearTimeout(timer);
   }
 
-  return localMatches;
+  const route = data?.routes?.[0];
+  if (!route || !Number.isFinite(Number(route.distanceMeters))) return null;
+
+  // duration comes as a string such as "780s"
+  const seconds = Number(String(route.duration || "0").replace("s", "")) || 0;
+  const result = {
+    distanceKm: Number((Number(route.distanceMeters) / 1000).toFixed(1)),
+    etaMinutes: Math.max(1, Math.round(seconds / 60)),
+    points: decodePolyline(route.polyline?.encodedPolyline || ""),
+  };
+
+  if (routeCache.size >= ROUTE_CACHE_LIMIT) routeCache.delete(routeCache.keys().next().value);
+  routeCache.set(key, result);
+  return result;
 }
 
 /**
  * Request location permission and get current GPS location.
- * Highly robust: tries last known location for instant response,
- * falls back to fresh GPS query, and never hangs on device timeout.
+ * Uses last known position for an instant answer, then a fresh fix with an 8s cap.
  */
 export async function requestGpsLocation() {
   const { status } = await Location.requestForegroundPermissionsAsync();
@@ -243,35 +273,22 @@ export async function requestGpsLocation() {
     throw new Error("Location permission denied. Please allow location access in your device settings.");
   }
 
-  // Fast path: check last known position first
   try {
     const last = await Location.getLastKnownPositionAsync();
-    if (
-      last &&
-      last.coords &&
-      isWithinEthiopia(last.coords.latitude, last.coords.longitude)
-    ) {
+    if (last && last.coords && isWithinEthiopia(last.coords.latitude, last.coords.longitude)) {
       return last.coords;
     }
   } catch (_) {}
 
-  // Current position with safe 8s timeout race
-  const getPosPromise = Location.getCurrentPositionAsync({
-    accuracy: Location.Accuracy.Balanced,
-  });
-
-  const timeoutPromise = new Promise((resolve) =>
-    setTimeout(() => resolve({ coords: DEFAULT_COORDS }), 8000)
-  );
+  const getPosPromise = Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+  const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve({ coords: DEFAULT_COORDS }), 8000));
 
   try {
     const pos = await Promise.race([getPosPromise, timeoutPromise]);
     const coords = pos?.coords;
-    if (coords && isWithinEthiopia(coords.latitude, coords.longitude)) {
-      return coords;
-    }
+    if (coords && isWithinEthiopia(coords.latitude, coords.longitude)) return coords;
     return DEFAULT_COORDS;
-  } catch (err) {
+  } catch (_) {
     return DEFAULT_COORDS;
   }
 }

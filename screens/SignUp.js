@@ -17,8 +17,7 @@ import { useNavigation } from "@react-navigation/native";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { StatusBar } from "expo-status-bar";
 import { UserAuth, normalizeEthiopianPhone, formatAuthError } from "../contexts/AuthContext";
-import { db } from "../firebase";
-import { doc, getDoc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { verifySignupCode } from "../services/otpClient";
 import BackButton from "../components/ui/BackButton";
 
 const TEAL = "#179B83";
@@ -33,6 +32,7 @@ export default function SignUp() {
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [otpCode, setOtpCode] = useState("");
   const [countdown, setCountdown] = useState(60);
@@ -73,8 +73,13 @@ export default function SignUp() {
       return;
     }
 
-    if (!password || password.length < 6) {
-      setErrorMessage("Password must be at least 6 characters.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setErrorMessage("Enter a valid email address. You'll sign in with it and use it to reset your password.");
+      return;
+    }
+
+    if (!password || password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+      setErrorMessage("Password must be at least 8 characters and include letters and numbers.");
       return;
     }
 
@@ -132,33 +137,16 @@ export default function SignUp() {
     setBusy(true);
 
     try {
-      const cleanDigits = String(normalizedPhone.cleanDigits || normalizedPhone.rawDigits).replace(/\D/g, "");
-      const challengeRef = doc(db, "phoneOtpChallenges", `challenge_${cleanDigits}`);
-      const snap = await getDoc(challengeRef);
-
-      if (!snap.exists()) {
-        throw new Error("No verification code found. Please request a new code.");
-      }
-
-      const data = snap.data();
-      if (data.consumed === true) {
-        throw new Error("This verification code was already used. Please request a new code.");
-      }
-      if (Number(data.expiresAt) < Date.now()) {
-        throw new Error("Verification code has expired. Please tap Resend Code.");
-      }
-      if (String(data.code).trim() !== cleanCode) {
-        throw new Error("Incorrect 6-digit verification code. Please check your SMS.");
-      }
-
-      // Mark challenge consumed
-      await updateDoc(challengeRef, { consumed: true, verifiedAt: serverTimestamp() }).catch(() => {});
+      // Server checks the code (attempts, expiry, single use) and returns a short-lived proof
+      const proof = await verifySignupCode(normalizedPhone.intlNumber, cleanCode);
 
       // Atomically register customer with verified phone number
       await registerCustomer({
         fullName: fullName.trim(),
         phone: normalizedPhone.localNumber,
         password,
+        email: email.trim(),
+        proof,
       });
 
       // Navigation is automatic via RootNavigator auth state listener
@@ -264,6 +252,24 @@ export default function SignUp() {
                   />
                 </View>
 
+                {/* Email (sign-in and password reset) */}
+                <Text style={s.label}>Email</Text>
+                <View style={s.inputWrap}>
+                  <TextInput
+                    style={s.input}
+                    placeholder="you@example.com"
+                    placeholderTextColor="#94A3B8"
+                    value={email}
+                    onChangeText={(t) => {
+                      setEmail(t);
+                      if (errorMessage) setErrorMessage("");
+                    }}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+
                 {/* Password */}
                 <Text style={s.label}>Password</Text>
                 <View style={s.inputWrap}>
@@ -275,7 +281,7 @@ export default function SignUp() {
                   />
                   <TextInput
                     style={s.input}
-                    placeholder="At least 6 characters"
+                    placeholder="At least 8 letters and numbers"
                     placeholderTextColor="#94A3B8"
                     value={password}
                     onChangeText={(t) => {

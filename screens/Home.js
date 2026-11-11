@@ -932,7 +932,7 @@ export default function Home() {
         )}
       </ScrollView>
 
-      {/* Interactive Delivery Location Modal with Gebeta / OSM Map */}
+      {/* Delivery location picker (Google Maps) */}
       {deliveryModalVisible ? (
         <DeliveryLocationModal
           visible={deliveryModalVisible}

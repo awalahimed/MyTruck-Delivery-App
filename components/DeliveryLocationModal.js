@@ -21,7 +21,6 @@ import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { XMarkIcon } from "react-native-heroicons/outline";
 import {
   DEFAULT_COORDS,
-  MAP_TILE_URL,
   ADDIS_DELIVERY_ZONES,
   reverseGeocodeLocation,
   searchPlaces,

@@ -39,6 +39,7 @@ import {
 } from "firebase/firestore";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import NotificationBell from "../components/ui/NotificationBell";
+import SharedMapView from "../components/SharedMapView";
 import { notifyCustomer } from "../services/orderNotifications";
 import SmartImage from "../components/ui/SmartImage";
 
@@ -122,6 +123,8 @@ export default function DriverDashboard() {
   const [loadingAvailable, setLoadingAvailable] = useState(false);
   const [loadingActive, setLoadingActive] = useState(true);
   const [activeError, setActiveError] = useState("");
+  // Real road distance/time for the leg the driver is on now (from Google Directions)
+  const [missionRoute, setMissionRoute] = useState(null);
   const [activeRetry, setActiveRetry] = useState(0);
   const [pickingUp, setPickingUp] = useState(false);
   const [completing, setCompleting] = useState(false);
@@ -310,6 +313,7 @@ export default function DriverDashboard() {
               },
               (loc) => {
                 if (loc?.coords?.latitude && loc?.coords?.longitude) {
+                  setDriverPos({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
                   updateDoc(doc(db, "orders", activeOrder.id), {
                     driverLat: loc.coords.latitude,
                     driverLng: loc.coords.longitude,
@@ -378,6 +382,11 @@ export default function DriverDashboard() {
       setIsOnline(!value);
     }
   };
+
+  // A new leg (store -> customer) has its own road distance; drop the old figures
+  useEffect(() => {
+    setMissionRoute(null);
+  }, [activeOrder?.id, activeOrder?.status]);
 
   // Live list of claimable orders while online
   useEffect(() => {
@@ -1258,6 +1267,35 @@ export default function DriverDashboard() {
                   </View>
                 </View>
 
+                {/* Live mission map: your position, the store and the customer, with the real road route */}
+                {(() => {
+                  const pickup = {
+                    latitude: Number(activeOrder.restaurantLat ?? activeOrder.pickupCoords?.latitude),
+                    longitude: Number(activeOrder.restaurantLng ?? activeOrder.pickupCoords?.longitude),
+                    title: activeOrder.restaurantName || "Store",
+                  };
+                  const dropoff = {
+                    latitude: Number(activeOrder.deliveryLat ?? activeOrder.deliveryCoords?.latitude),
+                    longitude: Number(activeOrder.deliveryLng ?? activeOrder.deliveryCoords?.longitude),
+                    title: "Customer",
+                  };
+                  const toStore = isAwaitingPickup(activeOrder);
+                  return (
+                    <View style={{ height: 260, marginHorizontal: 16, marginBottom: 12, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: "#E2E8F0" }}>
+                      <SharedMapView
+                        mode="route"
+                        origin={pickup}
+                        destination={dropoff}
+                        routeFrom={driverPos || null}
+                        routeTo={toStore ? pickup : dropoff}
+                        driverLocation={driverPos ? { ...driverPos, title: "You" } : null}
+                        onRouteInfo={setMissionRoute}
+                        showControls={false}
+                      />
+                    </View>
+                  );
+                })()}
+
                 {/* Pickup Details Section */}
                 <View style={s.missionSection}>
                   <View style={s.sectionHeader}>
@@ -1307,8 +1345,10 @@ export default function DriverDashboard() {
                   const custName = activeOrder.customerName || `${activeOrder.userFirstName || ""} ${activeOrder.userLastName || ""}`.trim() || "Customer";
                   const custPhone = activeOrder.customerPhone || activeOrder.userPhoneNumber || activeOrder.phone || "";
                   const dropAddress = activeOrder.dropoffAddress || activeOrder.deliveryAddress || activeOrder.userAddress || "Standard delivery address";
-                  const tripDistance = activeOrder.deliveryDistanceKm != null ? activeOrder.deliveryDistanceKm : "—";
-                  const tripEta = activeOrder.deliveryEtaMinutes != null ? activeOrder.deliveryEtaMinutes : "—";
+                  // Road figures for the current leg when the map has them; otherwise the stored estimate
+                  const tripDistance = missionRoute ? missionRoute.distanceKm : activeOrder.deliveryDistanceKm != null ? activeOrder.deliveryDistanceKm : "—";
+                  const tripEta = missionRoute ? missionRoute.etaMinutes : activeOrder.deliveryEtaMinutes != null ? activeOrder.deliveryEtaMinutes : "—";
+                  const legLabel = isAwaitingPickup(activeOrder) ? "to store" : "to customer";
                   const deliveryFeeVal = Number(activeOrder.deliveryFee || 60);
                   const commVal = Number(activeOrder.deliveryCommission != null ? activeOrder.deliveryCommission : (deliveryFeeVal * 0.20));
                   const riderEarningsVal = Number(activeOrder.driverEarnings != null ? activeOrder.driverEarnings : (deliveryFeeVal - commVal));
@@ -1388,12 +1428,12 @@ export default function DriverDashboard() {
                         <View style={{ flexDirection: "row", justifyContent: "space-around", paddingTop: 4 }}>
                           <View style={{ alignItems: "center" }}>
                             <Text style={{ fontSize: 14, fontWeight: "800", color: TEAL }}>{tripDistance} km</Text>
-                            <Text style={{ fontSize: 11, color: "#64748B" }}>Total Distance</Text>
+                            <Text style={{ fontSize: 11, color: "#64748B" }}>{`Distance ${legLabel}${missionRoute ? " (by road)" : ""}`}</Text>
                           </View>
                           <View style={{ width: 1, backgroundColor: "#E2E8F0" }} />
                           <View style={{ alignItems: "center" }}>
                             <Text style={{ fontSize: 14, fontWeight: "800", color: ORANGE }}>{tripEta} mins</Text>
-                            <Text style={{ fontSize: 11, color: "#64748B" }}>Est. Duration</Text>
+                            <Text style={{ fontSize: 11, color: "#64748B" }}>{missionRoute ? "Travel time (by road)" : "Est. duration"}</Text>
                           </View>
                         </View>
                       </View>

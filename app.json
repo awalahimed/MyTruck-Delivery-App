@@ -3,7 +3,7 @@
     "name": "MyTruck Delivery",
     "slug": "ebhan",
     "owner": "ebbanufs-team",
-    "version": "1.0.7",
+    "version": "1.0.8",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -48,11 +48,11 @@
         "backgroundColor": "#0B2A26"
       },
       "package": "com.mytruck.delivery",
-      "versionCode": 8,
+      "versionCode": 9,
       "softwareKeyboardLayoutMode": "pan",
       "config": {
         "googleMaps": {
-          "apiKey": "AIzaSyCLvdVjXYj__OPxhUlDc--EH3UhghYNxWM"
+          "apiKey": ""
         }
       },
       "permissions": [
@@ -78,8 +78,6 @@
         "appId": "1:62652685283:web:f9ccb6844ba537eef75ed6",
         "measurementId": "G-158S3N3L6Q"
       },
-      "gebetaMapsApiKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjb21wYW55bmFtZSI6IkViYW51ZiIsImRlc2NyaXB0aW9uIjoiYTIxYzYwNjAtOWQwYS00NmNjLWFhMzAtZDVlNmQ2YTQwOTcxIiwiaWQiOiJkNDcxMzMyYy1lNDgzLTQ0OTMtOTljMC1kODZkYmNkZGJlNzciLCJpc3N1ZWRfYXQiOjE3OTMxODAwMzksImlzc3VlciI6Imh0dHBzOi8vbWFwYXBpLmdlYmV0YS5hcHAiLCJqd3RfaWQiOiIwIiwic2NvcGVzIjpbIk1BVFJJWCIsIk9NTSIsIlRJTEUiLCJESVJFQ1RJT04iLCJUU1MiLCJWUlAiLCJUUkFDS0lOR19IVFRQIiwiVFJBQ0tJTkdfU09DS0VUIiwiR0VPQ09ESU5HIiwiUkVWRVJTRUdFT0NPRElORyIsIk1BVENISU5HIl0sInVzZXJuYW1lIjoiZWJvbyJ9.NJf5_FfrImpjoa4uQ96fodYwv81X5p4oLd37qmVYVz8",
-      "googleMapsApiKey": "AIzaSyCLvdVjXYj__OPxhUlDc--EH3UhghYNxWM",
       "eas": {
         "projectId": "788f32a3-bd67-44ab-aba4-1a52ba3b844e"
       }

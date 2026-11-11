@@ -18,6 +18,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { StatusBar } from "expo-status-bar";
 import { UserAuth, formatAuthError } from "../contexts/AuthContext";
+import { sendPasswordResetEmail } from "firebase/auth";
+import { auth } from "../firebase";
 import BackButton from "../components/ui/BackButton";
 import {
   checkBiometricSupport,
@@ -43,6 +45,33 @@ export default function SignIn() {
   const [phoneAutoFilled, setPhoneAutoFilled] = useState(false);
 
   const passwordRef = useRef(null);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetNotice, setResetNotice] = useState("");
+
+  // Forgot password. Reset emails only go to a real email address. Phone-only accounts use an
+  // internal address that can't receive mail, so they're pointed to support instead.
+  const onForgotPassword = async () => {
+    if (resetBusy) return;
+    setErrorMessage("");
+    setResetNotice("");
+    const input = identifier.trim();
+    if (!input.includes("@") || input.endsWith("@login.mytruck.local")) {
+      setErrorMessage(
+        "Enter the email address on your account to reset your password. Phone-only accounts: contact MyTruck support on +251 911 223 344."
+      );
+      return;
+    }
+    setResetBusy(true);
+    try {
+      await sendPasswordResetEmail(auth, input.toLowerCase());
+    } catch (e) {
+      // Same message whether or not the account exists (no account enumeration)
+      console.warn("Password reset note:", e?.code);
+    } finally {
+      setResetBusy(false);
+      setResetNotice("If an account exists for that email, a reset link has been sent. Check your inbox and spam folder.");
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -75,8 +104,8 @@ export default function SignIn() {
       setErrorMessage("Enter your phone number (e.g. 0912345678) or email.");
       return;
     }
-    if (!password || password.length < 6) {
-      setErrorMessage("Password must be at least 6 characters.");
+    if (!password) {
+      setErrorMessage("Enter your password.");
       return;
     }
 
@@ -246,6 +275,18 @@ export default function SignIn() {
                 <Text style={s.errorTxt}>{errorMessage}</Text>
               </View>
             ) : null}
+
+            <TouchableOpacity
+              onPress={onForgotPassword}
+              disabled={resetBusy}
+              style={{ alignSelf: "flex-end", marginTop: 8, paddingVertical: 6 }}
+              accessibilityRole="button"
+            >
+              <Text style={{ fontSize: 13, fontWeight: "700", color: TEAL }}>
+                {resetBusy ? "Sending…" : "Forgot password?"}
+              </Text>
+            </TouchableOpacity>
+            {resetNotice ? <Text style={{ fontSize: 12.5, color: "#166534", marginTop: 6 }}>{resetNotice}</Text> : null}
 
             {/* Sign In Button */}
             <TouchableOpacity
