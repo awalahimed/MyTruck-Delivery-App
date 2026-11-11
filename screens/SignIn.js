@@ -11,6 +11,7 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
+  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute } from "@react-navigation/native";
@@ -46,30 +47,46 @@ export default function SignIn() {
 
   const passwordRef = useRef(null);
   const [resetBusy, setResetBusy] = useState(false);
-  const [resetNotice, setResetNotice] = useState("");
+  const [forgotModalVisible, setForgotModalVisible] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetError, setResetError] = useState("");
+  const [resetSuccess, setResetSuccess] = useState(false);
 
-  // Forgot password. Reset emails only go to a real email address. Phone-only accounts use an
-  // internal address that can't receive mail, so they're pointed to support instead.
-  const onForgotPassword = async () => {
-    if (resetBusy) return;
-    setErrorMessage("");
-    setResetNotice("");
-    const input = identifier.trim();
-    if (!input.includes("@") || input.endsWith("@login.mytruck.local")) {
-      setErrorMessage(
-        "Enter the email address on your account to reset your password. Phone-only accounts: contact MyTruck support on +251 911 223 344."
-      );
+  // Forgot password modal opener
+  const openForgotPasswordModal = () => {
+    setResetEmail(identifier.includes("@") ? identifier.trim() : "");
+    setResetError("");
+    setResetSuccess(false);
+    setForgotModalVisible(true);
+  };
+
+  const handleSendResetEmail = async () => {
+    const clean = resetEmail.trim().toLowerCase();
+    if (!clean || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) {
+      setResetError("Please enter a valid email address.");
+      return;
+    }
+    if (clean.endsWith("@login.mytruck.local")) {
+      setResetError("Phone-only accounts cannot receive email. Please contact MyTruck support on +251 911 223 344.");
       return;
     }
     setResetBusy(true);
+    setResetError("");
     try {
-      await sendPasswordResetEmail(auth, input.toLowerCase());
+      await sendPasswordResetEmail(auth, clean);
+      setResetSuccess(true);
     } catch (e) {
-      // Same message whether or not the account exists (no account enumeration)
       console.warn("Password reset note:", e?.code);
+      if (e?.code === "auth/invalid-email") {
+        setResetError("Invalid email address format.");
+      } else if (e?.code === "auth/too-many-requests") {
+        setResetError("Too many attempts. Please wait a few minutes before trying again.");
+      } else {
+        // Protect against account enumeration while giving clear confirmation
+        setResetSuccess(true);
+      }
     } finally {
       setResetBusy(false);
-      setResetNotice("If an account exists for that email, a reset link has been sent. Check your inbox and spam folder.");
     }
   };
 
@@ -277,16 +294,14 @@ export default function SignIn() {
             ) : null}
 
             <TouchableOpacity
-              onPress={onForgotPassword}
-              disabled={resetBusy}
+              onPress={openForgotPasswordModal}
               style={{ alignSelf: "flex-end", marginTop: 8, paddingVertical: 6 }}
               accessibilityRole="button"
             >
               <Text style={{ fontSize: 13, fontWeight: "700", color: TEAL }}>
-                {resetBusy ? "Sending…" : "Forgot password?"}
+                Forgot password?
               </Text>
             </TouchableOpacity>
-            {resetNotice ? <Text style={{ fontSize: 12.5, color: "#166534", marginTop: 6 }}>{resetNotice}</Text> : null}
 
             {/* Sign In Button */}
             <TouchableOpacity
@@ -336,6 +351,113 @@ export default function SignIn() {
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Forgot Password Modal */}
+      <Modal
+        visible={forgotModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setForgotModalVisible(false)}
+      >
+        <View style={s.modalBackdrop}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            style={s.modalCentered}
+          >
+            <View style={s.modalCard}>
+              <TouchableOpacity
+                style={s.modalCloseBtn}
+                onPress={() => setForgotModalVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <MaterialCommunityIcons name="close" size={22} color="#64748B" />
+              </TouchableOpacity>
+
+              {resetSuccess ? (
+                <View style={{ alignItems: "center", paddingVertical: 10 }}>
+                  <View style={s.modalSuccessIconWrap}>
+                    <MaterialCommunityIcons name="email-check" size={36} color={TEAL} />
+                  </View>
+                  <Text style={s.modalTitle}>Check Your Inbox</Text>
+                  <Text style={s.modalDesc}>
+                    If an account is associated with <Text style={{ fontWeight: "700", color: DARK }}>{resetEmail.trim()}</Text>, we've sent a link to reset your password.
+                  </Text>
+                  <Text style={[s.modalDesc, { marginTop: 8, fontSize: 12, color: "#64748B" }]}>
+                    Be sure to check your spam/junk folder if you don't see it within a couple minutes.
+                  </Text>
+
+                  <TouchableOpacity
+                    style={[s.modalPrimaryBtn, { marginTop: 22 }]}
+                    onPress={() => setForgotModalVisible(false)}
+                  >
+                    <Text style={s.modalPrimaryBtnTxt}>Back to Sign In</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View>
+                  <View style={{ alignItems: "center", marginBottom: 16 }}>
+                    <View style={s.modalIconWrap}>
+                      <MaterialCommunityIcons name="lock-reset" size={32} color={TEAL} />
+                    </View>
+                    <Text style={s.modalTitle}>Reset Your Password</Text>
+                    <Text style={s.modalDesc}>
+                      Enter the email address linked to your MyTruck account to receive a secure password reset link.
+                    </Text>
+                  </View>
+
+                  <Text style={s.modalInputLabel}>Email Address</Text>
+                  <View style={s.modalInputWrap}>
+                    <MaterialCommunityIcons name="email-outline" size={20} color={TEAL} style={{ marginRight: 10 }} />
+                    <TextInput
+                      style={s.modalInput}
+                      placeholder="e.g. name@example.com"
+                      placeholderTextColor="#94A3B8"
+                      value={resetEmail}
+                      onChangeText={(t) => {
+                        setResetEmail(t);
+                        if (resetError) setResetError("");
+                      }}
+                      autoCapitalize="none"
+                      keyboardType="email-address"
+                      autoCorrect={false}
+                      autoFocus={true}
+                      returnKeyType="done"
+                      onSubmitEditing={handleSendResetEmail}
+                    />
+                  </View>
+
+                  {resetError ? (
+                    <View style={s.modalErrorBox}>
+                      <MaterialCommunityIcons name="alert-circle-outline" size={16} color="#DC2626" />
+                      <Text style={s.modalErrorTxt}>{resetError}</Text>
+                    </View>
+                  ) : null}
+
+                  <TouchableOpacity
+                    style={[s.modalPrimaryBtn, resetBusy && { opacity: 0.7 }]}
+                    onPress={handleSendResetEmail}
+                    disabled={resetBusy}
+                    activeOpacity={0.88}
+                  >
+                    {resetBusy ? (
+                      <ActivityIndicator color="white" />
+                    ) : (
+                      <Text style={s.modalPrimaryBtnTxt}>Send Reset Link</Text>
+                    )}
+                  </TouchableOpacity>
+
+                  <View style={s.modalSupportNotice}>
+                    <MaterialCommunityIcons name="phone-outline" size={14} color="#64748B" style={{ marginRight: 4 }} />
+                    <Text style={s.modalSupportTxt}>
+                      Phone-only account? Call support: <Text style={{ fontWeight: "700" }}>+251 911 223 344</Text>
+                    </Text>
+                  </View>
+                </View>
+              )}
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -561,5 +683,135 @@ const s = StyleSheet.create({
     fontSize: 13,
     fontWeight: "800",
     color: ORANGE,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(11, 42, 38, 0.65)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  modalCentered: {
+    width: "100%",
+    maxWidth: 400,
+  },
+  modalCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 10,
+    position: "relative",
+  },
+  modalCloseBtn: {
+    position: "absolute",
+    top: 18,
+    right: 18,
+    zIndex: 10,
+    padding: 4,
+  },
+  modalIconWrap: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: "#E6F4F1",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  modalSuccessIconWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: "#DCFCE7",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: DARK,
+    textAlign: "center",
+    marginBottom: 6,
+  },
+  modalDesc: {
+    fontSize: 13.5,
+    color: "#475569",
+    textAlign: "center",
+    lineHeight: 19,
+    paddingHorizontal: 8,
+  },
+  modalInputLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: DARK,
+    marginBottom: 6,
+    marginTop: 4,
+  },
+  modalInputWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    height: 50,
+  },
+  modalInput: {
+    flex: 1,
+    fontSize: 15,
+    color: DARK,
+  },
+  modalErrorBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 10,
+    gap: 6,
+  },
+  modalErrorTxt: {
+    fontSize: 12.5,
+    color: "#DC2626",
+    flex: 1,
+  },
+  modalPrimaryBtn: {
+    backgroundColor: TEAL,
+    borderRadius: 14,
+    height: 50,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 18,
+    shadowColor: TEAL,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  modalPrimaryBtnTxt: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  modalSupportNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#F1F5F9",
+  },
+  modalSupportTxt: {
+    fontSize: 11.5,
+    color: "#64748B",
   },
 });
