@@ -24,10 +24,11 @@ import { StarIcon } from "react-native-heroicons/solid";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { db, app } from "../firebase";
 import { notifyMerchant } from "../services/orderNotifications";
-import { startChapaCheckout, verifyChapaPayment } from "../services/chapaClient";
+import { startChapaCheckout, verifyChapaPayment, getPaymentStatusFast } from "../services/chapaClient";
 import { UserAuth } from "../contexts/AuthContext";
 import { getRoleInfo } from "../utils/roles";
 import { isWithinEthiopia } from "../utils/mapService";
+import { perfTimingsVisible } from "../utils/perf";
 import BackButton from "../components/ui/BackButton";
 
 const { width } = Dimensions.get("window");
@@ -215,6 +216,17 @@ export default function PreparingOrderScreen() {
     if (autoLaunchChapa && initialCheckoutUrl) {
       setActiveCheckoutUrl(initialCheckoutUrl);
       setChapaModalVisible(true);
+      // Test builds only: show how long the payment took (customers never see this)
+      const t = route.params?.checkoutTiming;
+      if (perfTimingsVisible() && t?.tapAt) {
+        const toPage = Date.now() - t.tapAt;
+        Alert.alert(
+          "Timing (test build)",
+          `Tap to payment page: ${toPage} ms
+Start with Chapa: ${t.initMs ?? "-"} ms
+Save order: ${t.saveMs ?? "-"} ms`
+        );
+      }
     }
   }, [autoLaunchChapa, initialCheckoutUrl]);
 
@@ -271,15 +283,19 @@ export default function PreparingOrderScreen() {
   // doesn't have to tap again while their bank or wallet is still processing. Stops at the first
   // clear answer: paid, failed or a wrong amount. Accuracy comes from the checks inside verifyChapaPayment
   // (Chapa's own status, the currency, and the amount covering the order total).
-  const PAYMENT_POLL_MS = 3000;
-  const PAYMENT_POLL_TRIES = 40;
+  const PAYMENT_POLL_MS = 2000;
+  const PAYMENT_POLL_TRIES = 60;
 
-  const checkPaymentOnce = async (cleanOrderId) => {
+  const checkPaymentOnce = async (cleanOrderId, attempt = 1) => {
     const snap = await getDoc(doc(db, "orders", cleanOrderId));
     if (snap.exists() && snap.data()?.paymentStatus === "PAID") {
       return { state: "paid", data: snap.data(), result: null };
     }
     const txRef = snap.data()?.chapaMerchantReference || order?.chapaMerchantReference || "";
+    // Fast path: the Chapa webhook writes the result to the server, so one cheap call tells us at once.
+    // Every 3rd round we still ask Chapa directly, so payments are confirmed even if the webhook is down.
+    const fast = await getPaymentStatusFast(txRef);
+    if (fast !== "SUCCESS" && attempt % 3 !== 0) return { state: "pending", data: null, result: null };
     const result = await verifyChapaPayment({ orderId: cleanOrderId, txRef, uid: authUser?.uid });
     if (result?.verified || result?.paymentStatus === "PAID") return { state: "paid", data: null, result };
     if (result?.paymentStatus === "FAILED") return { state: "failed", data: null, result };
@@ -300,7 +316,7 @@ export default function PreparingOrderScreen() {
         if (!mountedRef.current) return;
         let check;
         try {
-          check = await checkPaymentOnce(cleanOrderId);
+          check = await checkPaymentOnce(cleanOrderId, attempt);
         } catch (err) {
           // A network blip shouldn't end the wait; try again on the next round
           console.warn("payment check retry:", err?.code, err?.message);

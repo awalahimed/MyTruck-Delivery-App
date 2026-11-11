@@ -432,9 +432,9 @@ export const AuthContextProvder = ({ children }) => {
     if (!norm.isValid) return { isRegistered: false, error: norm.error };
 
     try {
-      // 1. Profile lookup only when signed in: user profiles are private, so a signed-out
-      //    device can't search them. Duplicate sign-ups are still rejected by Firebase Auth
-      //    ("email-already-in-use") when the account is created.
+      // 1. Profile lookup only when signed in: user profiles are private, so a signed-out device
+      //    can't search them. For sign-up, the phone number is checked on the server instead
+      //    (send-otp refuses claimed numbers), so this lookup is only a shortcut for signed-in users.
       if (auth.currentUser) {
         const q = query(
           collection(db, "user"),

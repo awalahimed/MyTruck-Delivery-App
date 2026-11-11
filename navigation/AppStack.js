@@ -44,6 +44,8 @@ export default function AppStack({ initialRoute = "Home" }) {
       initialRouteName={initialRoute}
       screenOptions={{
         headerShown: false,
+        // Pages you've left are frozen instead of re-rendered, so going back and forth stays fast
+        freezeOnBlur: true,
         animation: "slide_from_right",
       }}
     >

@@ -17,7 +17,9 @@ import { useNavigation } from "@react-navigation/native";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { StatusBar } from "expo-status-bar";
 import { UserAuth, normalizeEthiopianPhone, formatAuthError } from "../contexts/AuthContext";
-import { verifySignupCode } from "../services/otpClient";
+import { verifySignupCode, claimPhone } from "../services/otpClient";
+import { deleteUser } from "firebase/auth";
+import { auth } from "../firebase";
 import BackButton from "../components/ui/BackButton";
 
 const TEAL = "#179B83";
@@ -141,13 +143,29 @@ export default function SignUp() {
       const proof = await verifySignupCode(normalizedPhone.intlNumber, cleanCode);
 
       // Atomically register customer with verified phone number
-      await registerCustomer({
+      const created = await registerCustomer({
         fullName: fullName.trim(),
         phone: normalizedPhone.localNumber,
         password,
         email: email.trim(),
         proof,
       });
+
+      // Reserve the phone number on the server. If another account already has it, undo this sign-up.
+      try {
+        await claimPhone(normalizedPhone.intlNumber, created.user.uid, proof);
+      } catch (claimErr) {
+        if (claimErr?.code === "otp/taken" || claimErr?.code === "otp/bad_proof") {
+          try {
+            await deleteUser(created.user);
+          } catch (_) {}
+          setStep("form");
+          setErrorMessage(claimErr.message || "This mobile number is already registered. Please sign in instead.");
+          return;
+        }
+        // Network trouble here shouldn't block a verified new customer; the number is still verified by the code
+        console.warn("Phone claim not saved:", claimErr?.code, claimErr?.message);
+      }
 
       // Navigation is automatic via RootNavigator auth state listener
     } catch (error) {

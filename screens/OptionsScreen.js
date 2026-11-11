@@ -274,17 +274,24 @@ export default function OptionsScreen() {
   });
 
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "platformSettings", "config"), (snap) => {
-      if (snap.exists()) {
-        const d = snap.data();
-        setPaymentConfig({
-          chapaEnabled: d.chapaEnabled !== false,
-          telebirrEnabled: d.telebirrEnabled === true,
-          cbeBirrEnabled: d.cbeBirrEnabled === true,
-          codEnabled: d.codEnabled === true,
-        });
+    const unsub = onSnapshot(
+      doc(db, "platformSettings", "config"),
+      (snap) => {
+        if (snap.exists()) {
+          const d = snap.data();
+          setPaymentConfig({
+            chapaEnabled: d.chapaEnabled !== false,
+            telebirrEnabled: d.telebirrEnabled === true,
+            cbeBirrEnabled: d.cbeBirrEnabled === true,
+            codEnabled: d.codEnabled === true,
+          });
+        }
+      },
+      (error) => {
+        // Keep the last known payment settings if the read is refused or offline
+        console.warn("Payment settings unavailable:", error?.code, error?.message);
       }
-    });
+    );
     return unsub;
   }, []);
 
@@ -1109,12 +1116,12 @@ export default function OptionsScreen() {
 
             <TouchableOpacity
               style={s.supportOption}
-              onPress={() => Linking.openURL("tel:+251911000000")}
+              onPress={() => Linking.openURL("tel:+251911223344")}
             >
               <PhoneIcon size={22} color={TEAL} />
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <Text style={s.supportOptionTitle}>Direct Call Center</Text>
-                <Text style={s.supportOptionSub}>+251 91 100 0000 (Toll Free)</Text>
+                <Text style={s.supportOptionSub}>+251 911 223 344</Text>
               </View>
               <ChevronRightIcon size={18} color="#94A3B8" />
             </TouchableOpacity>

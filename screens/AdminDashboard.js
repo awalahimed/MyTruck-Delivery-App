@@ -3745,7 +3745,7 @@ export default function AdminDashboard() {
                   </View>
                   <View style={s.finRow}>
                     <Text style={s.finLabel}>Customer Phone:</Text>
-                    <Text style={s.finVal}>{selectedOrderDetail.customerPhone || selectedOrderDetail.userPhone || "+251 91 123 4567"}</Text>
+                    <Text style={s.finVal}>{selectedOrderDetail.customerPhone || selectedOrderDetail.userPhone || "Not provided"}</Text>
                   </View>
                   <View style={s.finRow}>
                     <Text style={s.finLabel}>Delivery Address:</Text>

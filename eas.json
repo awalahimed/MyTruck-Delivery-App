@@ -18,7 +18,8 @@
         "buildType": "apk"
       },
       "env": {
-        "NPM_FLAGS": "--legacy-peer-deps"
+        "NPM_FLAGS": "--legacy-peer-deps",
+        "PERF_TIMINGS": "1"
       }
     },
     "ios-preview": {

@@ -181,8 +181,8 @@ export default function BiometricWelcomeScreen({ navigation }) {
     } catch (err) {
       console.warn("Biometric login failure:", err?.message);
       let msg = "Could not sign in with fingerprint. Please use password.";
-      if (err?.code === "auth/wrong-password") {
-        msg = "Account password was updated. Please sign in with your new password.";
+      if (err?.code === "auth/wrong-password" || err?.code === "auth/invalid-credential" || err?.code === "auth/invalid-login-credentials") {
+        msg = "Your password was changed. Turn off fingerprint login and sign in with your new password.";
       } else if (err?.code === "auth/user-not-found") {
         msg = "User account not found. Please sign in again.";
       } else if (err?.code === "auth/network-request-failed") {

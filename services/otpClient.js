@@ -54,3 +54,11 @@ export async function verifySignupCode(phone, code) {
   }
   return data.proof;
 }
+
+/**
+ * Claims the verified phone number for this account on the server, so no other account can use it.
+ * Throws with code "otp/taken" if another account already has the number.
+ */
+export function claimPhone(phone, uid, proof) {
+  return callFunction("claim-phone", { phone, uid, proof });
+}

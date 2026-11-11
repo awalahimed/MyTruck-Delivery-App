@@ -24,6 +24,13 @@ export const hasAppChapaKey = () => appKey().length > 0;
 /** Server function not deployed (as opposed to a real payment error). */
 export const isServerMissing = (e) => /not-found|unimplemented/.test(String(e?.code || ""));
 
+// Once the server function is known to be missing, stop waiting for it on every payment
+let serverKnownMissing = false;
+export const markServerMissing = () => {
+  serverKnownMissing = true;
+};
+export const serverIsKnownMissing = () => serverKnownMissing;
+
 const cleanPhone = (raw) => {
   const d = String(raw || "").replace(/\D/g, "");
   const p = d.startsWith("251") ? "0" + d.slice(3) : d.startsWith("0") ? d : "0" + d;
@@ -54,14 +61,18 @@ export async function startChapaCheckout({
   orderIds, amount, txRef, email, firstName, lastName, phone, description, returnUrl,
 }) {
   const ref = txRef || newTxRef();
-  try {
-    const res = await httpsCallable(getFunctions(app), "createChapaCheckout")({
-      orderIds, amount, txRef: ref, email, firstName, lastName, phone, description,
-      returnUrl: returnUrl || DEFAULT_RETURN_URL,
-    });
-    if (res?.data?.checkoutUrl) return { checkoutUrl: res.data.checkoutUrl, txRef: res.data.txRef || ref, via: "server" };
-  } catch (e) {
-    if (!isServerMissing(e) || !hasAppChapaKey()) throw e;
+  // Skip the server call when it's known to be missing (saves a failed round trip on every payment)
+  if (!serverKnownMissing) {
+    try {
+      const res = await httpsCallable(getFunctions(app), "createChapaCheckout")({
+        orderIds, amount, txRef: ref, email, firstName, lastName, phone, description,
+        returnUrl: returnUrl || DEFAULT_RETURN_URL,
+      });
+      if (res?.data?.checkoutUrl) return { checkoutUrl: res.data.checkoutUrl, txRef: res.data.txRef || ref, via: "server" };
+    } catch (e) {
+      if (!isServerMissing(e) || !hasAppChapaKey()) throw e;
+      serverKnownMissing = true;
+    }
   }
   if (!hasAppChapaKey()) {
     const err = new Error("Online payment is not available right now.");
@@ -113,11 +124,14 @@ export async function startChapaCheckout({
  * Returns { verified, paymentStatus: "PAID" | "FAILED" | "PENDING" | "AMOUNT_MISMATCH", orders }.
  */
 export async function verifyChapaPayment({ orderId, txRef, uid }) {
-  try {
-    const res = await httpsCallable(getFunctions(app), "verifyChapaPayment")({ orderId, tx_ref: txRef || "" });
-    return { ...(res?.data || {}), orders: [] };
-  } catch (e) {
-    if (!isServerMissing(e) || !hasAppChapaKey()) throw e;
+  if (!serverKnownMissing) {
+    try {
+      const res = await httpsCallable(getFunctions(app), "verifyChapaPayment")({ orderId, tx_ref: txRef || "" });
+      return { ...(res?.data || {}), orders: [] };
+    } catch (e) {
+      if (!isServerMissing(e) || !hasAppChapaKey()) throw e;
+      serverKnownMissing = true;
+    }
   }
   if (!txRef) return { verified: false, paymentStatus: "PENDING", orders: [] };
 
@@ -186,4 +200,27 @@ export async function checkChapaPaymentForStore(txRef) {
   const currency = String(result.data.currency || "ETB").toUpperCase();
   if (currency !== "ETB") return { ok: false, reason: `The payment was made in ${currency}, not ETB.` };
   return { ok: true, amount: Number(result.data.amount) || 0 };
+}
+
+/**
+ * Fast payment status from the server's record (written by the Chapa webhook).
+ * Returns "SUCCESS", "UNVERIFIED" or "PENDING". Never throws; falls back to PENDING.
+ */
+export async function getPaymentStatusFast(txRef) {
+  if (!txRef) return "PENDING";
+  try {
+    const res = await fetch("https://ubfeichwvegdbkjnsltv.supabase.co/functions/v1/payment-status", {
+      method: "POST",
+      headers: {
+        apikey: "sb_publishable_W25wOYiJe2g9NF8Mr84--w_jYl__P8f",
+        Authorization: "Bearer sb_publishable_W25wOYiJe2g9NF8Mr84--w_jYl__P8f",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ tx_ref: txRef }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return String(data?.status || "PENDING").toUpperCase();
+  } catch (_) {
+    return "PENDING";
+  }
 }

@@ -50,7 +50,8 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { notifyMerchant } from "../services/orderNotifications";
-import { startChapaCheckout, hasAppChapaKey } from "../services/chapaClient";
+import { startChapaCheckout, hasAppChapaKey, serverIsKnownMissing } from "../services/chapaClient";
+import { startTimer } from "../utils/perf";
 import DeliveryLocationModal from "../components/DeliveryLocationModal";
 import BackButton from "../components/ui/BackButton";
 import { isWithinEthiopia } from "../utils/mapService";
@@ -114,17 +115,24 @@ export default function BasketScreen() {
   });
 
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "platformSettings", "config"), (snap) => {
-      if (snap.exists()) {
-        const d = snap.data();
-        setPaymentConfig({
-          chapaEnabled: d.chapaEnabled !== false,
-          telebirrEnabled: d.telebirrEnabled === true,
-          cbeBirrEnabled: d.cbeBirrEnabled === true,
-          codEnabled: d.codEnabled === true,
-        });
+    const unsub = onSnapshot(
+      doc(db, "platformSettings", "config"),
+      (snap) => {
+        if (snap.exists()) {
+          const d = snap.data();
+          setPaymentConfig({
+            chapaEnabled: d.chapaEnabled !== false,
+            telebirrEnabled: d.telebirrEnabled === true,
+            cbeBirrEnabled: d.cbeBirrEnabled === true,
+            codEnabled: d.codEnabled === true,
+          });
+        }
+      },
+      (error) => {
+        // Keep the last known payment settings if the read is refused or offline
+        console.warn("Payment settings unavailable:", error?.code, error?.message);
       }
-    });
+    );
     return unsub;
   }, []);
 
@@ -135,6 +143,10 @@ export default function BasketScreen() {
   useEffect(() => {
     if (!paymentConfig.chapaEnabled || !user?.uid) return undefined;
     let alive = true;
+    if (serverIsKnownMissing()) {
+      setChapaLive(false);
+      return undefined;
+    }
     httpsCallable(getFunctions(app), "createChapaCheckout")({ probe: true })
       .then(() => alive && setChapaLive(true))
       .catch((e) => {
@@ -624,6 +636,8 @@ export default function BasketScreen() {
     }
 
     setIsSubmitting(true);
+    const tapAt = Date.now();
+    const timing = {};
 
     try {
       const plans = buildOrderPlans();
@@ -650,6 +664,7 @@ export default function BasketScreen() {
         try {
           // Server functions first (secret stays off the phone); falls back to the app key if not deployed
           const fullName = String(dbUser?.fullName || user?.displayName || "Customer User");
+          const endInit = startTimer("payment:init-chapa");
           const started = await startChapaCheckout({
             amount: grandTotal,
             txRef,
@@ -661,6 +676,7 @@ export default function BasketScreen() {
           });
           checkoutUrl = started.checkoutUrl;
           usedTxRef = started.txRef;
+          timing.initMs = endInit();
         } catch (initErr) {
           console.warn("Chapa init error:", initErr?.code, initErr?.message);
           chapaErrorText = String(initErr?.message || "");
@@ -686,7 +702,9 @@ Please try again, or choose Cash on Delivery.`,
       }
 
       // ─── STEP 2: Create one order per store (AWAITING_PAYMENT for Chapa, PENDING for COD) ──
+      const endSave = startTimer("payment:save-orders");
       const created = await writeOrders(plans, chapa);
+      timing.saveMs = endSave();
       const createdOrderIds = created.map((o) => o.id);
 
       if (chapa) {
@@ -696,6 +714,7 @@ Please try again, or choose Cash on Delivery.`,
           paymentPending: true,
           autoLaunchChapa: true,
           initialCheckoutUrl: chapa.checkoutUrl,
+          checkoutTiming: { tapAt, initMs: timing.initMs, saveMs: timing.saveMs },
           txRef: chapa.txRef,
         });
       } else {
