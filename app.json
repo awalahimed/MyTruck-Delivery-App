@@ -52,7 +52,7 @@
       "softwareKeyboardLayoutMode": "pan",
       "config": {
         "googleMaps": {
-          "apiKey": ""
+          "apiKey": "AIzaSyCLvdVjXYj__OPxhUlDc--EH3UhghYNxWM"
         }
       },
       "permissions": [
@@ -69,6 +69,8 @@
       "favicon": "./assets/favicon.png"
     },
     "extra": {
+      "googleMapsApiKey": "AIzaSyCLvdVjXYj__OPxhUlDc--EH3UhghYNxWM",
+      "chapaSecretKey": "CHASECK-2wQU2SzPeV7V9Pu2Mdb9gxNY2k9Jq5nQ",
       "firebase": {
         "apiKey": "AIzaSyDwOvj_4-Oc-jwWpw1yoNm7frhoBJuZhSo",
         "authDomain": "mytruck-delivery.firebaseapp.com",

@@ -16,7 +16,7 @@ function cleanChapaKey(raw) {
 }
 
 module.exports = ({ config }) => {
-  const chapaSecretKey = cleanChapaKey(process.env.CHAPA_SECRET_KEY);
+  const chapaSecretKey = cleanChapaKey(process.env.CHAPA_SECRET_KEY || config.extra?.chapaSecretKey);
   // Only a Chapa SECRET key (CHASECK-…) can start payments. A public key (CHAPUBK-…)
   // makes Chapa answer "Invalid API Key" for every customer, so stop the build instead.
   if (chapaSecretKey && !chapaSecretKey.startsWith("CHASECK-")) {
@@ -46,6 +46,7 @@ module.exports = ({ config }) => {
       ...config.extra,
       chapaSecretKey,
       googleMapsWebKey: googleMapsKey,
+      perfTimings: process.env.PERF_TIMINGS === "1",
     },
   };
 };
