@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import {
   createUserWithEmailAndPassword,
+  deleteUser,
   signInWithEmailAndPassword,
   signInWithCustomToken,
   signInAnonymously,
@@ -10,7 +11,7 @@ import {
 } from "firebase/auth";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { auth, db, app } from "../firebase";
-import { sendSignupCode } from "../services/otpClient";
+import { sendSignupCode, claimPhone } from "../services/otpClient";
 import { doc, getDoc, setDoc, updateDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -177,6 +178,32 @@ export const AuthContextProvder = ({ children }) => {
   const [authLoading, setAuthLoading] = useState(true);
   const [otpFlowInProgress, setOtpFlowInProgress] = useState(false);
   const [sessionPhoneVerified, setSessionPhoneVerified] = useState(false);
+  // True while a sign-up (customer or seller) is creating the account. Keeps the sign-up screen
+  // mounted (RootNavigator shows AuthStack) and stops the auth listener from loading a
+  // half-written profile for the account being created.
+  const [registering, setRegistering] = useState(false);
+  const registeringRef = useRef(false);
+  const startRegistration = () => {
+    registeringRef.current = true;
+    setRegistering(true);
+  };
+  const endRegistration = () => {
+    registeringRef.current = false;
+    setRegistering(false);
+  };
+  // Undo a partly created account so the person can simply try again
+  const rollbackCreatedUser = async (createdUser) => {
+    if (!createdUser) return;
+    try {
+      await deleteUser(createdUser);
+    } catch (_) {
+      try {
+        await signOut(auth);
+      } catch (__) {}
+    }
+    setUser(null);
+    setDbUser(null);
+  };
 
   // Super Admin authority detector across phone, email, and roles
   const isSuperAdminAuthority = (email = "", phone = "", role = "") => {
@@ -382,6 +409,13 @@ export const AuthContextProvder = ({ children }) => {
         return;
       }
 
+      // A sign-up is creating this account right now: it sets the profile itself when done.
+      // Loading here would find no profile yet and cache a wrong "customer" fallback.
+      if (registeringRef.current) {
+        setAuthLoading(false);
+        return;
+      }
+
       // Fast-path: read cache immediately (< 5ms) to prevent splash screen stalls
       const cacheKey = `@mytruck_profile_${currentUser.uid}`;
       try {
@@ -476,13 +510,14 @@ export const AuthContextProvder = ({ children }) => {
     const cleanEmail = String(email || "").trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) throw new Error("Enter a valid email address.");
 
-    setAuthLoading(true);
-    let createdUid = null;
+    startRegistration();
+    let createdUser = null;
 
     try {
       // 1. Create Firebase Auth user
       const userCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-      createdUid = userCred.user.uid;
+      createdUser = userCred.user;
+      const createdUid = userCred.user.uid;
 
       // 2. Prepare profile
       const nameParts = (fullName || "").trim().split(" ");
@@ -509,16 +544,30 @@ export const AuthContextProvder = ({ children }) => {
       // 3. Write Firestore document
       await setDoc(doc(db, "user", createdUid), profileData, { merge: true });
 
-      // 4. Update local state immediately
+      // 4. Reserve the verified phone number for this account on the server.
+      //    If another account already owns it, undo this sign-up.
+      if (proof) {
+        try {
+          await claimPhone(norm.intlNumber, createdUid, proof);
+        } catch (claimErr) {
+          if (claimErr?.code === "otp/taken" || claimErr?.code === "otp/bad_proof") throw claimErr;
+          // Network trouble here shouldn't block a verified new customer
+          console.warn("Phone claim not saved:", claimErr?.code, claimErr?.message);
+        }
+      }
+
+      // 5. Update local state immediately
+      AsyncStorage.setItem(`@mytruck_profile_${createdUid}`, JSON.stringify({ ...profileData, createdAt: null })).catch(() => {});
       setUser(userCred.user);
       setDbUser(profileData);
       setSessionPhoneVerified(true);
       setOtpFlowInProgress(false);
-      setAuthLoading(false);
+      endRegistration();
 
       return { user: userCred.user, profile: profileData };
     } catch (err) {
-      setAuthLoading(false);
+      await rollbackCreatedUser(createdUser);
+      endRegistration();
       throw err;
     }
   }, []);
@@ -546,12 +595,13 @@ export const AuthContextProvder = ({ children }) => {
     accountNumber = "",
     accountHolder = "",
   }) => {
-    setAuthLoading(true);
     const norm = normalizeEthiopianPhone(phone);
     if (!norm.isValid) {
-      setAuthLoading(false);
       throw new Error(norm.error);
     }
+
+    startRegistration();
+    let createdUser = null;
 
     try {
       // 1. Create Firebase Auth account
@@ -560,6 +610,7 @@ export const AuthContextProvder = ({ children }) => {
         email.trim().toLowerCase(),
         password
       );
+      createdUser = userCred.user;
       const createdUid = userCred.user.uid;
 
       // 2. Generate business record ID
@@ -648,15 +699,17 @@ export const AuthContextProvder = ({ children }) => {
       await setDoc(doc(db, "user", createdUid), profileData, { merge: true });
 
       // 6. Update local state immediately
+      AsyncStorage.setItem(`@mytruck_profile_${createdUid}`, JSON.stringify({ ...profileData, createdAt: null })).catch(() => {});
       setUser(userCred.user);
       setDbUser(profileData);
       setSessionPhoneVerified(true);
       setOtpFlowInProgress(false);
-      setAuthLoading(false);
+      endRegistration();
 
       return { user: userCred.user, profile: profileData };
     } catch (err) {
-      setAuthLoading(false);
+      await rollbackCreatedUser(createdUser);
+      endRegistration();
       throw err;
     }
   }, []);
@@ -736,6 +789,7 @@ export const AuthContextProvder = ({ children }) => {
         refreshProfile,
         checkPhoneRegistered,
         otpFlowInProgress,
+        registering,
         sessionPhoneVerified,
         beginOtpFlow,
         cancelOtpFlow,

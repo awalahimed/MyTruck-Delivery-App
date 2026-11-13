@@ -17,9 +17,7 @@ import { useNavigation } from "@react-navigation/native";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { StatusBar } from "expo-status-bar";
 import { UserAuth, normalizeEthiopianPhone, formatAuthError } from "../contexts/AuthContext";
-import { verifySignupCode, claimPhone } from "../services/otpClient";
-import { deleteUser } from "firebase/auth";
-import { auth } from "../firebase";
+import { verifySignupCode } from "../services/otpClient";
 import BackButton from "../components/ui/BackButton";
 
 const TEAL = "#179B83";
@@ -142,8 +140,9 @@ export default function SignUp() {
       // Server checks the code (attempts, expiry, single use) and returns a short-lived proof
       const proof = await verifySignupCode(normalizedPhone.intlNumber, cleanCode);
 
-      // Atomically register customer with verified phone number
-      const created = await registerCustomer({
+      // Creates the account, saves the profile and reserves the phone number.
+      // Any failure undoes the account, so the customer can simply try again.
+      await registerCustomer({
         fullName: fullName.trim(),
         phone: normalizedPhone.localNumber,
         password,
@@ -151,25 +150,15 @@ export default function SignUp() {
         proof,
       });
 
-      // Reserve the phone number on the server. If another account already has it, undo this sign-up.
-      try {
-        await claimPhone(normalizedPhone.intlNumber, created.user.uid, proof);
-      } catch (claimErr) {
-        if (claimErr?.code === "otp/taken" || claimErr?.code === "otp/bad_proof") {
-          try {
-            await deleteUser(created.user);
-          } catch (_) {}
-          setStep("form");
-          setErrorMessage(claimErr.message || "This mobile number is already registered. Please sign in instead.");
-          return;
-        }
-        // Network trouble here shouldn't block a verified new customer; the number is still verified by the code
-        console.warn("Phone claim not saved:", claimErr?.code, claimErr?.message);
-      }
-
-      // Navigation is automatic via RootNavigator auth state listener
+      // Navigation is automatic via RootNavigator once the profile is set
     } catch (error) {
-      console.warn("Sign-up verification error:", error?.message);
+      console.warn("Sign-up verification error:", error?.code, error?.message);
+      const code = String(error?.code || "");
+      if (code === "otp/taken" || code === "auth/email-already-in-use") {
+        // Details on the first step are the problem: send them back to fix it
+        setStep("form");
+        setOtpCode("");
+      }
       setErrorMessage(formatAuthError(error, "Verification failed. Please try again."));
     } finally {
       setBusy(false);

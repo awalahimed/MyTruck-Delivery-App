@@ -13,7 +13,7 @@ const TEAL = "#179B83";
 const DARK = "#0B2A26";
 
 const RootNavigator = () => {
-  const { user, authLoading, dbUser, otpFlowInProgress, sessionPhoneVerified, refreshProfile, signOutUser } = UserAuth();
+  const { user, authLoading, dbUser, otpFlowInProgress, registering, sessionPhoneVerified, refreshProfile, signOutUser } = UserAuth();
   const [stallTimeout, setStallTimeout] = useState(false);
   const [retrying, setRetrying] = useState(false);
 
@@ -28,6 +28,10 @@ const RootNavigator = () => {
     }
     return () => clearTimeout(timer);
   }, [user, dbUser]);
+
+  // A sign-up is creating the account: keep the sign-up screen on screen (its spinner shows progress
+  // and any error stays visible on the form instead of bouncing back to Welcome)
+  if (registering) return <AuthStack />;
 
   // Loading state with branded animated splash while auth or profile initializes
   if (authLoading && !stallTimeout) {

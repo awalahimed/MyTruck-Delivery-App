@@ -50,14 +50,10 @@ export default function WelcomeScreen() {
     }, [checkExistingAccount])
   );
 
+  // "Get Started" always opens registration. Returning customers use the
+  // "Already have an account? Sign In" link below (prefilled with their phone).
   const handleGetStarted = () => {
-    if (isExistingCustomer) {
-      // Existing customer: navigate directly to Login with their phone number
-      navigation.navigate("SignIn", { prefillPhone: lastPhone || "" });
-    } else {
-      // Genuinely new customer: navigate to Registration
-      navigation.navigate("SignUp");
-    }
+    navigation.navigate("SignUp");
   };
 
   return (
@@ -82,7 +78,7 @@ export default function WelcomeScreen() {
           activeOpacity={0.88}
         >
           <Text style={s.getStartedTxt}>
-            {isExistingCustomer ? "Get Started" : "Get Started"}
+            Get Started
           </Text>
         </TouchableOpacity>
 
