@@ -14,6 +14,7 @@ import ProfileScreen from "../screens/ProfileScreen";
 import DeliveryAddressesScreen from "../screens/DeliveryAddressesScreen";
 import AdminDashboard from "../screens/AdminDashboard";
 import SellerHome from "../screens/SellerHome";
+import SellerApply from "../screens/SellerApply";
 import DriverDashboard from "../screens/DriverDashboard";
 import NotificationCenterScreen from "../screens/NotificationCenterScreen";
 import { withRoleGate } from "../components/RoleGate";
@@ -136,6 +137,12 @@ export default function AppStack({ initialRoute = "Home" }) {
       <Stack.Screen
         name="NotificationCenter"
         component={NotificationCenterScreen}
+      />
+
+      {/* Seller Application */}
+      <Stack.Screen
+        name="SellerApply"
+        component={SellerApply}
       />
     </Stack.Navigator>
   );

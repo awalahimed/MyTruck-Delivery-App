@@ -12,7 +12,7 @@ import {
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { auth, db, app } from "../firebase";
 import { sendSignupCode, claimPhone } from "../services/otpClient";
-import { doc, getDoc, setDoc, updateDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // ── OTP bypass flag ───────────────────────────────────────────────────────────
@@ -390,6 +390,7 @@ export const AuthContextProvder = ({ children }) => {
 
   useEffect(() => {
     let active = true;
+    let unsubSnapshot = null;
 
     // Strict safety timeout: guarantees splash screen / authLoading is released
     // within 3.5 seconds even under poor network or offline conditions.
@@ -400,6 +401,11 @@ export const AuthContextProvder = ({ children }) => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (!active) return;
       setUser(currentUser || null);
+
+      if (unsubSnapshot) {
+        unsubSnapshot();
+        unsubSnapshot = null;
+      }
 
       if (!currentUser) {
         setDbUser(null);
@@ -448,11 +454,35 @@ export const AuthContextProvder = ({ children }) => {
       } finally {
         if (active) setAuthLoading(false);
       }
+
+      // Real-time Firestore sync: updates user role, approvals, and status (banned/suspended) live
+      try {
+        unsubSnapshot = onSnapshot(
+          doc(db, "user", currentUser.uid),
+          (docSnap) => {
+            if (!active) return;
+            if (docSnap.exists()) {
+              const fresh = sanitizeProfile(docSnap.data(), currentUser.uid, currentUser.email || "");
+              if (fresh && fresh.role) {
+                AsyncStorage.setItem(cacheKey, JSON.stringify(fresh)).catch(() => {});
+                setDbUser((prev) => (prev ? { ...prev, ...fresh } : fresh));
+                if (!OTP_VERIFICATION_REQUIRED || fresh.phoneVerified === true) {
+                  setSessionPhoneVerified(true);
+                }
+              }
+            }
+          },
+          (err) => {
+            console.warn("Real-time profile listener notice:", err?.message);
+          }
+        );
+      } catch (_) {}
     });
 
     return () => {
       active = false;
       clearTimeout(safetyTimer);
+      if (unsubSnapshot) unsubSnapshot();
       unsubscribe();
     };
   }, [loadProfileFromFirestore]);
@@ -499,11 +529,11 @@ export const AuthContextProvder = ({ children }) => {
   }, []);
 
   /**
-   * Complete, atomic customer registration.
-   * Creates the Firebase Auth account, writes the Firestore profile,
+   * Complete, atomic registration for customers and drivers.
+   * Creates the Firebase Auth account, writes the Firestore profile across schemas,
    * updates state, and sets dbUser so RootNavigator seamlessly renders AppStack.
    */
-  const registerCustomer = useCallback(async ({ fullName, phone, password, email, proof }) => {
+  const registerCustomer = useCallback(async ({ fullName, phone, password, email, proof, role = "customer" }) => {
     const norm = normalizeEthiopianPhone(phone);
     if (!norm.isValid) throw new Error(norm.error);
     // Email is required: it's the account's sign-in and the address password reset goes to
@@ -523,6 +553,7 @@ export const AuthContextProvder = ({ children }) => {
       const nameParts = (fullName || "").trim().split(" ");
       const firstName = nameParts[0] || fullName.trim();
       const lastName = nameParts.slice(1).join(" ") || "";
+      const isDriver = role === "driver";
 
       const profileData = {
         uid: createdUid,
@@ -530,19 +561,29 @@ export const AuthContextProvder = ({ children }) => {
         firstName,
         lastName,
         phoneNumber: norm.intlNumber,
+        phone: norm.localNumber,
+        workingPhone: norm.localNumber,
         email: cleanEmail,
         phoneVerified: Boolean(proof),
-        role: "customer",
+        role: isDriver ? "driver" : "customer",
+        isDriver: isDriver,
+        isOnline: false,
         address: "Bole, Addis Ababa",
         latitude: 8.9806,
         longitude: 38.7578,
+        driverLat: 8.9806,
+        driverLng: 38.7578,
+        accountStatus: "ACTIVE",
         countryCode: "ET",
         currency: "ETB",
         createdAt: serverTimestamp(),
       };
 
-      // 3. Write Firestore document
-      await setDoc(doc(db, "user", createdUid), profileData, { merge: true });
+      // 3. Write Firestore document to both 'user' and 'users' collections for 100% schema consistency
+      await Promise.all([
+        setDoc(doc(db, "user", createdUid), profileData, { merge: true }),
+        setDoc(doc(db, "users", createdUid), profileData, { merge: true }),
+      ]);
 
       // 4. Reserve the verified phone number for this account on the server.
       //    If another account already owns it, undo this sign-up.
@@ -551,7 +592,7 @@ export const AuthContextProvder = ({ children }) => {
           await claimPhone(norm.intlNumber, createdUid, proof);
         } catch (claimErr) {
           if (claimErr?.code === "otp/taken" || claimErr?.code === "otp/bad_proof") throw claimErr;
-          // Network trouble here shouldn't block a verified new customer
+          // Network trouble here shouldn't block a verified new user
           console.warn("Phone claim not saved:", claimErr?.code, claimErr?.message);
         }
       }
@@ -696,7 +737,10 @@ export const AuthContextProvder = ({ children }) => {
         createdAt: serverTimestamp(),
       };
 
-      await setDoc(doc(db, "user", createdUid), profileData, { merge: true });
+      await Promise.all([
+        setDoc(doc(db, "user", createdUid), profileData, { merge: true }),
+        setDoc(doc(db, "users", createdUid), profileData, { merge: true }),
+      ]);
 
       // 6. Update local state immediately
       AsyncStorage.setItem(`@mytruck_profile_${createdUid}`, JSON.stringify({ ...profileData, createdAt: null })).catch(() => {});

@@ -13,7 +13,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useRoute } from "@react-navigation/native";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { StatusBar } from "expo-status-bar";
 import { UserAuth, normalizeEthiopianPhone, formatAuthError } from "../contexts/AuthContext";
@@ -26,8 +26,12 @@ const ORANGE = "#F47721";
 
 export default function SignUp() {
   const navigation = useNavigation();
+  const route = useRoute();
   const { registerCustomer, checkPhoneRegistered, requestOtp } = UserAuth();
 
+  const [selectedRole, setSelectedRole] = useState(
+    route.params?.initialRole === "driver" ? "driver" : "customer"
+  );
   const [step, setStep] = useState("form"); // "form" | "otp"
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
@@ -148,6 +152,7 @@ export default function SignUp() {
         password,
         email: email.trim(),
         proof,
+        role: selectedRole,
       });
 
       // Navigation is automatic via RootNavigator once the profile is set
@@ -222,6 +227,60 @@ export default function SignUp() {
 
               {/* Form Card */}
               <View style={s.card}>
+                {/* Account Role Selector */}
+                <Text style={s.label}>I want to join as</Text>
+                <View style={s.roleSelectorRow}>
+                  <TouchableOpacity
+                    style={[s.roleOption, selectedRole === "customer" && s.roleOptionActive]}
+                    onPress={() => setSelectedRole("customer")}
+                    activeOpacity={0.85}
+                  >
+                    <View style={[s.roleIconWrap, selectedRole === "customer" && s.roleIconWrapActive]}>
+                      <MaterialCommunityIcons
+                        name="shopping-outline"
+                        size={20}
+                        color={selectedRole === "customer" ? "#FFFFFF" : TEAL}
+                      />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={[s.roleTitle, selectedRole === "customer" && s.roleTitleActive]}>
+                        Customer
+                      </Text>
+                      <Text style={s.roleDesc}>Order food & deliveries</Text>
+                    </View>
+                    <MaterialCommunityIcons
+                      name={selectedRole === "customer" ? "radiobox-marked" : "radiobox-blank"}
+                      size={20}
+                      color={selectedRole === "customer" ? TEAL : "#94A3B8"}
+                    />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[s.roleOption, selectedRole === "driver" && s.roleOptionActiveDriver]}
+                    onPress={() => setSelectedRole("driver")}
+                    activeOpacity={0.85}
+                  >
+                    <View style={[s.roleIconWrap, selectedRole === "driver" && s.roleIconWrapActiveDriver]}>
+                      <MaterialCommunityIcons
+                        name="motorbike"
+                        size={20}
+                        color={selectedRole === "driver" ? "#FFFFFF" : ORANGE}
+                      />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={[s.roleTitle, selectedRole === "driver" && s.roleTitleActiveDriver]}>
+                        Driver / Courier
+                      </Text>
+                      <Text style={s.roleDesc}>Deliver orders & earn</Text>
+                    </View>
+                    <MaterialCommunityIcons
+                      name={selectedRole === "driver" ? "radiobox-marked" : "radiobox-blank"}
+                      size={20}
+                      color={selectedRole === "driver" ? ORANGE : "#94A3B8"}
+                    />
+                  </TouchableOpacity>
+                </View>
+
                 {/* Full Name */}
                 <Text style={s.label}>Full Name</Text>
                 <View style={s.inputWrap}>
@@ -322,7 +381,7 @@ export default function SignUp() {
 
                 {/* Continue to Phone Verification Button */}
                 <TouchableOpacity
-                  style={[s.signUpBtn, busy && { opacity: 0.7 }]}
+                  style={[s.signUpBtn, selectedRole === "driver" && { backgroundColor: ORANGE }, busy && { opacity: 0.7 }]}
                   onPress={onSendOtp}
                   disabled={busy}
                   activeOpacity={0.88}
@@ -331,12 +390,32 @@ export default function SignUp() {
                     <ActivityIndicator color="white" />
                   ) : (
                     <>
-                      <Text style={s.signUpBtnTxt}>Verify Phone & Continue</Text>
+                      <Text style={s.signUpBtnTxt}>
+                        {selectedRole === "driver" ? "Verify Phone & Join Driver Fleet" : "Verify Phone & Continue"}
+                      </Text>
                       <MaterialCommunityIcons name="arrow-right" size={18} color="white" style={{ marginLeft: 6 }} />
                     </>
                   )}
                 </TouchableOpacity>
               </View>
+
+              {/* Merchant Partner Application Callout */}
+              <TouchableOpacity
+                style={s.merchantBanner}
+                onPress={() => navigation.navigate("SellerApply")}
+                activeOpacity={0.88}
+              >
+                <View style={s.merchantBannerLeft}>
+                  <View style={s.merchantIconCircle}>
+                    <MaterialCommunityIcons name="storefront" size={20} color={TEAL} />
+                  </View>
+                  <View style={{ marginLeft: 12, flex: 1 }}>
+                    <Text style={s.merchantBannerTitle}>Are you a Restaurant or Shop owner?</Text>
+                    <Text style={s.merchantBannerSub}>Register your business & sell on MyTruck</Text>
+                  </View>
+                </View>
+                <MaterialCommunityIcons name="chevron-right" size={20} color={TEAL} />
+              </TouchableOpacity>
 
               {/* Already have an account row */}
               <View style={s.footerRow}>
@@ -399,7 +478,7 @@ export default function SignUp() {
 
                 {/* Verify & Create Account Button */}
                 <TouchableOpacity
-                  style={[s.signUpBtn, busy && { opacity: 0.7 }]}
+                  style={[s.signUpBtn, selectedRole === "driver" && { backgroundColor: ORANGE }, busy && { opacity: 0.7 }]}
                   onPress={onVerifyAndRegister}
                   disabled={busy}
                   activeOpacity={0.88}
@@ -407,7 +486,9 @@ export default function SignUp() {
                   {busy ? (
                     <ActivityIndicator color="white" />
                   ) : (
-                    <Text style={s.signUpBtnTxt}>Verify & Create Account</Text>
+                    <Text style={s.signUpBtnTxt}>
+                      {selectedRole === "driver" ? "Verify & Create Driver Account" : "Verify & Create Account"}
+                    </Text>
                   )}
                 </TouchableOpacity>
 
@@ -620,5 +701,100 @@ const s = StyleSheet.create({
     fontSize: 13,
     color: ORANGE,
     fontWeight: "800",
+  },
+  roleSelectorRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 16,
+  },
+  roleOption: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+  },
+  roleOptionActive: {
+    borderColor: TEAL,
+    backgroundColor: "#F0FDFA",
+  },
+  roleOptionActiveDriver: {
+    borderColor: ORANGE,
+    backgroundColor: "#FFF7ED",
+  },
+  roleIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#E6F4F1",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  roleIconWrapActive: {
+    backgroundColor: TEAL,
+  },
+  roleIconWrapActiveDriver: {
+    backgroundColor: ORANGE,
+  },
+  roleTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: DARK,
+  },
+  roleTitleActive: {
+    color: TEAL,
+  },
+  roleTitleActiveDriver: {
+    color: ORANGE,
+  },
+  roleDesc: {
+    fontSize: 10.5,
+    color: "#64748B",
+    marginTop: 2,
+    lineHeight: 14,
+  },
+  merchantBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    padding: 14,
+    marginTop: 14,
+    borderWidth: 1,
+    borderColor: "#CCFBF1",
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+  },
+  merchantBannerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+    marginRight: 8,
+  },
+  merchantIconCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#E6F4F1",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  merchantBannerTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: DARK,
+  },
+  merchantBannerSub: {
+    fontSize: 11,
+    color: "#64748B",
+    marginTop: 2,
   },
 });

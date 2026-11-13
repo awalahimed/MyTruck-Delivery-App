@@ -96,7 +96,17 @@ export default function WelcomeScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* 4. Merchant registration */}
+        {/* 4. Drive with MyTruck */}
+        <TouchableOpacity
+          onPress={() => navigation.navigate("SignUp", { initialRole: "driver" })}
+          style={s.driverBtn}
+          activeOpacity={0.85}
+        >
+          <MaterialCommunityIcons name="motorbike" size={18} color={ORANGE} style={{ marginRight: 6 }} />
+          <Text style={s.driverTxt}>Deliver with MyTruck · Join as Driver</Text>
+        </TouchableOpacity>
+
+        {/* 5. Merchant registration */}
         <TouchableOpacity
           onPress={() => navigation.navigate("SellerApply")}
           style={s.merchantLink}
@@ -197,5 +207,23 @@ const s = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
     textDecorationLine: "underline",
+  },
+  driverBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFF7ED",
+    borderWidth: 1,
+    borderColor: "#FFEDD5",
+    borderRadius: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    marginTop: 14,
+    width: "100%",
+  },
+  driverTxt: {
+    color: "#C2410C",
+    fontSize: 13,
+    fontWeight: "800",
   },
 });

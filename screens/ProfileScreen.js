@@ -19,7 +19,7 @@ import SharedMapView from "../components/SharedMapView";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { UserAuth } from "../contexts/AuthContext";
 import { db } from "../firebase";
-import { doc, getDoc, updateDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc, updateDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { useDispatch, useSelector } from "react-redux";
 import { setUser, selectUser } from "../features/userSlice";
 import BackButton from "../components/ui/BackButton";
@@ -381,6 +381,81 @@ export default function ProfileScreen() {
                 </TouchableOpacity>
               ) : null}
 
+              {/* PARTNER WITH MYTRUCK (For Customers: Become a Driver or Register Business) */}
+              {!isSuperAdminUser && !isRestaurantUser && !isShopUser && !isDriverUser && (
+                <View style={s.partnerSection}>
+                  <Text style={s.partnerSectionTitle}>Work & Partner with MyTruck</Text>
+
+                  {/* Drive with MyTruck */}
+                  <TouchableOpacity
+                    style={[s.partnerCard, { backgroundColor: "#FFF7ED", borderColor: "#FFEDD5" }]}
+                    activeOpacity={0.88}
+                    onPress={() => {
+                      Alert.alert(
+                        "Join Driver Fleet",
+                        "Would you like to activate Driver mode to accept delivery requests and earn daily income?",
+                        [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Activate Driver Mode",
+                            onPress: async () => {
+                              try {
+                                if (!user?.uid) return;
+                                const driverData = {
+                                  role: "driver",
+                                  isDriver: true,
+                                  isOnline: false,
+                                  workingPhone: phoneNumber || "",
+                                  driverLat: 8.9806,
+                                  driverLng: 38.7578,
+                                  updatedAt: serverTimestamp(),
+                                };
+                                await Promise.all([
+                                  setDoc(doc(db, "user", user.uid), driverData, { merge: true }),
+                                  setDoc(doc(db, "users", user.uid), driverData, { merge: true }),
+                                ]);
+                                Alert.alert("Driver Mode Activated!", "Your driver console is ready. Switch online to receive delivery requests.");
+                              } catch (e) {
+                                Alert.alert("Error", e?.message || "Could not activate driver mode.");
+                              }
+                            },
+                          },
+                        ]
+                      );
+                    }}
+                  >
+                    <View style={s.partnerCardLeft}>
+                      <View style={[s.partnerIconCircle, { backgroundColor: "#FFEDD5" }]}>
+                        <MaterialCommunityIcons name="motorbike" size={24} color={ORANGE} />
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 12 }}>
+                        <Text style={[s.partnerCardTitle, { color: "#9A3412" }]}>Drive with MyTruck</Text>
+                        <Text style={s.partnerCardSub}>Deliver orders in your area & earn daily income</Text>
+                      </View>
+                    </View>
+                    <MaterialCommunityIcons name="chevron-right" size={20} color={ORANGE} />
+                  </TouchableOpacity>
+
+                  {/* Register Restaurant or Shop */}
+                  <TouchableOpacity
+                    style={[s.partnerCard, { backgroundColor: "#F0FDF4", borderColor: "#DCFCE7", marginTop: 8 }]}
+                    activeOpacity={0.88}
+                    onPress={() => navigation.navigate("SellerApply")}
+                  >
+                    <View style={s.partnerCardLeft}>
+                      <View style={[s.partnerIconCircle, { backgroundColor: "#DCFCE7" }]}>
+                        <MaterialCommunityIcons name="storefront" size={24} color="#166534" />
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 12 }}>
+                        <Text style={[s.partnerCardTitle, { color: "#166534" }]}>Register Restaurant or Shop</Text>
+                        <Text style={s.partnerCardSub}>Expand your business reach with our fast delivery</Text>
+                      </View>
+                    </View>
+                    <MaterialCommunityIcons name="chevron-right" size={20} color="#166534" />
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {/* Form Card */}
               <View style={s.card}>
                 <Text style={s.cardHeading}>Personal Information</Text>
@@ -650,5 +725,45 @@ const s = StyleSheet.create({
     color: "#7F1D1D",
     marginTop: 2,
     lineHeight: 15,
+  },
+  partnerSection: {
+    marginBottom: 16,
+  },
+  partnerSectionTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: DARK,
+    marginBottom: 8,
+    marginLeft: 2,
+  },
+  partnerCard: {
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1.5,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  partnerCardLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+    marginRight: 8,
+  },
+  partnerIconCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  partnerCardTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  partnerCardSub: {
+    fontSize: 11,
+    color: "#64748B",
+    marginTop: 2,
   },
 });

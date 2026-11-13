@@ -784,16 +784,19 @@ export default function AdminDashboard() {
                 updatedAt: serverTimestamp(),
               });
               if (biz.ownerUid) {
-                await setDoc(
-                  doc(db, "user", biz.ownerUid),
-                  {
-                    role: biz.businessType || "restaurant",
-                    isApproved: true,
-                    approvalStatus: "APPROVED",
-                    businessId: biz.id,
-                  },
-                  { merge: true }
-                );
+                const approvalPayload = {
+                  role: biz.businessType || "restaurant",
+                  isApproved: true,
+                  approvalStatus: "APPROVED",
+                  businessId: biz.id,
+                  sellerId: biz.id,
+                  ...(biz.businessType === "shop" ? { shopId: biz.id } : { restaurantId: biz.id }),
+                  updatedAt: serverTimestamp(),
+                };
+                await Promise.all([
+                  setDoc(doc(db, "user", biz.ownerUid), approvalPayload, { merge: true }),
+                  setDoc(doc(db, "users", biz.ownerUid), approvalPayload, { merge: true }),
+                ]);
               }
               Alert.alert("Success", `"${biz.name || biz.businessName}" has been approved!`);
               setSelectedBizDetail(null);
@@ -1102,6 +1105,7 @@ export default function AdminDashboard() {
                     isAdmin: newRole === "superadmin" || newRole === "admin",
                     isSuperAdmin: newRole === "superadmin",
                     isMiniAdmin: newRole === "mini_admin" || newRole === "miniadmin",
+                    isDriver: newRole === "driver",
                     updatedAt: serverTimestamp(),
                   },
                   { merge: true }
@@ -1113,6 +1117,7 @@ export default function AdminDashboard() {
                     isAdmin: newRole === "superadmin" || newRole === "admin",
                     isSuperAdmin: newRole === "superadmin",
                     isMiniAdmin: newRole === "mini_admin" || newRole === "miniadmin",
+                    isDriver: newRole === "driver",
                     updatedAt: serverTimestamp(),
                   },
                   { merge: true }
