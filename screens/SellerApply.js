@@ -23,6 +23,25 @@ import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { auth, db, storage } from "../firebase";
 import { UserAuth, normalizeEthiopianPhone, formatAuthError } from "../contexts/AuthContext";
 import BackButton from "../components/ui/BackButton";
+import DeliveryLocationModal from "../components/DeliveryLocationModal";
+
+const ETHIOPIAN_CITIES = [
+  "Addis Ababa",
+  "Nekemte",
+  "Hawassa",
+  "Adama",
+  "Bahir Dar",
+  "Jimma",
+  "Dire Dawa",
+  "Gondar",
+  "Mekelle",
+  "Dessie",
+  "Harar",
+  "Shashemene",
+  "Arba Minch",
+  "Dilla",
+  "Wolaita Sodo",
+];
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -36,12 +55,17 @@ export default function SellerApply() {
   // Stable, independent state variables for maximum typing responsiveness
   const [sellerType, setSellerType] = useState("restaurant"); // "restaurant" | "shop"
   const [businessName, setBusinessName] = useState("");
+  const [selectedCity, setSelectedCity] = useState("Addis Ababa");
   const [address, setAddress] = useState("");
+  const [storeCoords, setStoreCoords] = useState(null); // { latitude, longitude, address }
+  const [mapModalVisible, setMapModalVisible] = useState(false);
   const [licenceNumber, setLicenceNumber] = useState("");
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [telebirrPhone, setTelebirrPhone] = useState("");
   const [workingHours, setWorkingHours] = useState("08:00 AM - 10:00 PM");
+  const [openingTime, setOpeningTime] = useState("08:00 AM");
+  const [closingTime, setClosingTime] = useState("10:00 PM");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [logoPhoto, setLogoPhoto] = useState(null);
@@ -195,6 +219,15 @@ export default function SellerApply() {
       return;
     }
 
+    if (!storeCoords || !storeCoords.latitude || !storeCoords.longitude) {
+      setErrorMessage("Please pin your physical storefront location on the map.");
+      Alert.alert(
+        "Store Map Pin Required",
+        "Please tap 'Pin Physical Location on Map' to confirm your kitchen / store location. Customers and drivers need this to find and deliver your orders accurately."
+      );
+      return;
+    }
+
     if (!fullName.trim()) {
       setErrorMessage("Please enter the manager / owner's full legal name.");
       return;
@@ -260,7 +293,12 @@ export default function SellerApply() {
         telebirrPhone: telebirrPhone.trim(),
         businessName: businessName.trim(),
         address: address.trim(),
-        workingHours: workingHours.trim(),
+        city: selectedCity,
+        latitude: storeCoords.latitude,
+        longitude: storeCoords.longitude,
+        workingHours: `${openingTime} - ${closingTime}`,
+        openingTime: openingTime.trim(),
+        closingTime: closingTime.trim(),
         licenceNumber: licenceNumber.trim(),
         sellerType,
         logoUrl: logoPath,
@@ -381,7 +419,26 @@ export default function SellerApply() {
               placeholderTextColor="#94A3B8"
             />
 
-            <Text style={s.label}>Operating Address *</Text>
+            <Text style={s.label}>Operating City *</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {ETHIOPIAN_CITIES.map((c) => {
+                  const active = selectedCity === c;
+                  return (
+                    <TouchableOpacity
+                      key={c}
+                      onPress={() => setSelectedCity(c)}
+                      style={[s.cityChip, active && s.cityChipActive]}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[s.cityChipTxt, active && s.cityChipTxtActive]}>{c}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+
+            <Text style={s.label}>Operating Street Address *</Text>
             <TextInput
               style={s.input}
               value={address}
@@ -389,18 +446,62 @@ export default function SellerApply() {
                 setAddress(t);
                 if (errorMessage) setErrorMessage("");
               }}
-              placeholder="e.g. Bole, Near Medhanialem Mall"
+              placeholder="e.g. Main Street, Near Commercial Bank"
               placeholderTextColor="#94A3B8"
             />
 
-            <Text style={s.label}>Operating / Working Hours Interval *</Text>
-            <TextInput
-              style={s.input}
-              value={workingHours}
-              onChangeText={setWorkingHours}
-              placeholder="e.g. 08:00 AM - 10:00 PM"
-              placeholderTextColor="#94A3B8"
-            />
+            {/* Map Pinning (Mandatory for accurate distance) */}
+            <Text style={s.label}>Physical Location on Map * (Required)</Text>
+            <TouchableOpacity
+              style={[s.mapPinCard, storeCoords ? s.mapPinCardPinned : s.mapPinCardUnpinned]}
+              onPress={() => setMapModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons
+                name={storeCoords ? "map-marker-check" : "map-marker-radius"}
+                size={26}
+                color={storeCoords ? "#059669" : ORANGE}
+              />
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={[s.mapPinTitle, storeCoords && { color: "#065F46" }]}>
+                  {storeCoords ? "Store Location Pinned ✓" : "Tap to Pin Your Kitchen on Map *"}
+                </Text>
+                <Text style={s.mapPinSub} numberOfLines={1}>
+                  {storeCoords
+                    ? `${storeCoords.latitude.toFixed(4)}, ${storeCoords.longitude.toFixed(4)}${storeCoords.address ? ` · ${storeCoords.address}` : ""}`
+                    : "Required for delivery radius & driver pickup"}
+                </Text>
+              </View>
+              <View style={[s.mapPinBadge, storeCoords && { backgroundColor: "#DCFCE7" }]}>
+                <Text style={[s.mapPinBadgeTxt, storeCoords && { color: "#059669" }]}>
+                  {storeCoords ? "Change" : "Pin Location"}
+                </Text>
+              </View>
+            </TouchableOpacity>
+
+            {/* Working Hours Interval */}
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.label}>Opening Time</Text>
+                <TextInput
+                  style={s.input}
+                  value={openingTime}
+                  onChangeText={setOpeningTime}
+                  placeholder="08:00 AM"
+                  placeholderTextColor="#94A3B8"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={s.label}>Closing Time</Text>
+                <TextInput
+                  style={s.input}
+                  value={closingTime}
+                  onChangeText={setClosingTime}
+                  placeholder="10:00 PM"
+                  placeholderTextColor="#94A3B8"
+                />
+              </View>
+            </View>
 
             <Text style={s.label}>Business Licence / Reg. No. (Optional)</Text>
             <TextInput
@@ -672,11 +773,88 @@ export default function SellerApply() {
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {mapModalVisible ? (
+        <DeliveryLocationModal
+          visible={mapModalVisible}
+          onClose={() => setMapModalVisible(false)}
+          initialLocation={storeCoords}
+          onConfirmLocation={(loc) => {
+            setStoreCoords({
+              latitude: Number(loc.latitude),
+              longitude: Number(loc.longitude),
+              address: loc.address,
+            });
+            if (loc.address && !address.trim() && loc.address !== "My Location, Ethiopia") {
+              setAddress(loc.address);
+            }
+            setMapModalVisible(false);
+            Alert.alert("Store Pinned ✓", "Location coordinates saved for your store application.");
+          }}
+        />
+      ) : null}
     </View>
   );
 }
 
 const s = StyleSheet.create({
+  cityChip: {
+    backgroundColor: "#F1F5F9",
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  cityChipActive: {
+    backgroundColor: TEAL,
+    borderColor: TEAL,
+  },
+  cityChipTxt: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#64748B",
+  },
+  cityChipTxtActive: {
+    color: "white",
+  },
+  mapPinCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 14,
+    borderWidth: 1.5,
+  },
+  mapPinCardUnpinned: {
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FDE68A",
+  },
+  mapPinCardPinned: {
+    backgroundColor: "#F0FDF4",
+    borderColor: "#A7F3D0",
+  },
+  mapPinTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#92400E",
+  },
+  mapPinSub: {
+    fontSize: 11,
+    color: "#64748B",
+    marginTop: 2,
+  },
+  mapPinBadge: {
+    backgroundColor: "#FEF3C7",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  mapPinBadgeTxt: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#B45309",
+  },
   root: { flex: 1, backgroundColor: BG },
   headerOuter: {
     backgroundColor: TEAL,

@@ -32,6 +32,7 @@ import {
   FAR_DISTANCE_NOTICE,
   isFarDistance,
   calculateDistanceKm,
+  getMaxOrderDistanceKm,
 } from "../utils/pricing";
 import { usePricingConfig } from "../utils/usePricingConfig";
 
@@ -48,22 +49,41 @@ const formatETB = (amount) => {
   return `ETB ${num.toFixed(2)}`;
 };
 
+export function parseTimeToMinutes(t) {
+  if (!t) return null;
+  const str = String(t).trim().toUpperCase();
+  const match = str.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/);
+  if (!match) return null;
+  let hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const ampm = match[3];
+  if (ampm === "PM" && hours < 12) hours += 12;
+  if (ampm === "AM" && hours === 12) hours = 0;
+  return hours * 60 + minutes;
+}
+
 const isRestaurantOpen = (info) => {
   if (!info || info.isTemporarilyClosed === true) return false;
-  if (!info.openingTime || !info.closingTime) return true;
+  let opTime = info.openingTime;
+  let clTime = info.closingTime;
+  if ((!opTime || !clTime) && typeof info.workingHours === "string" && info.workingHours.includes("-")) {
+    const parts = info.workingHours.split("-").map((s) => s.trim());
+    if (parts.length === 2) {
+      opTime = parts[0];
+      clTime = parts[1];
+    }
+  }
+  if (!opTime || !clTime) return true;
   const now = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Africa/Addis_Ababa",
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
   }).format(new Date());
-  const toMinutes = (t) => {
-    const [h, m] = String(t).split(":").map(Number);
-    return h * 60 + m;
-  };
-  const current = toMinutes(now);
-  const opening = toMinutes(info.openingTime);
-  const closing = toMinutes(info.closingTime);
+  const current = parseTimeToMinutes(now);
+  const opening = parseTimeToMinutes(opTime);
+  const closing = parseTimeToMinutes(clTime);
+  if (current == null || opening == null || closing == null) return true;
   return opening <= closing
     ? current >= opening && current < closing
     : current >= opening || current < closing;
@@ -108,8 +128,9 @@ export default function RestaurantDetails() {
   }), [restaurantInfo.latitude, restaurantInfo.longitude, route?.params?.lat, route?.params?.latitude, route?.params?.lng, route?.params?.longitude]);
 
   const isTooFar = useMemo(() => {
-    return isFarDistance(restaurantCoords, userCoords);
-  }, [restaurantCoords, userCoords]);
+    const maxRadius = Number(restaurantInfo.deliveryRadiusKm) || getMaxOrderDistanceKm("restaurant");
+    return isFarDistance(restaurantCoords, userCoords, maxRadius, "restaurant");
+  }, [restaurantCoords, userCoords, restaurantInfo.deliveryRadiusKm]);
 
   const distanceKm = useMemo(() => {
     return calculateDistanceKm(restaurantCoords.latitude, restaurantCoords.longitude, userCoords.latitude, userCoords.longitude);
@@ -390,8 +411,15 @@ export default function RestaurantDetails() {
   }, [dishes, menuSearch]);
 
   const handleOpenDishModal = (dish) => {
+    if (!open) {
+      Alert.alert(
+        "Restaurant Currently Closed",
+        `"${restaurantInfo.name}" is currently closed and not taking orders.\n\nOpening hours: ${restaurantInfo.openingTime || "08:00 AM"} – ${restaurantInfo.closingTime || "10:00 PM"}`
+      );
+      return;
+    }
     if (isTooFar) {
-      Alert.alert("Far Delivery Distance", FAR_DISTANCE_NOTICE);
+      Alert.alert("Outside Delivery Area", FAR_DISTANCE_NOTICE);
       return;
     }
     setSelectedDish(dish);
@@ -401,8 +429,15 @@ export default function RestaurantDetails() {
 
   const handleConfirmAddToCart = () => {
     if (!selectedDish) return;
+    if (!open) {
+      Alert.alert(
+        "Restaurant Currently Closed",
+        `"${restaurantInfo.name}" is currently closed and not taking orders.`
+      );
+      return;
+    }
     if (isTooFar) {
-      Alert.alert("Far Delivery Distance", FAR_DISTANCE_NOTICE);
+      Alert.alert("Outside Delivery Area", FAR_DISTANCE_NOTICE);
       return;
     }
     const info = getItemDiscountInfo(selectedDish);

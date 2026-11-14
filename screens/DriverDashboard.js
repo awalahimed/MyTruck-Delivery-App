@@ -460,9 +460,25 @@ export default function DriverDashboard() {
         if (offerLive) return o.offeredDriverId === user?.uid;
         // I released / passed on it recently
         if ((o.declinedDriverIds || []).includes(user?.uid) && nowMs - dispatchStartMs(o) < REOFFER_AFTER_DECLINE_MS) return false;
+
+        // Multi-city isolation: local deliveries must match driver city if both specified
+        if (!o.isIntercity && dbUser?.city) {
+          const orderCity = (o.city || o.restaurantCity || o.pickupCity || "").trim().toLowerCase();
+          const driverCity = (dbUser.city || "").trim().toLowerCase();
+          if (orderCity && driverCity && orderCity !== driverCity && orderCity !== "ethiopia") {
+            return false;
+          }
+        }
+
         // Proximity rings
         const radius = visibleRadiusKm(o, nowMs);
-        if (radius === Infinity) return true;
+        if (radius === Infinity) {
+          // Cap local deliveries to 35 km max distance so drivers don't receive orders across distant cities
+          if (o.pickupDistanceKm != null && !o.isIntercity) {
+            return o.pickupDistanceKm <= 35;
+          }
+          return true;
+        }
         return o.pickupDistanceKm != null && o.pickupDistanceKm <= radius;
       })
       .sort((a, b) => {
@@ -474,7 +490,7 @@ export default function DriverDashboard() {
         return dispatchStartMs(a) - dispatchStartMs(b);
       });
     setAvailableOrders(visible);
-  }, [rawOpenOrders, nowMs, user?.uid, driverPos]);
+  }, [rawOpenOrders, nowMs, user?.uid, dbUser?.city, driverPos]);
 
   // Pull-to-refresh: the list itself is live, so just refresh our location
   const fetchAvailable = useCallback(async () => {

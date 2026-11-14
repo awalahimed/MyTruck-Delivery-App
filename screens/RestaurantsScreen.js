@@ -25,7 +25,7 @@ import { selectUser } from "../features/userSlice";
 import { UserAuth } from "../contexts/AuthContext";
 import BackButton from "../components/ui/BackButton";
 import ResilientImage from "../components/ui/ResilientImage";
-import { calculateDistanceKm } from "../utils/pricing";
+import { calculateDistanceKm, getMaxOrderDistanceKm } from "../utils/pricing";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -90,22 +90,16 @@ export default function RestaurantsScreen() {
   const fetchRestaurants = useCallback(async () => {
     try {
       const snap = await getDocs(collection(db, "restaurants"));
+      const seenIds = new Set();
       const list = [];
       snap.forEach((doc) => {
         const d = doc.data();
-        if (d.status === "APPROVED" || !d.status) {
+        if ((d.status === "APPROVED" || !d.status) && !seenIds.has(doc.id)) {
+          seenIds.add(doc.id);
           list.push({ id: doc.id, ...d });
         }
       });
-      list.sort((a, b) => {
-        const aName = (a.name || "").toLowerCase();
-        const bName = (b.name || "").toLowerCase();
-        if (aName.includes("habesha")) return -1;
-        if (bName.includes("habesha")) return 1;
-        if (aName.includes("pizza")) return -1;
-        if (bName.includes("pizza")) return 1;
-        return 0;
-      });
+      list.sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0));
       setRestaurants(list);
     } catch (e) {
       console.warn("Could not load restaurants:", e?.message);
@@ -148,16 +142,39 @@ export default function RestaurantsScreen() {
 
   // Filtered & Sorted list with live distance and ETA calculations
   const filteredRestaurants = useMemo(() => {
-    let result = restaurants.map((r) => {
-      const dist = calculateDistanceKm(
-        userCoords.latitude,
-        userCoords.longitude,
-        r.latitude || r.lat || 8.992,
-        r.longitude || r.lng || 38.752
-      );
+    const maxAllowedKm = getMaxOrderDistanceKm("restaurant");
+    const userAddress = String(reduxUser?.address || dbUser?.address || "").toLowerCase();
+    let result = [];
+
+    for (const r of restaurants) {
+      const rLat = Number(r.latitude ?? r.lat ?? r.storeLatitude);
+      const rLng = Number(r.longitude ?? r.lng ?? r.storeLongitude);
+
+      // Require real physical coordinates
+      if (!Number.isFinite(rLat) || !Number.isFinite(rLng) || rLat === 0 || rLng === 0) {
+        continue;
+      }
+
+      const dist = calculateDistanceKm(userCoords.latitude, userCoords.longitude, rLat, rLng);
+      const storeMaxRadius = Number(r.deliveryRadiusKm) || maxAllowedKm;
+
+      // Filter out stores beyond reachable delivery radius
+      if (dist > storeMaxRadius) {
+        continue;
+      }
+
+      // City match
+      if (r.city && userAddress) {
+        const sCity = String(r.city).toLowerCase();
+        if (userAddress.includes("nekemte") && !sCity.includes("nekemte")) continue;
+        if (userAddress.includes("addis") && !sCity.includes("addis")) continue;
+        if (userAddress.includes("hawassa") && !sCity.includes("hawassa")) continue;
+        if (userAddress.includes("adama") && !sCity.includes("adama")) continue;
+      }
+
       const eta = Math.max(15, Math.round(15 + dist * 2.5));
-      return { ...r, distanceKm: dist, etaMinutes: eta };
-    });
+      result.push({ ...r, latitude: rLat, longitude: rLng, distanceKm: dist, etaMinutes: eta });
+    }
 
     // Search query
     if (searchQuery.trim()) {
@@ -258,7 +275,7 @@ export default function RestaurantsScreen() {
           </View>
 
           <Text style={s.cardSub} numberOfLines={1}>
-            {cuisine} · {price} · {item.address || "Ethiopia"}
+            {cuisine} · {price} · {item.city ? `${item.city} · ` : ""}{item.address || "Ethiopia"}
           </Text>
 
           {item.description ? (

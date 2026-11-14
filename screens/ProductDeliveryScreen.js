@@ -43,6 +43,7 @@ import {
   calculatePackageQuote,
   PACKAGE_TYPES,
   MAX_CUSTOMER_ORDER_DISTANCE_KM,
+  getMaxOrderDistanceKm,
 } from "../utils/pricing";
 import DeliveryLocationModal from "../components/DeliveryLocationModal";
 import { isWithinEthiopia } from "../utils/mapService";
@@ -245,8 +246,9 @@ export default function ProductDeliveryScreen() {
     () => calculatePackageQuote(pickup, dropoff, packageType),
     [pickup, dropoff, packageType, pricingConfig]
   );
+  const maxPackageDistance = getMaxOrderDistanceKm("package");
   const packageTooFar =
-    packageQuote.hasDistance && packageQuote.distanceKm > MAX_CUSTOMER_ORDER_DISTANCE_KM;
+    packageQuote.hasDistance && packageQuote.distanceKm > maxPackageDistance;
 
   const handleCreatePackageOrder = () => {
     if (!user?.uid) {
@@ -268,7 +270,7 @@ export default function ProductDeliveryScreen() {
     if (packageTooFar) {
       Alert.alert(
         "Too far",
-        `Package delivery is available up to ${MAX_CUSTOMER_ORDER_DISTANCE_KM} km. This trip is ${packageQuote.distanceKm} km.`
+        `Package delivery is available up to ${maxPackageDistance} km. This trip is ${packageQuote.distanceKm} km.`
       );
       return;
     }
@@ -712,7 +714,7 @@ export default function ProductDeliveryScreen() {
               ) : null}
               {packageTooFar ? (
                 <Text style={{ color: "#DC2626", fontSize: 12, marginTop: 6, fontWeight: "700" }}>
-                  Package delivery is available up to {MAX_CUSTOMER_ORDER_DISTANCE_KM} km.
+                  Package delivery is available up to {maxPackageDistance} km.
                 </Text>
               ) : null}
             </View>

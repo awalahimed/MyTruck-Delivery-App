@@ -244,7 +244,7 @@ exports.verifyChapaPayment = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (requ
  */
 const OFFER_SECONDS = 60;
 const MAX_OFFER_ROUNDS = 3;
-const MAX_OFFER_RADIUS_KM = 15;
+const DEFAULT_MAX_OFFER_RADIUS_KM = 35; // Expanded driver search radius (was 15 km)
 const DRIVER_LOCATION_MAX_AGE_MS = 10 * 60 * 1000;
 const DISPATCHABLE = ["PREPARING", "READY"];
 
@@ -311,7 +311,7 @@ exports.offerOrderToNearestDriver = onDocumentWritten("orders/{orderId}", async 
     const seenAt = u.driverLocationUpdatedAt?.toMillis?.() || 0;
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || now - seenAt > DRIVER_LOCATION_MAX_AGE_MS) return;
     const km = haversineKm(pLat, pLng, lat, lng);
-    if (km <= MAX_OFFER_RADIUS_KM && (!best || km < best.km)) best = { id: d.id, km, token: u.expoPushToken };
+    if (km <= DEFAULT_MAX_OFFER_RADIUS_KM && (!best || km < best.km)) best = { id: d.id, km, token: u.expoPushToken };
   });
 
   if (!best) {

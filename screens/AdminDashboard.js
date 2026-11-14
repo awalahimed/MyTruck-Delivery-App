@@ -43,6 +43,8 @@ import BackButton from "../components/ui/BackButton";
 import NotificationBell from "../components/ui/NotificationBell";
 import SmartImage from "../components/ui/SmartImage";
 import { triggerLocalTestAlert } from "../services/notificationService";
+import DeliveryLocationModal from "../components/DeliveryLocationModal";
+import { isWithinEthiopia } from "../utils/mapService";
 import {
   aggregateFinancialMetrics,
   calculateDistanceKm,
@@ -162,6 +164,11 @@ export default function AdminDashboard() {
   const [itemMarkupPercent, setItemMarkupPercent] = useState(String(DEFAULT_PRICING_CONFIG.itemMarkupPercent));
   const [itemMarkupFlat, setItemMarkupFlat] = useState(String(DEFAULT_PRICING_CONFIG.itemMarkupFlat));
   const [serviceFeeConfig, setServiceFeeConfig] = useState(String(DEFAULT_PRICING_CONFIG.serviceFee));
+  const [maxDeliveryRadiusKm, setMaxDeliveryRadiusKm] = useState(String(DEFAULT_PRICING_CONFIG.maxDeliveryRadiusKm || 25));
+  const [maxShopRadiusKm, setMaxShopRadiusKm] = useState(String(DEFAULT_PRICING_CONFIG.maxShopRadiusKm || 35));
+  const [maxPackageRadiusKm, setMaxPackageRadiusKm] = useState(String(DEFAULT_PRICING_CONFIG.maxPackageRadiusKm || 50));
+  const [adminPinTargetBiz, setAdminPinTargetBiz] = useState(null);
+  const [adminPinModalVisible, setAdminPinModalVisible] = useState(false);
   const [packageBaseFee, setPackageBaseFee] = useState(String(DEFAULT_PRICING_CONFIG.packageBaseFee));
   const [packageRatePerKm, setPackageRatePerKm] = useState(String(DEFAULT_PRICING_CONFIG.packageRatePerKm));
   const [packageMinimumFee, setPackageMinimumFee] = useState(String(DEFAULT_PRICING_CONFIG.packageMinimumFee));
@@ -262,6 +269,9 @@ export default function AdminDashboard() {
         setItemMarkupPercent(String(pc.itemMarkupPercent));
         setItemMarkupFlat(String(pc.itemMarkupFlat));
         setServiceFeeConfig(String(pc.serviceFee));
+        setMaxDeliveryRadiusKm(String(pc.maxDeliveryRadiusKm || 25));
+        setMaxShopRadiusKm(String(pc.maxShopRadiusKm || 35));
+        setMaxPackageRadiusKm(String(pc.maxPackageRadiusKm || 50));
         setPackageBaseFee(String(pc.packageBaseFee));
         setPackageRatePerKm(String(pc.packageRatePerKm));
         setPackageMinimumFee(String(pc.packageMinimumFee));
@@ -764,8 +774,65 @@ export default function AdminDashboard() {
     };
   }, [dateFilteredOrders, driverPayouts, allUsers]);
 
+  // Action: Save location pinned by Admin on merchant's behalf
+  const handleSaveAdminStorePin = async (loc) => {
+    if (!adminPinTargetBiz) return;
+    const col = adminPinTargetBiz.businessType === "shop" ? "shops" : "restaurants";
+    const updates = {
+      latitude: Number(loc.latitude),
+      longitude: Number(loc.longitude),
+      storeLatitude: Number(loc.latitude),
+      storeLongitude: Number(loc.longitude),
+      ...(loc.address && !adminPinTargetBiz.address ? { address: loc.address } : {}),
+      updatedAt: serverTimestamp(),
+    };
+    try {
+      await updateDoc(doc(db, col, adminPinTargetBiz.id), updates);
+      if (adminPinTargetBiz.ownerUid) {
+        await Promise.all([
+          setDoc(doc(db, "user", adminPinTargetBiz.ownerUid), updates, { merge: true }),
+          setDoc(doc(db, "users", adminPinTargetBiz.ownerUid), updates, { merge: true }),
+        ]);
+      }
+      if (selectedBizDetail && selectedBizDetail.id === adminPinTargetBiz.id) {
+        setSelectedBizDetail((prev) => (prev ? { ...prev, ...updates } : null));
+      }
+      setAdminPinModalVisible(false);
+      Alert.alert(
+        "Location Pinned ✓",
+        `Physical coordinates for "${adminPinTargetBiz.name || adminPinTargetBiz.businessName}" saved successfully.`
+      );
+      setAdminPinTargetBiz(null);
+      loadData();
+    } catch (e) {
+      Alert.alert("Update Failed", e?.message || "Could not save store location.");
+    }
+  };
+
   // Action: Approve Merchant
   const handleApproveBusiness = (biz) => {
+    const lat = Number(biz.latitude ?? biz.lat ?? biz.storeLatitude);
+    const lng = Number(biz.longitude ?? biz.lng ?? biz.storeLongitude);
+    const hasLocation = Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0;
+
+    if (!hasLocation) {
+      Alert.alert(
+        "Map Location Required",
+        `Cannot activate "${biz.name || biz.businessName}".\n\nThis store has not pinned its location on the map. Without GPS coordinates, delivery distance calculations, customer feeds, and driver pickup cannot function.\n\nWould you like to drop a pin on the map for them now?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Pin Location Now",
+            onPress: () => {
+              setAdminPinTargetBiz(biz);
+              setAdminPinModalVisible(true);
+            },
+          },
+        ]
+      );
+      return;
+    }
+
     Alert.alert(
       "Confirm Approval",
       `Are you sure you want to approve "${biz.name || biz.businessName}"? This will activate their storefront and grant merchant privileges.`,
@@ -1147,6 +1214,9 @@ export default function AdminDashboard() {
         ["Item percentage markup", itemMarkupPercent, 500],
         ["Item flat markup", itemMarkupFlat, 100000],
         ["Customer service fee", serviceFeeConfig, 100000],
+        ["Restaurant max delivery radius (KM)", maxDeliveryRadiusKm, 200],
+        ["Shop max delivery radius (KM)", maxShopRadiusKm, 200],
+        ["Package courier max distance (KM)", maxPackageRadiusKm, 1000],
         ["Package base fee", packageBaseFee, 100000],
         ["Package per-KM rate", packageRatePerKm, 10000],
         ["Package minimum fee", packageMinimumFee, 100000],
@@ -1167,6 +1237,9 @@ export default function AdminDashboard() {
         itemMarkupPercent,
         itemMarkupFlat,
         serviceFee: serviceFeeConfig,
+        maxDeliveryRadiusKm,
+        maxShopRadiusKm,
+        maxPackageRadiusKm,
         packageBaseFee,
         packageRatePerKm,
         packageMinimumFee,
@@ -1182,6 +1255,9 @@ export default function AdminDashboard() {
         itemMarkupPercent: pc.itemMarkupPercent,
         itemMarkupFlat: pc.itemMarkupFlat,
         serviceFee: pc.serviceFee,
+        maxDeliveryRadiusKm: pc.maxDeliveryRadiusKm,
+        maxShopRadiusKm: pc.maxShopRadiusKm,
+        maxPackageRadiusKm: pc.maxPackageRadiusKm,
         packageBaseFee: pc.packageBaseFee,
         packageRatePerKm: pc.packageRatePerKm,
         packageMinimumFee: pc.packageMinimumFee,
@@ -1411,11 +1487,17 @@ export default function AdminDashboard() {
       const q = bizSearch.toLowerCase().trim();
       const name = (b.name || b.businessName || "").toLowerCase();
       const addr = (b.address || "").toLowerCase();
-      const matchSearch = !q || name.includes(q) || addr.includes(q);
+      const city = (b.city || "").toLowerCase();
+      const matchSearch = !q || name.includes(q) || addr.includes(q) || city.includes(q);
 
       let status = "APPROVED";
       if (b.status === "BANNED") status = "BANNED";
       else if (b.status === "PENDING" || b.isVerified === false) status = "PENDING";
+
+      const hasPin = Boolean((b.latitude || b.storeLatitude) && (b.longitude || b.storeLongitude));
+      if (bizStatusFilter === "NO_LOCATION") {
+        return matchSearch && !hasPin;
+      }
 
       const matchStatus = bizStatusFilter === "ALL" || status === bizStatusFilter;
       return matchSearch && matchStatus;
@@ -1906,6 +1988,7 @@ export default function AdminDashboard() {
                 .map((biz) => {
                   const isBanned = biz.status === "BANNED";
                   const isPending = biz.status === "PENDING" || biz.isVerified === false;
+                  const hasPin = Boolean((biz.latitude || biz.storeLatitude) && (biz.longitude || biz.storeLongitude));
                   return (
                     <TouchableOpacity
                       key={biz.id}
@@ -1916,7 +1999,7 @@ export default function AdminDashboard() {
                       <View style={s.approvalTop}>
                         <View style={{ flex: 1 }}>
                           <Text style={s.bizTitle}>{biz.name || biz.businessName || "New Merchant"}</Text>
-                          <Text style={s.bizSub}>{biz.businessType === "shop" ? "Shop / Retail" : "Restaurant / Food"} • {biz.address || "Addis Ababa"}</Text>
+                          <Text style={s.bizSub}>{biz.businessType === "shop" ? "Shop / Retail" : "Restaurant / Food"} • {biz.city ? `${biz.city} · ` : ""}{biz.address || "Addis Ababa"}</Text>
                           <Text style={s.bizContact}>📞 {biz.phone || biz.phoneNumber || "—"}</Text>
                           {biz.licenceNumber ? (
                             <Text style={s.bizLicence}>Licence: {biz.licenceNumber}</Text>
@@ -1927,28 +2010,45 @@ export default function AdminDashboard() {
                             </Text>
                           ) : null}
                         </View>
-                        <View
-                          style={[
-                            s.pendingBadge,
-                            isBanned
-                              ? { backgroundColor: "#FEE2E2" }
-                              : isPending
-                              ? { backgroundColor: "#FEF3C7" }
-                              : { backgroundColor: "#DCFCE7" },
-                          ]}
-                        >
-                          <Text
+                        <View style={{ alignItems: "flex-end" }}>
+                          <View
                             style={[
-                              s.pendingBadgeTxt,
+                              s.pendingBadge,
                               isBanned
-                                ? { color: "#B91C1C" }
+                                ? { backgroundColor: "#FEE2E2" }
                                 : isPending
-                                ? { color: "#B45309" }
-                                : { color: "#166534" },
+                                ? { backgroundColor: "#FEF3C7" }
+                                : { backgroundColor: "#DCFCE7" },
                             ]}
                           >
-                            {isBanned ? "BANNED" : isPending ? "PENDING" : "VERIFIED"}
-                          </Text>
+                            <Text
+                              style={[
+                                s.pendingBadgeTxt,
+                                isBanned
+                                  ? { color: "#B91C1C" }
+                                  : isPending
+                                  ? { color: "#B45309" }
+                                  : { color: "#166534" },
+                              ]}
+                            >
+                              {isBanned ? "BANNED" : isPending ? "PENDING" : "VERIFIED"}
+                            </Text>
+                          </View>
+                          <View
+                            style={[
+                              s.pendingBadge,
+                              { backgroundColor: hasPin ? "#F0FDF4" : "#FEF3C7", marginTop: 4 },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                s.pendingBadgeTxt,
+                                { color: hasPin ? "#166534" : "#B45309", fontSize: 10 },
+                              ]}
+                            >
+                              {hasPin ? "📍 PINNED" : "⚠️ NO PIN"}
+                            </Text>
+                          </View>
                         </View>
                       </View>
 
@@ -1960,6 +2060,19 @@ export default function AdminDashboard() {
                           <MaterialCommunityIcons name="file-document-outline" size={15} color="#475569" />
                           <Text style={[s.btnActionTxt, { color: "#475569" }]}>View Detail</Text>
                         </TouchableOpacity>
+
+                        {!hasPin ? (
+                          <TouchableOpacity
+                            style={[s.btnAction, { backgroundColor: "#FEF3C7", marginRight: 8 }]}
+                            onPress={() => {
+                              setAdminPinTargetBiz(biz);
+                              setAdminPinModalVisible(true);
+                            }}
+                          >
+                            <MaterialCommunityIcons name="map-marker-plus" size={15} color="#B45309" />
+                            <Text style={[s.btnActionTxt, { color: "#B45309" }]}>Set Pin</Text>
+                          </TouchableOpacity>
+                        ) : null}
 
                         {isPending ? (
                           <>
@@ -2904,6 +3017,7 @@ export default function AdminDashboard() {
                     { id: "ALL", label: "All Stores" },
                     { id: "APPROVED", label: "Active" },
                     { id: "PENDING", label: "Pending" },
+                    { id: "NO_LOCATION", label: "⚠️ Missing Pin" },
                     { id: "BANNED", label: "Suspended" },
                   ].map((f) => {
                     const active = bizStatusFilter === f.id;
@@ -3368,6 +3482,36 @@ export default function AdminDashboard() {
               })()}
             </View>
 
+            <Text style={s.sectionHeader}>Delivery Coverage & Max Radius Limits (KM)</Text>
+            <View style={s.configCard}>
+              <Text style={s.configLabel}>Restaurant / Cafe Max Order Radius (KM)</Text>
+              <TextInput
+                style={s.configInput}
+                value={maxDeliveryRadiusKm}
+                onChangeText={setMaxDeliveryRadiusKm}
+                keyboardType="numeric"
+                placeholder="25"
+              />
+
+              <Text style={s.configLabel}>Retail Shop / Mart Max Order Radius (KM)</Text>
+              <TextInput
+                style={s.configInput}
+                value={maxShopRadiusKm}
+                onChangeText={setMaxShopRadiusKm}
+                keyboardType="numeric"
+                placeholder="35"
+              />
+
+              <Text style={s.configLabel}>Package Courier (Send Package) Max Distance (KM)</Text>
+              <TextInput
+                style={s.configInput}
+                value={maxPackageRadiusKm}
+                onChangeText={setMaxPackageRadiusKm}
+                keyboardType="numeric"
+                placeholder="50"
+              />
+            </View>
+
             <Text style={s.sectionHeader}>Customer Price Markup & Platform Fees</Text>
             <View style={s.configCard}>
               <Text style={s.configLabel}>Item Percentage Markup (%)</Text>
@@ -3782,6 +3926,49 @@ export default function AdminDashboard() {
                     Business License #: {selectedBizDetail.licenceNumber}
                   </Text>
                 ) : null}
+
+                {/* Physical Location Pin & City Card */}
+                {(() => {
+                  const bizLat = Number(selectedBizDetail.latitude || selectedBizDetail.storeLatitude);
+                  const bizLng = Number(selectedBizDetail.longitude || selectedBizDetail.storeLongitude);
+                  const hasPin = Number.isFinite(bizLat) && Number.isFinite(bizLng) && bizLat !== 0 && bizLng !== 0;
+                  return (
+                    <View
+                      style={{
+                        backgroundColor: hasPin ? "#F0FDF4" : "#FFFBEB",
+                        borderRadius: 12,
+                        padding: 12,
+                        marginTop: 10,
+                        borderWidth: 1,
+                        borderColor: hasPin ? "#BBF7D0" : "#FDE68A",
+                      }}
+                    >
+                      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                        <View style={{ flex: 1, marginRight: 8 }}>
+                          <Text style={{ fontSize: 13, fontWeight: "800", color: hasPin ? "#166534" : "#B45309" }}>
+                            {hasPin ? "📍 Store Location Pinned ✓" : "⚠️ Location Pin Missing"}
+                          </Text>
+                          <Text style={{ fontSize: 11.5, color: "#64748B", marginTop: 2 }}>
+                            {hasPin
+                              ? `City: ${selectedBizDetail.city || "Ethiopia"} · (${bizLat.toFixed(4)}, ${bizLng.toFixed(4)})`
+                              : "Delivery fees, customer radius, and driver dispatch require real GPS coordinates."}
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          style={{ backgroundColor: TEAL, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8 }}
+                          onPress={() => {
+                            setAdminPinTargetBiz(selectedBizDetail);
+                            setAdminPinModalVisible(true);
+                          }}
+                        >
+                          <Text style={{ color: "white", fontWeight: "700", fontSize: 12 }}>
+                            {hasPin ? "Change Pin" : "Set Location"}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                })()}
 
                 {/* Submitted Document Verification Preview */}
                 <Text style={[s.sectionHeader, { marginTop: 16, marginBottom: 6 }]}>
@@ -4524,6 +4711,26 @@ export default function AdminDashboard() {
           </View>
         </Modal>
       )}
+
+      {adminPinModalVisible ? (
+        <DeliveryLocationModal
+          visible={adminPinModalVisible}
+          onClose={() => {
+            setAdminPinModalVisible(false);
+            setAdminPinTargetBiz(null);
+          }}
+          initialLocation={
+            adminPinTargetBiz
+              ? {
+                  latitude: Number(adminPinTargetBiz.latitude || adminPinTargetBiz.storeLatitude),
+                  longitude: Number(adminPinTargetBiz.longitude || adminPinTargetBiz.storeLongitude),
+                  address: adminPinTargetBiz.address,
+                }
+              : null
+          }
+          onConfirmLocation={handleSaveAdminStorePin}
+        />
+      ) : null}
     </SafeAreaView>
   );
 }

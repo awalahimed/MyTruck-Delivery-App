@@ -619,9 +619,19 @@ export default function SellerHome() {
     if (!user?.uid) return;
     setSavingStorefront(true);
     try {
+      let opTime = null;
+      let clTime = null;
+      if (storeWorkingHours.includes("-")) {
+        const parts = storeWorkingHours.split("-").map((s) => s.trim());
+        if (parts.length === 2) {
+          opTime = parts[0];
+          clTime = parts[1];
+        }
+      }
       const updates = {
         address: storeAddress.trim(),
         workingHours: storeWorkingHours.trim(),
+        ...(opTime && clTime ? { openingTime: opTime, closingTime: clTime } : {}),
         image: storeLogoUri || null,
         profileImage: storeLogoUri || null,
         updatedAt: serverTimestamp(),

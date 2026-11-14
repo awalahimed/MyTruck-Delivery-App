@@ -38,6 +38,7 @@ import {
   calculateDeliveryQuote,
   FAR_DISTANCE_NOTICE,
   isFarDistance,
+  getMaxOrderDistanceKm,
 } from "../utils/pricing";
 import { usePricingConfig } from "../utils/usePricingConfig";
 
@@ -246,24 +247,15 @@ export default function Home() {
         }
       });
 
-      // Prioritize authentic top restaurants matching attached reference designs
-      resList.sort((a, b) => {
-        const aName = (a.name || "").toLowerCase();
-        const bName = (b.name || "").toLowerCase();
-        if (aName.includes("habesha")) return -1;
-        if (bName.includes("habesha")) return 1;
-        if (aName.includes("pizza")) return -1;
-        if (bName.includes("pizza")) return 1;
-        return 0;
-      });
+      // Sort stores by rating or name
+      resList.sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0));
 
-      // Deduplicate restaurants by clean name and ID so no merchant renders twice
-      const seenNames = new Set();
+      // Deduplicate restaurants by unique store ID (preserves chain branches)
+      const seenIds = new Set();
       const uniqueResList = [];
       for (const r of resList) {
-        const cleanName = (r.name || "").trim().toLowerCase();
-        if (cleanName && !seenNames.has(cleanName)) {
-          seenNames.add(cleanName);
+        if (r.id && !seenIds.has(r.id)) {
+          seenIds.add(r.id);
           uniqueResList.push(r);
         }
       }
@@ -336,6 +328,97 @@ export default function Home() {
     }
   };
 
+  const rawDisplayRestaurants = restaurants || [];
+
+  // Deduplicate restaurants by unique ID (preserves chain branches)
+  const seenIds2 = new Set();
+  const displayRestaurants = rawDisplayRestaurants.filter((r) => {
+    if (!r.id || seenIds2.has(r.id)) return false;
+    seenIds2.add(r.id);
+    return true;
+  });
+
+  const filteredRestaurants = useMemo(() => {
+    const maxAllowedKm = getMaxOrderDistanceKm("restaurant");
+    let list = [];
+
+    for (const r of displayRestaurants) {
+      const rLat = Number(r.latitude ?? r.lat ?? r.storeLatitude);
+      const rLng = Number(r.longitude ?? r.lng ?? r.storeLongitude);
+
+      // Require real physical coordinates (removes fake Addis point)
+      if (!Number.isFinite(rLat) || !Number.isFinite(rLng) || rLat === 0 || rLng === 0) {
+        continue;
+      }
+
+      const dist = calculateDistanceKm(
+        currentCoords.latitude,
+        currentCoords.longitude,
+        rLat,
+        rLng
+      );
+      const storeMaxRadius = Number(r.deliveryRadiusKm) || maxAllowedKm;
+
+      // Filter out stores beyond the reachable delivery radius
+      if (dist > storeMaxRadius) {
+        continue;
+      }
+
+      // City match: if user is in a specific city (e.g. Nekemte), only show that city's stores
+      if (r.city && currentAddress) {
+        const cLower = currentAddress.toLowerCase();
+        const sCity = String(r.city).toLowerCase();
+        if (cLower.includes("nekemte") && !sCity.includes("nekemte")) continue;
+        if (cLower.includes("addis") && !sCity.includes("addis")) continue;
+        if (cLower.includes("hawassa") && !sCity.includes("hawassa")) continue;
+        if (cLower.includes("adama") && !sCity.includes("adama")) continue;
+        if (cLower.includes("bahir dar") && !sCity.includes("bahir dar")) continue;
+        if (cLower.includes("jimma") && !sCity.includes("jimma")) continue;
+        if (cLower.includes("dire dawa") && !sCity.includes("dire dawa")) continue;
+      }
+
+      const eta = Math.max(15, Math.round(15 + dist * 2.5));
+      list.push({ ...r, latitude: rLat, longitude: rLng, distanceKm: dist, etaMinutes: eta });
+    }
+
+    if (selectedCategory === "Nearby") {
+      return [...list].sort((a, b) => a.distanceKm - b.distanceKm);
+    }
+
+    if (selectedCategory !== "All") {
+      list = list.filter((r) =>
+        String(r.genre || r.category || "")
+          .toLowerCase()
+          .includes(selectedCategory.toLowerCase())
+      );
+    }
+    return list;
+  }, [displayRestaurants, selectedCategory, currentCoords, currentAddress]);
+
+  // Featured deals: real, orderable dishes from visible deliverable stores, biggest saving first.
+  const featuredDeals = useMemo(() => {
+    const storeById = new Map((filteredRestaurants || []).map((r) => [r.id, r]));
+    return (dishes || [])
+      .filter((d) => isOrderableDish(d) && storeById.has(d.restaurantId) && Number(d.price) > 0)
+      .map((d) => {
+        const store = storeById.get(d.restaurantId);
+        return {
+          id: d.id,
+          restaurantId: d.restaurantId,
+          restaurantName: store?.name || store?.businessName || d.restaurantName || "",
+          name: d.name,
+          price: Number(d.price),
+          originalPrice: d.originalPrice,
+          discountPercent: d.discountPercent,
+          image: d.image || d.imgUrl || "",
+          description: d.description || "",
+          saving: Math.max(0, Number(d.originalPrice || 0) - Number(d.price || 0)),
+        };
+      })
+      .sort((x, y) => y.saving - x.saving)
+      .slice(0, 6);
+  }, [dishes, filteredRestaurants]);
+
   const handleSearch = (text) => {
     setSearchQuery(text);
     if (!text.trim()) {
@@ -346,17 +429,21 @@ export default function Home() {
 
     setSearching(true);
     const term = text.toLowerCase().trim();
-    const matchedRestaurants = restaurants.filter(
+    // Only search within restaurants that deliver to the customer's area
+    const matchedRestaurants = (filteredRestaurants || []).filter(
       (r) =>
         (r.name && r.name.toLowerCase().includes(term)) ||
         (r.genre && r.genre.toLowerCase().includes(term)) ||
-        (r.address && r.address.toLowerCase().includes(term))
+        (r.address && r.address.toLowerCase().includes(term)) ||
+        (r.city && r.city.toLowerCase().includes(term))
     );
 
-    const matchedDishes = dishes.filter(
+    const deliverableStoreIds = new Set((filteredRestaurants || []).map((r) => r.id));
+    const matchedDishes = (dishes || []).filter(
       (d) =>
-        (d.name && d.name.toLowerCase().includes(term)) ||
-        (d.description && d.description.toLowerCase().includes(term))
+        deliverableStoreIds.has(d.restaurantId) &&
+        ((d.name && d.name.toLowerCase().includes(term)) ||
+        (d.description && d.description.toLowerCase().includes(term)))
     );
 
     setSearchResults([
@@ -391,39 +478,22 @@ export default function Home() {
     });
   };
 
-  // Featured deals: real, orderable dishes from visible stores, biggest saving first.
-  // (Hard-coded demo deals pointed at stores that don't exist, so orders went nowhere.)
-  const featuredDeals = useMemo(() => {
-    const storeById = new Map((restaurants || []).map((r) => [r.id, r]));
-    return (dishes || [])
-      .filter((d) => isOrderableDish(d) && storeById.has(d.restaurantId) && Number(d.price) > 0)
-      .map((d) => {
-        const store = storeById.get(d.restaurantId);
-        return {
-          id: d.id,
-          restaurantId: d.restaurantId,
-          restaurantName: store?.name || store?.businessName || d.restaurantName || "",
-          name: d.name,
-          price: Number(d.price),
-          originalPrice: d.originalPrice,
-          discountPercent: d.discountPercent,
-          image: d.image || d.imgUrl || "",
-          description: d.description || "",
-          saving: Math.max(0, Number(d.originalPrice || 0) - Number(d.price || 0)),
-        };
-      })
-      .sort((x, y) => y.saving - x.saving)
-      .slice(0, 6);
-  }, [dishes, restaurants]);
-
   const handleQuickAddDeal = (deal) => {
-    const r = (restaurants || []).find((it) => it.id === deal.restaurantId);
-    const rCoords = {
-      latitude: Number(r?.latitude || r?.lat || 8.992),
-      longitude: Number(r?.longitude || r?.lng || 38.752),
-    };
-    if (isFarDistance(rCoords, currentCoords)) {
-      Alert.alert("Far Delivery Distance", FAR_DISTANCE_NOTICE);
+    const r = (filteredRestaurants || []).find((it) => it.id === deal.restaurantId);
+    if (!r) {
+      Alert.alert("Outside Delivery Area", FAR_DISTANCE_NOTICE);
+      return;
+    }
+    const rLat = Number(r.latitude ?? r.lat ?? r.storeLatitude);
+    const rLng = Number(r.longitude ?? r.lng ?? r.storeLongitude);
+    if (!Number.isFinite(rLat) || !Number.isFinite(rLng)) {
+      Alert.alert("Notice", "This restaurant has no verified delivery location pin.");
+      return;
+    }
+    const rCoords = { latitude: rLat, longitude: rLng };
+    const maxRadius = Number(r.deliveryRadiusKm) || getMaxOrderDistanceKm("restaurant");
+    if (isFarDistance(rCoords, currentCoords, maxRadius, "restaurant")) {
+      Alert.alert("Outside Delivery Area", FAR_DISTANCE_NOTICE);
       return;
     }
 
@@ -447,44 +517,6 @@ export default function Home() {
     setToastMessage(`Added "${deal.name}" to cart!`);
     setTimeout(() => setToastMessage(""), 2800);
   };
-
-
-  const rawDisplayRestaurants = restaurants || [];
-
-  // Deduplicate restaurants by name to ensure clean, unique top restaurant list
-  const seenNames = new Set();
-  const displayRestaurants = rawDisplayRestaurants.filter((r) => {
-    const key = (r.name || "").trim().toLowerCase();
-    if (!key || seenNames.has(key)) return false;
-    seenNames.add(key);
-    return true;
-  });
-
-  const filteredRestaurants = useMemo(() => {
-    let list = displayRestaurants.map((r) => {
-      const dist = calculateDistanceKm(
-        currentCoords.latitude,
-        currentCoords.longitude,
-        r.latitude || r.lat || 8.992,
-        r.longitude || r.lng || 38.752
-      );
-      const eta = Math.max(15, Math.round(15 + dist * 2.5));
-      return { ...r, distanceKm: dist, etaMinutes: eta };
-    });
-
-    if (selectedCategory === "Nearby") {
-      return [...list].sort((a, b) => a.distanceKm - b.distanceKm);
-    }
-
-    if (selectedCategory !== "All") {
-      list = list.filter((r) =>
-        String(r.genre || r.category || "")
-          .toLowerCase()
-          .includes(selectedCategory.toLowerCase())
-      );
-    }
-    return list;
-  }, [displayRestaurants, selectedCategory, currentCoords]);
 
   return (
     <View style={s.root}>

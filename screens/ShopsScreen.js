@@ -33,6 +33,8 @@ import {
   getItemDiscountInfo,
   FAR_DISTANCE_NOTICE,
   isFarDistance,
+  calculateDistanceKm,
+  getMaxOrderDistanceKm,
 } from "../utils/pricing";
 import { usePricingConfig } from "../utils/usePricingConfig";
 
@@ -292,12 +294,16 @@ export default function ShopsScreen() {
 
   const handleAddToCart = (product) => {
     const parentShop = shops.find((s) => s.id === product.shopId);
-    const shopCoords = {
-      latitude: Number(parentShop?.latitude || parentShop?.lat || 8.992),
-      longitude: Number(parentShop?.longitude || parentShop?.lng || 38.752),
-    };
-    if (isFarDistance(shopCoords, userCoords)) {
-      Alert.alert("Far Delivery Distance", FAR_DISTANCE_NOTICE);
+    const sLat = Number(parentShop?.latitude ?? parentShop?.lat ?? parentShop?.storeLatitude);
+    const sLng = Number(parentShop?.longitude ?? parentShop?.lng ?? parentShop?.storeLongitude);
+    if (!Number.isFinite(sLat) || !Number.isFinite(sLng)) {
+      Alert.alert("Notice", "This shop has no verified location pin.");
+      return;
+    }
+    const shopCoords = { latitude: sLat, longitude: sLng };
+    const maxRadius = Number(parentShop?.deliveryRadiusKm) || getMaxOrderDistanceKm("shop");
+    if (isFarDistance(shopCoords, userCoords, maxRadius, "shop")) {
+      Alert.alert("Outside Delivery Area", FAR_DISTANCE_NOTICE);
       return;
     }
 
@@ -322,8 +328,31 @@ export default function ShopsScreen() {
   };
 
 
+  const visibleShops = useMemo(() => {
+    const maxRadius = getMaxOrderDistanceKm("shop");
+    const uAddress = String(reduxUser?.address || dbUser?.address || "").toLowerCase();
+    return shops.filter((shop) => {
+      const sLat = Number(shop.latitude ?? shop.lat ?? shop.storeLatitude);
+      const sLng = Number(shop.longitude ?? shop.lng ?? shop.storeLongitude);
+      if (shop.id === "shop-bambis-supermarket") return true;
+      if (!Number.isFinite(sLat) || !Number.isFinite(sLng)) return false;
+
+      const dist = calculateDistanceKm(userCoords.latitude, userCoords.longitude, sLat, sLng);
+      const limit = Number(shop.deliveryRadiusKm) || maxRadius;
+      if (dist > limit) return false;
+
+      if (shop.city && uAddress) {
+        const sCity = String(shop.city).toLowerCase();
+        if (uAddress.includes("nekemte") && !sCity.includes("nekemte")) return false;
+        if (uAddress.includes("addis") && !sCity.includes("addis")) return false;
+      }
+      return true;
+    });
+  }, [shops, userCoords, reduxUser?.address, dbUser?.address]);
+
   const filteredProducts = useMemo(() => {
-    let result = [...products];
+    const deliverableShopIds = new Set(visibleShops.map((s) => s.id));
+    let result = products.filter((p) => deliverableShopIds.has(p.shopId));
 
     if (selectedShopId) {
       result = result.filter((p) => p.shopId === selectedShopId);
@@ -347,7 +376,7 @@ export default function ShopsScreen() {
     }
 
     return result;
-  }, [products, selectedShopId, selectedCategory, searchQuery]);
+  }, [products, visibleShops, selectedShopId, selectedCategory, searchQuery]);
 
   return (
     <SafeAreaView style={s.safe} edges={["top"]}>
@@ -433,8 +462,16 @@ export default function ShopsScreen() {
             )}
           </View>
 
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.shopsScroll}>
-            {shops.map((shop) => {
+          {visibleShops.length === 0 ? (
+            <View style={{ padding: 18, alignItems: "center" }}>
+              <MaterialCommunityIcons name="store-remove-outline" size={32} color="#CBD5E1" />
+              <Text style={{ color: "#64748B", fontSize: 13, fontWeight: "600", marginTop: 6 }}>
+                No partner shops delivering to your area yet
+              </Text>
+            </View>
+          ) : (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.shopsScroll}>
+              {visibleShops.map((shop) => {
               const isSelected = selectedShopId === shop.id;
               return (
                 <TouchableOpacity
@@ -461,7 +498,8 @@ export default function ShopsScreen() {
                 </TouchableOpacity>
               );
             })}
-          </ScrollView>
+            </ScrollView>
+          )}
         </View>
 
         {/* Products Grid */}

@@ -61,6 +61,7 @@ import {
   calculateOrderFinancials,
   FAR_DISTANCE_NOTICE,
   isFarDistance,
+  getMaxOrderDistanceKm,
 } from "../utils/pricing";
 import { usePricingConfig } from "../utils/usePricingConfig";
 
@@ -650,8 +651,9 @@ export default function BasketScreen() {
         { latitude: group.merchantLat, longitude: group.merchantLng, city: group.merchantCity },
         { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
       );
-      if (quote.distanceKm > 15) {
-        Alert.alert("Far Delivery Distance", FAR_DISTANCE_NOTICE);
+      const maxAllowed = getMaxOrderDistanceKm(group.sellerType === "shop" ? "shop" : "restaurant");
+      if (quote.distanceKm > maxAllowed) {
+        Alert.alert("Outside Delivery Area", FAR_DISTANCE_NOTICE);
         return;
       }
     }
@@ -926,7 +928,8 @@ Please try again, or choose Cash on Delivery.`,
                     { latitude: group.merchantLat, longitude: group.merchantLng },
                     { latitude: currentCoords?.latitude, longitude: currentCoords?.longitude }
                   );
-                  if (gQuote.distanceKm > 15) {
+                  const maxAllowed = getMaxOrderDistanceKm(group.sellerType === "shop" ? "shop" : "restaurant");
+                  if (gQuote.distanceKm > maxAllowed) {
                     return (
                       <View
                         style={{

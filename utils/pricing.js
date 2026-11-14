@@ -15,6 +15,10 @@ export const DEFAULT_PRICING_CONFIG = {
   serviceFee: 15,        // Platform service fee (ETB)
   deliveryCommissionPercent: 20, // 20% company cut from delivery fee
   commissionRate: 15,    // Legacy catalog commission % (reports only)
+  // Distance / delivery coverage limits (KM)
+  maxDeliveryRadiusKm: 25, // Expanded 25 km max order radius for restaurants & cafes
+  maxShopRadiusKm: 35,     // Expanded 35 km max order radius for retail shops/supermarkets
+  maxPackageRadiusKm: 50,  // Expanded 50 km max delivery radius for courier packages
   // Package courier (send-a-package) pricing
   packageBaseFee: 60,    // Flat pickup fee for every package
   packageRatePerKm: 25,  // ETB per km between pickup and drop-off
@@ -61,6 +65,9 @@ export function normalizePricingConfig(raw = {}) {
     serviceFee: num(r.serviceFee, d.serviceFee),
     deliveryCommissionPercent: Math.min(100, num(r.deliveryCommissionPercent, d.deliveryCommissionPercent)),
     commissionRate: Math.min(100, num(r.commissionRate, d.commissionRate)),
+    maxDeliveryRadiusKm: num(r.maxDeliveryRadiusKm ?? r.maxDistanceKm, d.maxDeliveryRadiusKm),
+    maxShopRadiusKm: num(r.maxShopRadiusKm, d.maxShopRadiusKm),
+    maxPackageRadiusKm: num(r.maxPackageRadiusKm, d.maxPackageRadiusKm),
     packageBaseFee: num(r.packageBaseFee, d.packageBaseFee),
     packageRatePerKm: num(r.packageRatePerKm, d.packageRatePerKm),
     packageMinimumFee: num(r.packageMinimumFee, d.packageMinimumFee),
@@ -98,25 +105,41 @@ function resolveConfig(config) {
   return normalizePricingConfig({ ...livePricingConfig, ...config });
 }
 
-export const MAX_CUSTOMER_ORDER_DISTANCE_KM = 15;
+export const MAX_CUSTOMER_ORDER_DISTANCE_KM = 25;
+
+/** Dynamic max order radius (reads platformSettings/config). */
+export function getMaxOrderDistanceKm(serviceType = "restaurant") {
+  const cfg = getPricingConfig();
+  if (serviceType === "shop") return cfg.maxShopRadiusKm || 35;
+  if (serviceType === "package") return cfg.maxPackageRadiusKm || 50;
+  return cfg.maxDeliveryRadiusKm || 25;
+}
+
+export function getFarDistanceNotice(maxKm) {
+  const km = maxKm || getMaxOrderDistanceKm();
+  return `This store is more than ${km} km away. For your convenience and fast delivery, please select an item nearer to you.`;
+}
+
 export const FAR_DISTANCE_NOTICE =
-  "This is more than 15 km away. For your convenience and fast delivery, please select an item nearer to you.";
+  "This item is outside your delivery area. For fast delivery, please select an item nearer to you.";
 
 /**
- * Checks if a merchant/shop is more than 15 km away from the customer's delivery location.
+ * Checks if a merchant/shop is beyond the allowed delivery radius from the customer.
  * @param {Object} origin Merchant coordinates { latitude, longitude } or { lat, lng }
  * @param {Object} destination Customer coordinates { latitude, longitude } or { lat, lng }
- * @param {number} [maxKm=15]
+ * @param {number|null} [maxKm=null] Optional override; if omitted, uses platform live config
+ * @param {string} [serviceType="restaurant"] "restaurant" | "shop" | "package"
  * @returns {boolean}
  */
-export function isFarDistance(origin, destination, maxKm = MAX_CUSTOMER_ORDER_DISTANCE_KM) {
+export function isFarDistance(origin, destination, maxKm = null, serviceType = "restaurant") {
   const oLat = origin?.latitude ?? origin?.lat;
   const oLon = origin?.longitude ?? origin?.lng;
   const dLat = destination?.latitude ?? destination?.lat;
   const dLon = destination?.longitude ?? destination?.lng;
   if (oLat == null || oLon == null || dLat == null || dLon == null) return false;
   const dist = calculateDistanceKm(oLat, oLon, dLat, dLon);
-  return dist > maxKm;
+  const limit = maxKm != null ? maxKm : getMaxOrderDistanceKm(serviceType);
+  return dist > limit;
 }
 
 /**
