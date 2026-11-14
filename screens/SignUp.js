@@ -90,10 +90,14 @@ export default function SignUp() {
     setBusy(true);
 
     try {
-      // 1. Check duplicate mobile registration
-      const check = await checkPhoneRegistered(norm.localNumber);
+      // 1. Refuse a phone number or email that already has an account BEFORE sending (and paying for) the SMS
+      const check = await checkPhoneRegistered(norm.localNumber, email.trim());
       if (check.isRegistered) {
-        setErrorMessage("This mobile number is already registered. Please sign in instead.");
+        setErrorMessage(
+          check.reason === "email"
+            ? "This email address is already registered. Please sign in instead."
+            : "This mobile number is already registered. Please sign in instead."
+        );
         setBusy(false);
         return;
       }
