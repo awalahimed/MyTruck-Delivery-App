@@ -50,6 +50,8 @@ const SharedMapView = forwardRef(function SharedMapView(
     showControls = true,
     onRecenter,
     recenterLoading = false,
+    // locked: the map only shows a location; touching it can't move or change anything
+    locked = false,
     children,
     ...rest
   },
@@ -124,12 +126,14 @@ const SharedMapView = forwardRef(function SharedMapView(
   }, [routeKey]);
 
   const handleRegionChangeComplete = (r) => {
+    if (locked) return;
     const c = { latitude: r.latitude, longitude: r.longitude };
     onLocationChange?.(c);
     onRegionChangeComplete?.(c);
   };
 
   const handlePress = (e) => {
+    if (locked) return;
     const c = e?.nativeEvent?.coordinate;
     if (c && mode !== "route") mapRef.current?.animateToRegion({ ...c, latitudeDelta: 0.012, longitudeDelta: 0.012 }, 400);
     onPress?.(e);
@@ -151,6 +155,7 @@ const SharedMapView = forwardRef(function SharedMapView(
         onPress={handlePress}
         onRegionChangeComplete={handleRegionChangeComplete}
         {...rest}
+        {...(locked ? { scrollEnabled: false, zoomEnabled: false, rotateEnabled: false, pitchEnabled: false } : {})}
       >
         {isRoute && toRegion(from) ? (
           <Marker coordinate={toRegion(from)} title={from.title || "Pickup"} pinColor={TEAL} />

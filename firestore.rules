@@ -375,6 +375,21 @@ service cloud.firestore {
       allow read, delete: if signedIn() && (isStaff() || resource.data.get('uid', '') == uid());
     }
 
+    // ── Registered phone numbers (services/phoneIndex.js) ─────────────────
+    // One document per number: /phoneIndex/2519XXXXXXXX -> { uid }. A single number can be looked up
+    // without signing in, so sign-up can refuse a taken number BEFORE an SMS code is sent.
+    // The list can't be browsed, and a number can only be reserved once.
+    match /phoneIndex/{phone} {
+      allow get: if true;
+      allow list: if isStaff() || (signedIn() && resource.data.uid == uid());
+      allow create: if signedIn() && phone.matches('^251[79][0-9]{8}$') && (isStaff() || (
+        request.resource.data.keys().hasOnly(['uid', 'createdAt']) &&
+        request.resource.data.uid == uid() &&
+        hasProfile() && me().get('phoneNumber', '') == '+' + phone));
+      allow update: if isStaff();
+      allow delete: if isStaff() || (signedIn() && resource.data.uid == uid());
+    }
+
     // ── Phone verification codes ──────────────────────────────────────────
     // Codes now live on the server (Supabase, table phone_otps). The app never reads or writes them.
     match /phoneOtpChallenges/{challengeId} {

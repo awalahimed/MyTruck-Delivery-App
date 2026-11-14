@@ -12,6 +12,8 @@ import {
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { auth, db, app } from "../firebase";
 import { sendSignupCode, claimPhone } from "../services/otpClient";
+import { isPhoneIndexed, reservePhone, syncOwnPhone, backfillPhoneIndex } from "../services/phoneIndex";
+import { getRoleInfo } from "../utils/roles";
 import { doc, getDoc, setDoc, updateDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -487,15 +489,28 @@ export const AuthContextProvder = ({ children }) => {
     };
   }, [loadProfileFromFirestore]);
 
+  // Keep this account's number in the phone index (also adds accounts that existed before the index).
+  // Staff additionally fill in every other existing account, once per session.
+  useEffect(() => {
+    if (registering || !user?.uid || !dbUser?.phoneNumber) return;
+    syncOwnPhone(user.uid, dbUser.phoneNumber);
+    if (getRoleInfo(user, dbUser).isStaffAdmin) backfillPhoneIndex();
+  }, [registering, user?.uid, dbUser?.phoneNumber, dbUser?.role]);
+
   /**
-   * Check if a phone number is already registered in the system.
-   * Checks both Firestore and Firebase Auth email methods.
+   * Check if a phone number (and, for sign-up, the email) already belongs to an account.
+   * Sign-up calls this BEFORE sending the SMS code, so a taken number never costs an SMS.
    */
-  const checkPhoneRegistered = useCallback(async (phoneInput) => {
+  const checkPhoneRegistered = useCallback(async (phoneInput, emailInput = "") => {
     const norm = normalizeEthiopianPhone(phoneInput);
     if (!norm.isValid) return { isRegistered: false, error: norm.error };
 
     try {
+      // 0. Public phone index: the only lookup that works on a signed-out device (see services/phoneIndex.js)
+      if ((await isPhoneIndexed(norm.intlNumber)) === true) {
+        return { isRegistered: true, reason: "phone" };
+      }
+
       // 1. Profile lookup only when signed in: user profiles are private, so a signed-out device
       //    can't search them. For sign-up, the phone number is checked on the server instead
       //    (send-otp refuses claimed numbers), so this lookup is only a shortcut for signed-in users.
@@ -506,18 +521,28 @@ export const AuthContextProvder = ({ children }) => {
         );
         const snap = await getDocs(q);
         if (!snap.empty) {
-          return { isRegistered: true };
+          return { isRegistered: true, reason: "phone" };
         }
       }
 
-      // 2. Check Firebase Auth methods if available
+      // 2. Check Firebase Auth methods if available: the old phone-alias login, and the email typed
+      //    on the sign-up form (accounts are created with the real email, so that's the one that clashes)
       try {
         const methods = await fetchSignInMethodsForEmail(auth, norm.authEmail);
         if (methods && methods.length > 0) {
-          return { isRegistered: true };
+          return { isRegistered: true, reason: "phone" };
         }
       } catch (_) {
         // Enumeration protection might throw; safe to continue
+      }
+      const cleanEmail = String(emailInput || "").trim().toLowerCase();
+      if (cleanEmail) {
+        try {
+          const methods = await fetchSignInMethodsForEmail(auth, cleanEmail);
+          if (methods && methods.length > 0) {
+            return { isRegistered: true, reason: "email" };
+          }
+        } catch (_) {}
       }
 
       return { isRegistered: false };
@@ -544,6 +569,13 @@ export const AuthContextProvder = ({ children }) => {
     let createdUser = null;
 
     try {
+      // 0. A number that already has an account can't sign up again (normally caught before the SMS is sent)
+      if ((await isPhoneIndexed(norm.intlNumber)) === true) {
+        const taken = new Error("This mobile number is already registered. Please sign in instead.");
+        taken.code = "otp/taken";
+        throw taken;
+      }
+
       // 1. Create Firebase Auth user
       const userCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
       createdUser = userCred.user;
@@ -585,8 +617,9 @@ export const AuthContextProvder = ({ children }) => {
         setDoc(doc(db, "users", createdUid), profileData, { merge: true }),
       ]);
 
-      // 4. Reserve the verified phone number for this account on the server.
-      //    If another account already owns it, undo this sign-up.
+      // 4. Reserve the phone number for this account, so the next sign-up with it is refused
+      //    before any SMS is sent. If another account got it first, undo this sign-up.
+      await reservePhone(norm.intlNumber, createdUid);
       if (proof) {
         try {
           await claimPhone(norm.intlNumber, createdUid, proof);
@@ -635,11 +668,18 @@ export const AuthContextProvder = ({ children }) => {
     bankName = "Commercial Bank of Ethiopia (CBE)",
     accountNumber = "",
     accountHolder = "",
+    latitude = null,
+    longitude = null,
   }) => {
     const norm = normalizeEthiopianPhone(phone);
     if (!norm.isValid) {
       throw new Error(norm.error);
     }
+    // The store's real position, captured by GPS on the registration form
+    const storeLat = Number(latitude);
+    const storeLng = Number(longitude);
+    const hasStoreCoords = latitude != null && longitude != null && Number.isFinite(storeLat) && Number.isFinite(storeLng);
+    const storeCoordFields = hasStoreCoords ? { latitude: storeLat, longitude: storeLng } : {};
 
     startRegistration();
     let createdUser = null;
@@ -668,6 +708,7 @@ export const AuthContextProvder = ({ children }) => {
         phone: norm.intlNumber,
         telebirrPhone: telebirrPhone.trim(),
         address: address.trim(),
+        ...storeCoordFields,
         workingHours: workingHours.trim(),
         sellerType,
         status: "PENDING",
@@ -699,6 +740,7 @@ export const AuthContextProvder = ({ children }) => {
         businessName: businessName.trim(),
         sellerType,
         address: address.trim(),
+        ...storeCoordFields,
         workingHours: workingHours.trim(),
         licenceNumber: (licenceNumber || "").trim(),
         businessLicencePath: licenceUrl || null,
@@ -730,6 +772,7 @@ export const AuthContextProvder = ({ children }) => {
         businessName: businessName.trim(),
         approvalStatus: "PENDING",
         address: address.trim(),
+        ...(hasStoreCoords ? { storeLatitude: storeLat, storeLongitude: storeLng } : {}),
         workingHours: workingHours.trim(),
         image: logoUrl || null,
         bankName,

@@ -263,6 +263,53 @@ export async function getRoute(from, to) {
   return result;
 }
 
+function gpsError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+/**
+ * The phone's REAL position right now, or an error — never a default or an old position.
+ * Used wherever a location is saved (delivery location, saved addresses, store location), so a
+ * location can only be where the person actually is.
+ */
+export async function getRealGpsLocation({ timeoutMs = 15000 } = {}) {
+  const enabled = await Location.hasServicesEnabledAsync().catch(() => true);
+  if (!enabled) {
+    throw gpsError("gps/disabled", "Location (GPS) is turned off on your phone. Turn it on and try again.");
+  }
+  const { status } = await Location.requestForegroundPermissionsAsync();
+  if (status !== "granted") {
+    throw gpsError("gps/denied", "Location permission is needed. Allow location access for MyTruck in your phone settings and try again.");
+  }
+
+  let pos = null;
+  try {
+    pos = await Promise.race([
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
+      new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+  } catch (_) {}
+  if (!pos?.coords) {
+    // A position from the last two minutes is still where the person is
+    try {
+      pos = await Location.getLastKnownPositionAsync({ maxAge: 120000 });
+    } catch (_) {}
+  }
+  if (!pos?.coords) {
+    throw gpsError("gps/no_fix", "We couldn't find your location. Move outside or near a window and try again.");
+  }
+  if (!isWithinEthiopia(pos.coords.latitude, pos.coords.longitude)) {
+    throw gpsError("gps/outside", "MyTruck only works inside Ethiopia, and your phone reports a location outside it.");
+  }
+  return {
+    latitude: Number(pos.coords.latitude),
+    longitude: Number(pos.coords.longitude),
+    accuracy: Number(pos.coords.accuracy) || null,
+  };
+}
+
 /**
  * Request location permission and get current GPS location.
  * Uses last known position for an instant answer, then a fresh fix with an 8s cap.

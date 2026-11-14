@@ -23,6 +23,7 @@ import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { auth, db, storage } from "../firebase";
 import { UserAuth, normalizeEthiopianPhone, formatAuthError } from "../contexts/AuthContext";
 import BackButton from "../components/ui/BackButton";
+import { getRealGpsLocation, reverseGeocodeLocation } from "../utils/mapService";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -37,6 +38,27 @@ export default function SellerApply() {
   const [sellerType, setSellerType] = useState("restaurant"); // "restaurant" | "shop"
   const [businessName, setBusinessName] = useState("");
   const [address, setAddress] = useState("");
+  // The store's real position, read from this phone's GPS while the owner is at the store
+  const [storeCoords, setStoreCoords] = useState(null);
+  const [locatingStore, setLocatingStore] = useState(false);
+
+  const captureStoreLocation = async () => {
+    if (locatingStore) return;
+    setLocatingStore(true);
+    try {
+      const fix = await getRealGpsLocation();
+      setStoreCoords({ latitude: fix.latitude, longitude: fix.longitude });
+      if (errorMessage) setErrorMessage("");
+      if (!address.trim()) {
+        const addr = await reverseGeocodeLocation(fix.latitude, fix.longitude).catch(() => "");
+        if (addr && addr !== "My Location, Ethiopia") setAddress((prev) => (prev.trim() ? prev : addr));
+      }
+    } catch (e) {
+      Alert.alert("Location Not Found", e?.message || "We couldn't find your location. Please try again.");
+    } finally {
+      setLocatingStore(false);
+    }
+  };
   const [licenceNumber, setLicenceNumber] = useState("");
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
@@ -195,6 +217,12 @@ export default function SellerApply() {
       return;
     }
 
+    if (!storeCoords) {
+      setErrorMessage("Please capture your store location. Stand inside your store and tap \"Use My Current Location\".");
+      Alert.alert("Store Location Required", "Stand inside your store and tap \"Use My Current Location\", so customers and drivers get the real place.");
+      return;
+    }
+
     if (!fullName.trim()) {
       setErrorMessage("Please enter the manager / owner's full legal name.");
       return;
@@ -260,6 +288,8 @@ export default function SellerApply() {
         telebirrPhone: telebirrPhone.trim(),
         businessName: businessName.trim(),
         address: address.trim(),
+        latitude: storeCoords.latitude,
+        longitude: storeCoords.longitude,
         workingHours: workingHours.trim(),
         licenceNumber: licenceNumber.trim(),
         sellerType,
@@ -392,6 +422,47 @@ export default function SellerApply() {
               placeholder="e.g. Bole, Near Medhanialem Mall"
               placeholderTextColor="#94A3B8"
             />
+
+            <Text style={s.label}>Store Location (GPS) *</Text>
+            <TouchableOpacity
+              onPress={captureStoreLocation}
+              disabled={locatingStore}
+              activeOpacity={0.85}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                padding: 12,
+                marginBottom: 12,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: storeCoords ? "#A7F3D0" : "#FDBA74",
+                backgroundColor: storeCoords ? "#ECFDF5" : "#FFF7ED",
+              }}
+            >
+              {locatingStore ? (
+                <ActivityIndicator size="small" color={TEAL} />
+              ) : (
+                <MaterialCommunityIcons
+                  name={storeCoords ? "map-marker-check" : "crosshairs-gps"}
+                  size={20}
+                  color={storeCoords ? "#047857" : "#C2410C"}
+                />
+              )}
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={{ fontSize: 13, fontWeight: "800", color: storeCoords ? "#065F46" : "#9A3412" }}>
+                  {locatingStore
+                    ? "Finding your location…"
+                    : storeCoords
+                    ? "Store location captured"
+                    : "Use My Current Location"}
+                </Text>
+                <Text style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>
+                  {storeCoords
+                    ? `${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)} · tap to refresh while standing in your store`
+                    : "Stand inside your store and tap here. The location comes from your phone's GPS and can't be typed in."}
+                </Text>
+              </View>
+            </TouchableOpacity>
 
             <Text style={s.label}>Operating / Working Hours Interval *</Text>
             <TextInput

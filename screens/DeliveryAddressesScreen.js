@@ -57,6 +57,8 @@ export default function DeliveryAddressesScreen() {
   const [newLabel, setNewLabel] = useState("Home"); // "Home" | "Work" | "Other"
   const [newAddressText, setNewAddressText] = useState("");
   const [newCoords, setNewCoords] = useState({ latitude: 8.9806, longitude: 38.7578 });
+  // True once the coordinates came from the phone's GPS (never save the placeholder above)
+  const [newCoordsReal, setNewCoordsReal] = useState(false);
 
   useEffect(() => {
     async function loadSavedAddresses() {
@@ -157,6 +159,10 @@ export default function DeliveryAddressesScreen() {
       Alert.alert("Missing Address", "Please enter or pick an address.");
       return;
     }
+    if (!newCoordsReal) {
+      Alert.alert("Location Needed", "Tap \"Use My Current Location\" first, so this address is saved at the place you really are.");
+      return;
+    }
 
     const newEntry = {
       id: `addr-${Date.now()}`,
@@ -183,6 +189,7 @@ export default function DeliveryAddressesScreen() {
     }
 
     setShowAddModal(false);
+    setNewCoordsReal(false);
     setNewAddressText("");
   };
 
@@ -343,7 +350,7 @@ export default function DeliveryAddressesScreen() {
               activeOpacity={0.85}
             >
               <MaterialCommunityIcons name="map-marker-radius" size={20} color={TEAL} />
-              <Text style={s.pickMapBtnTxt}>Pin Location on Map</Text>
+              <Text style={s.pickMapBtnTxt}>{newCoordsReal ? "Location captured · tap to refresh" : "Use My Current Location"}</Text>
             </TouchableOpacity>
 
             {/* Save Button */}
@@ -368,6 +375,8 @@ export default function DeliveryAddressesScreen() {
         <DeliveryLocationModal
           visible={showLocationPicker}
           onClose={() => setShowLocationPicker(false)}
+          gpsOnly
+          gpsHint="A saved address is always the place you are standing when you save it. It can't be moved by hand."
           initialLocation={{
             address: newAddressText || "My Location, Ethiopia",
             latitude: newCoords.latitude,
@@ -376,6 +385,7 @@ export default function DeliveryAddressesScreen() {
           onConfirmLocation={(loc) => {
             setNewAddressText(loc.address);
             setNewCoords({ latitude: loc.latitude, longitude: loc.longitude });
+            setNewCoordsReal(true);
           }}
         />
       )}

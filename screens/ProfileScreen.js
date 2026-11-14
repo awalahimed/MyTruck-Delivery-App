@@ -24,7 +24,7 @@ import { useDispatch, useSelector } from "react-redux";
 import { setUser, selectUser } from "../features/userSlice";
 import BackButton from "../components/ui/BackButton";
 import {
-  requestGpsLocation,
+  getRealGpsLocation,
   reverseGeocodeLocation,
 } from "../utils/mapService";
 
@@ -165,7 +165,7 @@ export default function ProfileScreen() {
   const handleGetCurrentLocation = async () => {
     setLocating(true);
     try {
-      const coords = await requestGpsLocation();
+      const coords = await getRealGpsLocation();
       setLatitude(coords.latitude);
       setLongitude(coords.longitude);
 
@@ -544,19 +544,14 @@ export default function ProfileScreen() {
                       latitudeDelta: 0.015,
                       longitudeDelta: 0.015,
                     }}
-                    onLocationChange={(c) => {
-                      if (c?.latitude && c?.longitude) {
-                        setLatitude(c.latitude);
-                        setLongitude(c.longitude);
-                        reverseGeocodeLocation(c.latitude, c.longitude).then(setAddress);
-                      }
-                    }}
+                    key={`${latitude},${longitude}`}
+                    locked
                     onRecenter={handleGetCurrentLocation}
                     recenterLoading={locating}
                   />
 
                   <View style={s.mapOverlayHint} pointerEvents="none">
-                    <Text style={s.mapHintTxt}>Tap map or drag marker to set exact location</Text>
+                    <Text style={s.mapHintTxt}>Your location comes from your phone's GPS. Tap the GPS button to update it.</Text>
                   </View>
                 </View>
               </View>

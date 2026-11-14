@@ -1582,11 +1582,11 @@ export default function SellerHome() {
                 <MaterialCommunityIcons name={storeCoords ? "map-marker-check" : "map-marker-alert"} size={20} color={storeCoords ? "#047857" : "#C2410C"} />
                 <View style={{ flex: 1, marginLeft: 10 }}>
                   <Text style={{ fontSize: 13, fontWeight: "800", color: storeCoords ? "#065F46" : "#9A3412" }}>
-                    {storeCoords ? "Store location pinned" : "Pin your store on the map"}
+                    {storeCoords ? "Store location set" : "Set your store location"}
                   </Text>
                   <Text style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>
                     {storeCoords
-                      ? `${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)} · tap to change, then Save`
+                      ? `${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)} · to update it, stand in your store and tap here, then Save`
                       : "Required for correct delivery fees and so drivers find your pickup point"}
                   </Text>
                 </View>
@@ -1632,6 +1632,10 @@ export default function SellerHome() {
         <DeliveryLocationModal
           visible={storeLocationModalVisible}
           onClose={() => setStoreLocationModalVisible(false)}
+          gpsOnly
+          title="Store Location"
+          gpsHint="Stand inside your store. The location is taken from this phone's GPS and can't be moved by hand."
+          confirmLabel="Use This As My Store Location"
           initialLocation={storeCoords}
           onConfirmLocation={(loc) => {
             setStoreCoords({ latitude: Number(loc.latitude), longitude: Number(loc.longitude) });
