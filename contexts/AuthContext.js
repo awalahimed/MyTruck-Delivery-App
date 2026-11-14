@@ -668,11 +668,18 @@ export const AuthContextProvder = ({ children }) => {
     bankName = "Commercial Bank of Ethiopia (CBE)",
     accountNumber = "",
     accountHolder = "",
+    latitude = null,
+    longitude = null,
   }) => {
     const norm = normalizeEthiopianPhone(phone);
     if (!norm.isValid) {
       throw new Error(norm.error);
     }
+    // The store's real position, captured by GPS on the registration form
+    const storeLat = Number(latitude);
+    const storeLng = Number(longitude);
+    const hasStoreCoords = latitude != null && longitude != null && Number.isFinite(storeLat) && Number.isFinite(storeLng);
+    const storeCoordFields = hasStoreCoords ? { latitude: storeLat, longitude: storeLng } : {};
 
     startRegistration();
     let createdUser = null;
@@ -701,6 +708,7 @@ export const AuthContextProvder = ({ children }) => {
         phone: norm.intlNumber,
         telebirrPhone: telebirrPhone.trim(),
         address: address.trim(),
+        ...storeCoordFields,
         workingHours: workingHours.trim(),
         sellerType,
         status: "PENDING",
@@ -732,6 +740,7 @@ export const AuthContextProvder = ({ children }) => {
         businessName: businessName.trim(),
         sellerType,
         address: address.trim(),
+        ...storeCoordFields,
         workingHours: workingHours.trim(),
         licenceNumber: (licenceNumber || "").trim(),
         businessLicencePath: licenceUrl || null,
@@ -763,6 +772,7 @@ export const AuthContextProvder = ({ children }) => {
         businessName: businessName.trim(),
         approvalStatus: "PENDING",
         address: address.trim(),
+        ...(hasStoreCoords ? { storeLatitude: storeLat, storeLongitude: storeLng } : {}),
         workingHours: workingHours.trim(),
         image: logoUrl || null,
         bankName,

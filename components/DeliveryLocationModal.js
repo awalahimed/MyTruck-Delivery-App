@@ -25,6 +25,7 @@ import {
   reverseGeocodeLocation,
   searchPlaces,
   requestGpsLocation,
+  getRealGpsLocation,
   isWithinEthiopia,
 } from "../utils/mapService";
 
@@ -38,6 +39,12 @@ export default function DeliveryLocationModal({
   onClose,
   initialLocation,
   onConfirmLocation,
+  // gpsOnly: the location can't be chosen by hand (no search, no tapping or dragging the map).
+  // It is read from the phone's GPS, so it is always where the person really is.
+  gpsOnly = false,
+  title,
+  gpsHint = "This is where your phone is right now. It can't be moved by hand.",
+  confirmLabel,
 }) {
   const mapRef = useRef(null);
   const safeInitCoords = () => {
@@ -64,10 +71,34 @@ export default function DeliveryLocationModal({
   const [geocoding, setGeocoding] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
   const [selectedZoneId, setSelectedZoneId] = useState("bole");
+  // gpsOnly: the real position once the phone has found it, and why it couldn't if it failed
+  const [gpsFix, setGpsFix] = useState(null);
+  const [gpsError, setGpsError] = useState("");
+
+  const locateReal = async () => {
+    setGpsLoading(true);
+    setGpsError("");
+    try {
+      const fix = await getRealGpsLocation();
+      const coords = { latitude: fix.latitude, longitude: fix.longitude };
+      setGpsFix(coords);
+      setSelectedCoords(coords);
+      mapRef.current?.animateToRegion({ ...coords, latitudeDelta: 0.006, longitudeDelta: 0.006 });
+      await updateAddressFromCoords(coords.latitude, coords.longitude);
+    } catch (err) {
+      setGpsFix(null);
+      setGpsError(err?.message || "We couldn't find your location. Please try again.");
+    } finally {
+      setGpsLoading(false);
+    }
+  };
 
   // When modal becomes visible, update address
   useEffect(() => {
-    if (visible && selectedCoords.latitude && selectedCoords.longitude) {
+    if (!visible) return;
+    if (gpsOnly) {
+      locateReal();
+    } else if (selectedCoords.latitude && selectedCoords.longitude) {
       updateAddressFromCoords(selectedCoords.latitude, selectedCoords.longitude);
     }
   }, [visible]);
@@ -181,6 +212,7 @@ export default function DeliveryLocationModal({
   };
 
   const handleConfirm = () => {
+    if (gpsOnly && !gpsFix) return;
     const safeLat = isWithinEthiopia(selectedCoords.latitude, selectedCoords.longitude)
       ? selectedCoords.latitude
       : DEFAULT_COORDS.latitude;
@@ -221,8 +253,10 @@ export default function DeliveryLocationModal({
             <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
               <View style={s.header}>
                 <View>
-                  <Text style={s.title}>Choose Delivery Location</Text>
-                  <Text style={s.subtitle}>Tap map or drag pin to your exact spot</Text>
+                  <Text style={s.title}>{title || (gpsOnly ? "Your Current Location" : "Choose Delivery Location")}</Text>
+                  <Text style={s.subtitle}>
+                    {gpsOnly ? "Found automatically from your phone's GPS" : "Tap map or drag pin to your exact spot"}
+                  </Text>
                 </View>
                 <TouchableOpacity onPress={onClose} style={s.closeBtn}>
                   <XMarkIcon size={22} color="#64748B" />
@@ -231,6 +265,7 @@ export default function DeliveryLocationModal({
             </TouchableWithoutFeedback>
 
             {/* Search section — stays visible above keyboard */}
+            {gpsOnly ? null : (
             <View style={s.searchSection}>
               {/* Search bar */}
               <View style={s.searchWrap}>
@@ -286,8 +321,10 @@ export default function DeliveryLocationModal({
                 </ScrollView>
               )}
             </View>
+            )}
 
             {/* Quick Delivery Zone Pills */}
+            {gpsOnly ? null : (
             <View style={s.zoneBar}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.zoneScroll} keyboardShouldPersistTaps="handled">
                 {ADDIS_DELIVERY_ZONES.map((zone) => {
@@ -311,6 +348,7 @@ export default function DeliveryLocationModal({
                 })}
               </ScrollView>
             </View>
+            )}
 
             {/* Map view — flex: 1 so it shrinks on iOS when keyboard is open */}
             <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
@@ -324,15 +362,16 @@ export default function DeliveryLocationModal({
                     latitudeDelta: 0.02,
                     longitudeDelta: 0.02,
                   }}
+                  locked={gpsOnly}
                   onLocationChange={(coords) => {
-                    if (coords?.latitude && coords?.longitude) {
+                    if (!gpsOnly && coords?.latitude && coords?.longitude) {
                       setSelectedCoords(coords);
                       setSelectedZoneId(null);
                       updateAddressFromCoords(coords.latitude, coords.longitude);
                     }
                   }}
-                  onPress={handleMapPress}
-                  onRecenter={handleUseGps}
+                  onPress={gpsOnly ? undefined : handleMapPress}
+                  onRecenter={gpsOnly ? locateReal : handleUseGps}
                   recenterLoading={gpsLoading}
                 />
               </View>
@@ -345,8 +384,14 @@ export default function DeliveryLocationModal({
                   <MaterialCommunityIcons name="map-marker-check" size={24} color={TEAL} />
                 </View>
                 <View style={{ flex: 1, marginLeft: 10 }}>
-                  <Text style={s.addressLabel}>Selected Address</Text>
-                  {geocoding ? (
+                  <Text style={s.addressLabel}>{gpsOnly ? "Your Location" : "Selected Address"}</Text>
+                  {gpsOnly && !gpsFix ? (
+                    gpsLoading ? (
+                      <Text style={s.addressText}>Finding your location…</Text>
+                    ) : (
+                      <Text style={[s.addressText, { color: "#B91C1C" }]}>{gpsError || "Location not found yet."}</Text>
+                    )
+                  ) : geocoding ? (
                     <ActivityIndicator size="small" color={TEAL} style={{ alignSelf: "flex-start", marginTop: 2 }} />
                   ) : (
                     <Text style={s.addressText} numberOfLines={2}>
@@ -356,12 +401,31 @@ export default function DeliveryLocationModal({
                 </View>
               </View>
 
+              {gpsOnly ? (
+                <>
+                  <Text style={s.gpsHint}>{gpsHint}</Text>
+                  <TouchableOpacity style={s.refreshBtn} onPress={locateReal} disabled={gpsLoading} activeOpacity={0.85}>
+                    {gpsLoading ? (
+                      <ActivityIndicator size="small" color={TEAL} />
+                    ) : (
+                      <>
+                        <MaterialCommunityIcons name="crosshairs-gps" size={18} color={TEAL} />
+                        <Text style={s.refreshBtnTxt}>{gpsFix ? "Refresh my location" : "Try again"}</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </>
+              ) : null}
+
               <TouchableOpacity
-                style={s.confirmBtn}
+                style={[s.confirmBtn, gpsOnly && (!gpsFix || gpsLoading) && { opacity: 0.45 }]}
                 onPress={handleConfirm}
+                disabled={gpsOnly && (!gpsFix || gpsLoading)}
                 activeOpacity={0.85}
               >
-                <Text style={s.confirmBtnTxt}>Confirm Delivery Location</Text>
+                <Text style={s.confirmBtnTxt}>
+                  {confirmLabel || (gpsOnly ? "Use This Location" : "Confirm Delivery Location")}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -372,6 +436,19 @@ export default function DeliveryLocationModal({
 }
 
 const s = StyleSheet.create({
+  gpsHint: { fontSize: 12, color: "#64748B", marginBottom: 10, lineHeight: 17 },
+  refreshBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: TEAL,
+    marginBottom: 10,
+  },
+  refreshBtnTxt: { color: TEAL, fontSize: 14, fontWeight: "700" },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
