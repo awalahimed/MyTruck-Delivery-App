@@ -2,8 +2,8 @@ import { initializeApp, getApp, getApps } from "firebase/app";
 import Constants from "expo-constants";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
-import { getAuth } from "firebase/auth";
-import { getReactNativePersistence, initializeAuth } from "firebase/auth/react-native";
+// Firebase 10+: the React Native build of firebase/auth exports getReactNativePersistence
+import { getAuth, getReactNativePersistence, initializeAuth } from "firebase/auth";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // Configure these values in user-side/.env from your own Firebase project.

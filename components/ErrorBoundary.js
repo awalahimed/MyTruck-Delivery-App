@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from "react-nati
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { signOut } from "firebase/auth";
 import { auth } from "../firebase";
+import { onFatalError, clearFatalError } from "../utils/crashGuard";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -11,6 +12,17 @@ export default class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
     this.state = { hasError: false, error: null, errorInfo: null, showDetails: false };
+  }
+
+  componentDidMount() {
+    // Errors outside rendering (timers, callbacks) would otherwise close the app: show them here too
+    this.unsubscribeFatal = onFatalError((error) => {
+      this.setState({ hasError: true, error, errorInfo: null, showDetails: false });
+    });
+  }
+
+  componentWillUnmount() {
+    this.unsubscribeFatal?.();
   }
 
   static getDerivedStateFromError(error) {
@@ -23,6 +35,7 @@ export default class ErrorBoundary extends React.Component {
   }
 
   handleRestart = () => {
+    clearFatalError();
     this.setState({ hasError: false, error: null, errorInfo: null, showDetails: false });
     if (typeof this.props.onReset === "function") {
       this.props.onReset();
@@ -30,6 +43,7 @@ export default class ErrorBoundary extends React.Component {
   };
 
   handleSignOut = async () => {
+    clearFatalError();
     try {
       await signOut(auth);
     } catch (_) {}
