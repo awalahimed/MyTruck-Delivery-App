@@ -568,7 +568,7 @@ export default function SellerHome() {
         return;
       }
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ["images"],
         allowsEditing: true,
         aspect: [16, 9],
         quality: 0.6,
@@ -595,7 +595,7 @@ export default function SellerHome() {
         return;
       }
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ["images"],
         allowsEditing: true,
         aspect: [4, 3],
         quality: 0.7,

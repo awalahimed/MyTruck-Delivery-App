@@ -33,8 +33,16 @@ module.exports = ({ config }) => {
     console.warn("[config] No Google Maps key: maps will be blank and distances will be straight-line.");
   }
 
+  // react-native-maps writes the Android key from its own config plugin (Expo SDK 53+);
+  // without the key the map screens crash on Android.
+  const plugins = [
+    ...(config.plugins || []).filter((p) => (Array.isArray(p) ? p[0] : p) !== "react-native-maps"),
+    ["react-native-maps", { androidGoogleMapsApiKey: googleMapsKey }],
+  ];
+
   return {
     ...config,
+    plugins,
     android: {
       ...config.android,
       config: {
