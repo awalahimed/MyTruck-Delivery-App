@@ -11,7 +11,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import { StatusBar } from "expo-status-bar";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 
 const { width } = Dimensions.get("window");
 const TEAL = "#179B83";
@@ -19,7 +18,7 @@ const DARK = "#0B2A26";
 const ORANGE = "#F47721";
 
 // Exact cropped delivery truck illustration that blends 100% seamlessly
-const WELCOME_TRUCK_BG = require("../assets/cropped/welcome_truck_bg.png");
+const WELCOME_TRUCK_BG = require("../assets/optimized/welcome-truck.jpg");
 
 export default function WelcomeScreen() {
   const navigation = useNavigation();
@@ -96,17 +95,7 @@ export default function WelcomeScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* 4. Drive with MyTruck */}
-        <TouchableOpacity
-          onPress={() => navigation.navigate("SignUp", { initialRole: "driver" })}
-          style={s.driverBtn}
-          activeOpacity={0.85}
-        >
-          <MaterialCommunityIcons name="motorbike" size={18} color={ORANGE} style={{ marginRight: 6 }} />
-          <Text style={s.driverTxt}>Deliver with MyTruck · Join as Driver</Text>
-        </TouchableOpacity>
-
-        {/* 5. Merchant registration */}
+        {/* 4. Merchant registration */}
         <TouchableOpacity
           onPress={() => navigation.navigate("SellerApply")}
           style={s.merchantLink}
@@ -207,23 +196,5 @@ const s = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
     textDecorationLine: "underline",
-  },
-  driverBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFF7ED",
-    borderWidth: 1,
-    borderColor: "#FFEDD5",
-    borderRadius: 20,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    marginTop: 14,
-    width: "100%",
-  },
-  driverTxt: {
-    color: "#C2410C",
-    fontSize: 13,
-    fontWeight: "800",
   },
 });

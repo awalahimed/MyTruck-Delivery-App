@@ -2,8 +2,7 @@ import { initializeApp, getApp, getApps } from "firebase/app";
 import Constants from "expo-constants";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
-import { getAuth } from "firebase/auth";
-import { getReactNativePersistence, initializeAuth } from "firebase/auth/react-native";
+import { getAuth, getReactNativePersistence, initializeAuth } from "firebase/auth";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // Configure these values in user-side/.env from your own Firebase project.
@@ -31,7 +30,7 @@ try {
 export { app, auth };
 export const db = getFirestore(app);
 
-// Use the configured storageBucket from app.json (mytruck-delivery.firebasestorage.app)
+// Use the configured storageBucket from app.json (mytruck-1fa3f.firebasestorage.app)
 const bucketUrl = firebaseConfig.storageBucket
   ? (firebaseConfig.storageBucket.startsWith("gs://")
       ? firebaseConfig.storageBucket

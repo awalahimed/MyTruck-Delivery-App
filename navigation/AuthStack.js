@@ -4,7 +4,6 @@ import { StatusBar } from "expo-status-bar";
 import WelcomeScreen from "../screens/WelcomeScreen";
 import BiometricWelcomeScreen from "../screens/BiometricWelcomeScreen";
 import PhoneAuthScreen from "../screens/PhoneAuthScreen";
-import OtpVerificationScreen from "../screens/OtpVerificationScreen";
 import SignIn from "../screens/SignIn";
 import SignUp from "../screens/SignUp";
 import UserDetails from "../screens/UserDetails";
@@ -55,9 +54,8 @@ const AuthStack = () => {
         {/* Welcome / landing screen — first thing users see */}
         <Stack.Screen name="Welcome" component={WelcomeScreen} />
 
-        {/* 6-Digit SMS OTP Phone Authentication Flow */}
+        {/* Phone number entry forwards to the supported password sign-in flow. */}
         <Stack.Screen name="PhoneAuth" component={PhoneAuthScreen} />
-        <Stack.Screen name="OtpVerification" component={OtpVerificationScreen} />
 
         {/* Sign in */}
         <Stack.Screen name="SignIn" component={SignIn} />

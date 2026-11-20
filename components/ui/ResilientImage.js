@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Image, View, StyleSheet, ActivityIndicator } from "react-native";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
+import useFirebaseImageSource, { getImageSourceKey } from "../../utils/useFirebaseImageSource";
 
 const DEFAULT_BURGER = require("../../assets/cropped/banner_burger.png");
 const DEFAULT_HABESHA = require("../../assets/cropped/habesha_kitchen.png");
@@ -21,53 +22,47 @@ export default function ResilientImage({
   showPlaceholderIcon = true,
   ...props
 }) {
-  const [hasError, setHasError] = useState(false);
+  const resolved = useFirebaseImageSource(source);
+  const sourceKey = getImageSourceKey(source);
+  const [failedKey, setFailedKey] = useState("");
+  useEffect(() => setFailedKey(""), [sourceKey]);
 
   const getCategorizedFallback = () => {
     if (fallbackSource) return fallbackSource;
     const cat = String(fallbackCategory).toLowerCase();
+    if (cat === "none") return null;
     if (cat.includes("burger") || cat.includes("fast")) return DEFAULT_BURGER;
     if (cat.includes("pizza") || cat.includes("italian")) return DEFAULT_PIZZA;
     if (cat.includes("shop") || cat.includes("grocer") || cat.includes("supermarket")) return DEFAULT_HABESHA;
     return DEFAULT_HABESHA;
   };
 
-  const resolvedSource = () => {
-    if (hasError || !source) {
-      return getCategorizedFallback();
-    }
-    if (typeof source === "string") {
-      if (source.startsWith("http://") || source.startsWith("https://")) {
-        return { uri: source, cache: "force-cache" };
-      }
-      return getCategorizedFallback();
-    }
-    if (typeof source === "object" && source.uri) {
-      if (typeof source.uri === "string" && source.uri.trim().length > 0) {
-        return { ...source, cache: source.cache || "force-cache" };
-      }
-      return getCategorizedFallback();
-    }
-    return source || getCategorizedFallback();
-  };
-
   const fallbackAsset = getCategorizedFallback();
+  const hasError = failedKey === sourceKey;
+  const imageSource = hasError ? fallbackAsset : resolved;
 
   return (
     <View style={[styles.container, style]}>
-      <Image
-        {...props}
-        source={resolvedSource()}
-        defaultSource={typeof fallbackAsset === "number" ? fallbackAsset : undefined}
-        style={[StyleSheet.absoluteFillObject, style]}
-        resizeMode={resizeMode}
-        onError={() => setHasError(true)}
-      />
+      {imageSource ? (
+        <Image
+          {...props}
+          source={imageSource}
+          defaultSource={typeof fallbackAsset === "number" ? fallbackAsset : undefined}
+          style={[StyleSheet.absoluteFillObject, style]}
+          resizeMode={resizeMode}
+          onError={() => setFailedKey(sourceKey)}
+        />
+      ) : showPlaceholderIcon ? (
+        <View style={[StyleSheet.absoluteFillObject, styles.placeholder]}>
+          <MaterialCommunityIcons name="image-off-outline" size={28} color="#94A3B8" />
+        </View>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  placeholder: { alignItems: "center", justifyContent: "center", backgroundColor: "#E8F1EF" },
   container: {
     overflow: "hidden",
     backgroundColor: "#F1F5F9",

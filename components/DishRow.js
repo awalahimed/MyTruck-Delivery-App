@@ -37,7 +37,7 @@ const DishRow = ({ id, name, description, price, originalPrice, image, restauran
         merchantBasePrice: info.rawSellingPrice,
         originalPrice: info.customerOriginalPrice,
         discountedPrice: info.customerSellingPrice,
-        hasDiscount: true,
+        hasDiscount: info.hasDiscount,
         discountPercent: info.discountPercent,
         savingsAmount: info.savingsAmount,
         image,

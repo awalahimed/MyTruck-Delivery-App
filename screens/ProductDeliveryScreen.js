@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -47,9 +47,11 @@ import {
 } from "../utils/pricing";
 import DeliveryLocationModal from "../components/DeliveryLocationModal";
 import { isWithinEthiopia } from "../utils/mapService";
+import { reverseGeocodeLocation } from "../utils/mapService";
+import locationService from "../services/locationService";
 import { selectUser } from "../features/userSlice";
 import { usePricingConfig } from "../utils/usePricingConfig";
-import { startChapaCheckout, hasAppChapaKey, serverIsKnownMissing } from "../services/chapaClient";
+import { startChapaCheckout, hasAppChapaKey } from "../services/chapaClient";
 import { presentLocalNotification } from "../services/notificationService";
 
 const TEAL = "#179B83";
@@ -78,15 +80,18 @@ export default function ProductDeliveryScreen() {
 
   // Package delivery form state
   const reduxUser = useSelector(selectUser);
+  const isRealUserLocation = (profile) =>
+    Boolean(profile?.latitude && profile?.longitude) &&
+    isWithinEthiopia(Number(profile.latitude), Number(profile.longitude)) &&
+    !(Number(profile.latitude) === 8.9806 && Number(profile.longitude) === 38.7578);
   const [packageType, setPackageType] = useState(PACKAGE_TYPES[0]);
   const [pickup, setPickup] = useState(() => {
-    const src = [reduxUser, dbUser].find(
-      (u) => u?.latitude && u?.longitude && isWithinEthiopia(Number(u.latitude), Number(u.longitude))
-    );
+    const src = [reduxUser, dbUser].find(isRealUserLocation);
     return src
       ? { address: src.address || "My Location", latitude: Number(src.latitude), longitude: Number(src.longitude) }
       : null;
   });
+  const pickupLocationAttemptUid = useRef(null);
   const [dropoff, setDropoff] = useState(null);
   const [pickerFor, setPickerFor] = useState(null); // "pickup" | "dropoff" | null
   const [pickupDetails, setPickupDetails] = useState("");
@@ -96,6 +101,34 @@ export default function ProductDeliveryScreen() {
   const [packageNotes, setPackageNotes] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("CHAPA"); // "COD" | "CHAPA"
   const [submittingPackage, setSubmittingPackage] = useState(false);
+
+  useEffect(() => {
+    if (activeTab !== "packages" || !user?.uid || pickup || pickupLocationAttemptUid.current === user.uid) return undefined;
+    pickupLocationAttemptUid.current = user.uid;
+    let active = true;
+
+    (async () => {
+      try {
+        const result = await locationService.detectCurrentLocation();
+        const coords = result?.coords;
+        if (!active || !isRealUserLocation(coords)) return;
+        const address = await reverseGeocodeLocation(coords.latitude, coords.longitude);
+        if (!active) return;
+        setPickup({ address, latitude: Number(coords.latitude), longitude: Number(coords.longitude) });
+        dispatch(setUser({ ...(reduxUser || {}), uid: user.uid, address, latitude: Number(coords.latitude), longitude: Number(coords.longitude) }));
+        await locationService.syncLocationToProfile(user.uid, coords, address);
+      } catch (error) {
+        console.warn("Package pickup location detection failed:", error?.message);
+      }
+    })();
+
+    return () => {
+      active = false;
+      if (pickupLocationAttemptUid.current === user.uid && !pickup) {
+        pickupLocationAttemptUid.current = null;
+      }
+    };
+  }, [activeTab, user?.uid, Boolean(pickup), dispatch]);
 
   // Payment options from Super Admin Settings (same rules as the basket checkout)
   const [paymentConfig, setPaymentConfig] = useState({ chapaEnabled: true, codEnabled: false });
@@ -116,22 +149,23 @@ export default function ProductDeliveryScreen() {
   const [chapaLive, setChapaLive] = useState(null);
   useEffect(() => {
     if (!paymentConfig.chapaEnabled || !user?.uid) return undefined;
-    if (serverIsKnownMissing()) {
-      setChapaLive(false);
-      return undefined;
-    }
     let alive = true;
-    httpsCallable(getFunctions(app), "createChapaCheckout")({ probe: true })
-      .then(() => alive && setChapaLive(true))
-      .catch((e) => {
+    const probe = () => {
+      httpsCallable(getFunctions(app), "createChapaCheckout")({ probe: true })
+        .then(() => alive && setChapaLive(true))
+        .catch((e) => {
         if (!alive) return;
         const code = String(e?.code || "");
-        setChapaLive(!(code.includes("not-found") || code.includes("unimplemented") || code.includes("internal")));
+        setChapaLive(!(code.includes("not-found") || code.includes("unimplemented") || code.includes("internal") || code.includes("failed-precondition")));
       });
+    };
+    probe();
+    const unsubscribeFocus = navigation.addListener("focus", probe);
     return () => {
       alive = false;
+      unsubscribeFocus();
     };
-  }, [paymentConfig.chapaEnabled, user?.uid]);
+  }, [paymentConfig.chapaEnabled, user?.uid, navigation]);
   const chapaAvailable = paymentConfig.chapaEnabled && (chapaLive !== false || hasAppChapaKey());
   const codAvailable = paymentConfig.codEnabled;
   const noPaymentMethod = !chapaAvailable && !codAvailable;

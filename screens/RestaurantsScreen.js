@@ -19,22 +19,18 @@ import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { MagnifyingGlassIcon, XMarkIcon, AdjustmentsHorizontalIcon } from "react-native-heroicons/outline";
 import { StarIcon, ClockIcon } from "react-native-heroicons/solid";
 import { db } from "../firebase";
-import { collection, getDocs, query, where } from "firebase/firestore";
+import { collection, getDocs } from "firebase/firestore";
 import { useSelector } from "react-redux";
 import { selectUser } from "../features/userSlice";
 import { UserAuth } from "../contexts/AuthContext";
 import BackButton from "../components/ui/BackButton";
 import ResilientImage from "../components/ui/ResilientImage";
-import { calculateDistanceKm, getMaxOrderDistanceKm } from "../utils/pricing";
+import { calculateDistanceKm } from "../utils/pricing";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
 const ORANGE = "#F47721";
 const BG = "#F5FAF9";
-
-const HABESHA_ASSET = require("../assets/cropped/habesha_kitchen.png");
-const PIZZA_ASSET = require("../assets/cropped/pizza_house.png");
-const BURGER_ASSET = require("../assets/cropped/banner_burger.png");
 
 const CUISINE_TAGS = [
   "All",
@@ -55,6 +51,17 @@ const SORT_OPTIONS = [
   { id: "price_low", label: "Price: Low to High" },
 ];
 
+const parseClockMinutes = (value) => {
+  const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!match) return null;
+  let hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  if (match[3]?.toUpperCase() === "PM" && hours < 12) hours += 12;
+  if (match[3]?.toUpperCase() === "AM" && hours === 12) hours = 0;
+  return hours * 60 + minutes;
+};
+
 export default function RestaurantsScreen() {
   const navigation = useNavigation();
   const { dbUser } = UserAuth();
@@ -67,6 +74,7 @@ export default function RestaurantsScreen() {
 
   const [restaurants, setRestaurants] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
   // Filters & Search
@@ -78,23 +86,20 @@ export default function RestaurantsScreen() {
   const [showFiltersModal, setShowFiltersModal] = useState(false);
 
   const getRestaurantImage = (item) => {
-    const name = String(item?.name || "").toLowerCase();
-    if (name.includes("habesha")) return HABESHA_ASSET;
-    if (name.includes("pizza")) return PIZZA_ASSET;
-    if (name.includes("burger")) return BURGER_ASSET;
-    if (item?.image && String(item.image).startsWith("http")) return { uri: item.image, cache: "force-cache" };
-    if (item?.imgUrl && String(item.imgUrl).startsWith("http")) return { uri: item.imgUrl, cache: "force-cache" };
-    return HABESHA_ASSET;
+    const image = item?.image || item?.imgUrl || item?.logoUrl || item?.profileImage;
+    return image || null;
   };
 
   const fetchRestaurants = useCallback(async () => {
+    setLoadError("");
     try {
       const snap = await getDocs(collection(db, "restaurants"));
       const seenIds = new Set();
       const list = [];
       snap.forEach((doc) => {
         const d = doc.data();
-        if ((d.status === "APPROVED" || !d.status) && !seenIds.has(doc.id)) {
+        const status = String(d.status || d.approvalStatus || "").trim().toUpperCase();
+        if (status === "APPROVED" && !seenIds.has(doc.id)) {
           seenIds.add(doc.id);
           list.push({ id: doc.id, ...d });
         }
@@ -103,6 +108,7 @@ export default function RestaurantsScreen() {
       setRestaurants(list);
     } catch (e) {
       console.warn("Could not load restaurants:", e?.message);
+      setLoadError("We couldn't load restaurants. Check your connection and try again.");
     } finally {
       setLoading(false);
     }
@@ -110,7 +116,9 @@ export default function RestaurantsScreen() {
 
   useEffect(() => {
     fetchRestaurants();
-  }, [fetchRestaurants]);
+    const unsubscribe = navigation.addListener("focus", fetchRestaurants);
+    return unsubscribe;
+  }, [fetchRestaurants, navigation]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -120,21 +128,25 @@ export default function RestaurantsScreen() {
 
   const isStoreOpen = (res) => {
     if (!res) return false;
-    if (res.isTemporarilyClosed === true) return false;
-    if (!res.openingTime || !res.closingTime) return true;
+    if (res.isOpen === false || res.isAvailable === false || res.isTemporarilyClosed === true) return false;
+    if (String(res.workingHours || "").toLowerCase().includes("24 hours")) return true;
+    let openingTime = res.openingTime;
+    let closingTime = res.closingTime;
+    if ((!openingTime || !closingTime) && typeof res.workingHours === "string" && res.workingHours.includes("-")) {
+      [openingTime, closingTime] = res.workingHours.split("-").map((part) => part.trim());
+    }
+    if (!openingTime || !closingTime) return res.isOpen === true;
     const now = new Intl.DateTimeFormat("en-GB", {
       timeZone: "Africa/Addis_Ababa",
       hour: "2-digit",
       minute: "2-digit",
       hourCycle: "h23",
     }).format(new Date());
-    const toMinutes = (t) => {
-      const [h, m] = String(t).split(":").map(Number);
-      return (h || 0) * 60 + (m || 0);
-    };
-    const current = toMinutes(now);
-    const opening = toMinutes(res.openingTime);
-    const closing = toMinutes(res.closingTime);
+    const current = parseClockMinutes(now);
+    const opening = parseClockMinutes(openingTime);
+    const closing = parseClockMinutes(closingTime);
+    if (current == null || opening == null || closing == null) return false;
+    if (opening === closing) return true;
     return opening <= closing
       ? current >= opening && current < closing
       : current >= opening || current < closing;
@@ -142,38 +154,24 @@ export default function RestaurantsScreen() {
 
   // Filtered & Sorted list with live distance and ETA calculations
   const filteredRestaurants = useMemo(() => {
-    const maxAllowedKm = getMaxOrderDistanceKm("restaurant");
-    const userAddress = String(reduxUser?.address || dbUser?.address || "").toLowerCase();
     let result = [];
 
     for (const r of restaurants) {
-      const rLat = Number(r.latitude ?? r.lat ?? r.storeLatitude);
-      const rLng = Number(r.longitude ?? r.lng ?? r.storeLongitude);
+      const rLat = Number(r.latitude ?? r.lat ?? r.storeLatitude ?? r.location?.latitude ?? r.location?.lat);
+      const rLng = Number(r.longitude ?? r.lng ?? r.storeLongitude ?? r.location?.longitude ?? r.location?.lng);
+      const hasCoords = Number.isFinite(rLat) && Number.isFinite(rLng) && rLat !== 0 && rLng !== 0;
+      const dist = hasCoords
+        ? calculateDistanceKm(userCoords.latitude, userCoords.longitude, rLat, rLng)
+        : null;
 
-      // Require real physical coordinates
-      if (!Number.isFinite(rLat) || !Number.isFinite(rLng) || rLat === 0 || rLng === 0) {
-        continue;
-      }
-
-      const dist = calculateDistanceKm(userCoords.latitude, userCoords.longitude, rLat, rLng);
-      const storeMaxRadius = Number(r.deliveryRadiusKm) || maxAllowedKm;
-
-      // Filter out stores beyond reachable delivery radius
-      if (dist > storeMaxRadius) {
-        continue;
-      }
-
-      // City match
-      if (r.city && userAddress) {
-        const sCity = String(r.city).toLowerCase();
-        if (userAddress.includes("nekemte") && !sCity.includes("nekemte")) continue;
-        if (userAddress.includes("addis") && !sCity.includes("addis")) continue;
-        if (userAddress.includes("hawassa") && !sCity.includes("hawassa")) continue;
-        if (userAddress.includes("adama") && !sCity.includes("adama")) continue;
-      }
-
-      const eta = Math.max(15, Math.round(15 + dist * 2.5));
-      result.push({ ...r, latitude: rLat, longitude: rLng, distanceKm: dist, etaMinutes: eta });
+      // The All Restaurants page is a catalogue. Keep approved stores visible
+      // even when an older record has no pin or is outside the local radius.
+      result.push({
+        ...r,
+        ...(hasCoords ? { latitude: rLat, longitude: rLng } : {}),
+        distanceKm: dist,
+        etaMinutes: Number.isFinite(dist) ? Math.max(15, Math.round(15 + dist * 2.5)) : null,
+      });
     }
 
     // Search query
@@ -210,7 +208,7 @@ export default function RestaurantsScreen() {
 
     // Sort
     if (sortBy === "nearby") {
-      result.sort((a, b) => a.distanceKm - b.distanceKm);
+      result.sort((a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity));
     } else if (sortBy === "rating") {
       result.sort((a, b) => parseFloat(b.rating || 0) - parseFloat(a.rating || 0));
     } else if (sortBy === "fastest") {
@@ -225,17 +223,18 @@ export default function RestaurantsScreen() {
 
   const renderRestaurantCard = ({ item }) => {
     const open = isStoreOpen(item);
-    const rating = parseFloat(item.rating || 4.5).toFixed(1);
-    const reviews = item.reviewsCount || "1.2k";
-    const distKm = item.distanceKm != null ? item.distanceKm : 2.5;
-    const etaMins = item.etaMinutes != null ? item.etaMinutes : 25;
+    const rating = Number.isFinite(Number(item.rating)) ? Number(item.rating).toFixed(1) : null;
+    const reviews = item.reviewsCount ?? item.reviews;
+    const distanceLabel = Number.isFinite(item.distanceKm)
+      ? `${item.distanceKm} km · ${item.etaMinutes} min`
+      : "Distance unavailable";
     const price =
       item.priceTier === "$"
         ? "Affordable · ETB"
         : item.priceTier === "$$$"
         ? "Premium · ETB"
         : "Moderate · ETB";
-    const cuisine = item.genre || item.cuisine || "Ethiopian";
+    const cuisine = item.genre || item.cuisine || "";
 
     return (
       <TouchableOpacity
@@ -244,21 +243,19 @@ export default function RestaurantsScreen() {
         onPress={() => navigation.navigate("RestaurantDetails", { id: item.id })}
       >
         <View style={s.cardImgWrapper}>
-          <ResilientImage
-            source={getRestaurantImage(item)}
-            fallbackCategory={cuisine}
-            style={s.cardImg}
-            resizeMode="cover"
-          />
+          {getRestaurantImage(item) ? (
+            <ResilientImage source={getRestaurantImage(item)} fallbackCategory="none" style={s.cardImg} resizeMode="cover" />
+          ) : (
+            <View style={[s.cardImg, { alignItems: "center", justifyContent: "center", backgroundColor: "#E8F1EF" }]}>
+              <MaterialCommunityIcons name="storefront-outline" size={36} color="#8AA9A2" />
+            </View>
+          )}
           <View style={[s.openBadge, { backgroundColor: open ? "rgba(22, 101, 52, 0.9)" : "rgba(185, 28, 28, 0.9)" }]}>
             <Text style={s.openBadgeTxt}>{open ? "OPEN NOW" : "CLOSED"}</Text>
           </View>
-          <View style={s.dealBadge}>
-            <Text style={s.dealBadgeTxt}>Up to 25% OFF</Text>
-          </View>
           <View style={s.deliveryTimeBadge}>
             <ClockIcon size={12} color="#FFFFFF" style={{ marginRight: 4 }} />
-            <Text style={s.deliveryTimeTxt}>{distKm} km · {etaMins} min</Text>
+            <Text style={s.deliveryTimeTxt}>{distanceLabel}</Text>
           </View>
         </View>
 
@@ -267,15 +264,17 @@ export default function RestaurantsScreen() {
             <Text style={s.cardTitle} numberOfLines={1}>
               {item.name}
             </Text>
-            <View style={s.ratingBadge}>
-              <StarIcon size={14} color="#EAB308" />
-              <Text style={s.ratingTxt}>{rating}</Text>
-              <Text style={s.reviewsTxt}>({reviews})</Text>
-            </View>
+            {rating ? (
+              <View style={s.ratingBadge}>
+                <StarIcon size={14} color="#EAB308" />
+                <Text style={s.ratingTxt}>{rating}</Text>
+                {reviews != null ? <Text style={s.reviewsTxt}>({reviews})</Text> : null}
+              </View>
+            ) : null}
           </View>
 
           <Text style={s.cardSub} numberOfLines={1}>
-            {cuisine} · {price} · {item.city ? `${item.city} · ` : ""}{item.address || "Ethiopia"}
+            {[cuisine, item.priceTier ? price : "", item.city, item.address].filter(Boolean).join(" · ")}
           </Text>
 
           {item.description ? (
@@ -394,6 +393,15 @@ export default function RestaurantsScreen() {
           <ActivityIndicator size="large" color={TEAL} />
           <Text style={s.loadingTxt}>Loading top restaurants...</Text>
         </View>
+      ) : loadError ? (
+        <View style={s.centerBox}>
+          <MaterialCommunityIcons name="wifi-alert" size={48} color="#94A3B8" />
+          <Text style={s.emptyTitle}>Restaurants unavailable</Text>
+          <Text style={s.emptySub}>{loadError}</Text>
+          <TouchableOpacity style={s.resetBtn} onPress={onRefresh}>
+            <Text style={s.resetBtnTxt}>Try Again</Text>
+          </TouchableOpacity>
+        </View>
       ) : filteredRestaurants.length === 0 ? (
         <View style={s.centerBox}>
           <MaterialCommunityIcons name="silverware-fork-knife" size={54} color="#CBD5E1" />
@@ -401,7 +409,9 @@ export default function RestaurantsScreen() {
           <Text style={s.emptySub}>
             {searchQuery
               ? `No matches found for "${searchQuery}". Try a different keyword.`
-              : "No restaurants matched your filters."}
+              : restaurants.length === 0
+                ? "No approved restaurants are available yet. Please check again soon."
+                : "No restaurants matched your filters."}
           </Text>
           <TouchableOpacity
             style={s.resetBtn}

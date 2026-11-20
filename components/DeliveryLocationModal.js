@@ -15,7 +15,6 @@ import {
   TouchableWithoutFeedback,
   Keyboard,
 } from "react-native";
-import { Marker } from "react-native-maps";
 import SharedMapView from "./SharedMapView";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { XMarkIcon } from "react-native-heroicons/outline";
@@ -23,6 +22,7 @@ import {
   DEFAULT_COORDS,
   ADDIS_DELIVERY_ZONES,
   reverseGeocodeLocation,
+  searchLocalPlaces,
   searchPlaces,
   requestGpsLocation,
   isWithinEthiopia,
@@ -147,14 +147,17 @@ export default function DeliveryLocationModal({
 
   const handleSearch = async (text) => {
     setSearchQuery(text);
-    if (text.trim().length < 2) {
-      setSearchResults([]);
-      return;
-    }
+    setSearchResults(searchLocalPlaces(text));
+  };
+
+  const submitPlaceSearch = async () => {
+    if (searchQuery.trim().length < 2) return;
     setSearching(true);
     try {
-      const places = await searchPlaces(text);
+      const places = await searchPlaces(searchQuery);
       setSearchResults(places);
+    } catch (_) {
+      // Keep the local Ethiopian delivery zones if remote place search is offline.
     } finally {
       setSearching(false);
     }
@@ -246,7 +249,7 @@ export default function DeliveryLocationModal({
                   autoCapitalize="none"
                   blurOnSubmit={false}
                   onSubmitEditing={() => {
-                    if (searchQuery.trim().length >= 2) handleSearch(searchQuery);
+                    submitPlaceSearch();
                   }}
                 />
                 {searching ? (

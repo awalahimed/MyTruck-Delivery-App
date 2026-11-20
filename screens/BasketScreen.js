@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -50,11 +50,13 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { notifyMerchant } from "../services/orderNotifications";
-import { startChapaCheckout, hasAppChapaKey, serverIsKnownMissing } from "../services/chapaClient";
+import { startChapaCheckout, hasAppChapaKey } from "../services/chapaClient";
 import { startTimer } from "../utils/perf";
 import DeliveryLocationModal from "../components/DeliveryLocationModal";
 import BackButton from "../components/ui/BackButton";
 import { isWithinEthiopia } from "../utils/mapService";
+import { reverseGeocodeLocation } from "../utils/mapService";
+import locationService from "../services/locationService";
 import {
   getItemDiscountInfo,
   calculateDeliveryQuote,
@@ -107,6 +109,8 @@ export default function BasketScreen() {
   const [appliedPromo, setAppliedPromo] = useState(null);
   const [promoError, setPromoError] = useState("");
   const [deliveryModalVisible, setDeliveryModalVisible] = useState(false);
+  const [locationResolving, setLocationResolving] = useState(false);
+  const locationAttemptUid = useRef(null);
   const [cartSearch, setCartSearch] = useState("");
   const [selectedMerchantIds, setSelectedMerchantIds] = useState([]);
 
@@ -165,23 +169,23 @@ export default function BasketScreen() {
   useEffect(() => {
     if (!paymentConfig.chapaEnabled || !user?.uid) return undefined;
     let alive = true;
-    if (serverIsKnownMissing()) {
-      setChapaLive(false);
-      return undefined;
-    }
-    httpsCallable(getFunctions(app), "createChapaCheckout")({ probe: true })
-      .then(() => alive && setChapaLive(true))
-      .catch((e) => {
+    const probe = () => {
+      httpsCallable(getFunctions(app), "createChapaCheckout")({ probe: true })
+        .then(() => alive && setChapaLive(true))
+        .catch((e) => {
         const code = String(e?.code || "");
         if (!alive) return;
-        // not-found: function not deployed; failed-precondition/internal: deployed without the secret
-        if (code.includes("not-found") || code.includes("unimplemented") || code.includes("internal")) setChapaLive(false);
+        if (code.includes("not-found") || code.includes("unimplemented") || code.includes("internal") || code.includes("failed-precondition")) setChapaLive(false);
         else setChapaLive(true);
       });
+    };
+    probe();
+    const unsubscribeFocus = navigation.addListener("focus", probe);
     return () => {
       alive = false;
+      unsubscribeFocus();
     };
-  }, [paymentConfig.chapaEnabled, user?.uid]);
+  }, [paymentConfig.chapaEnabled, user?.uid, navigation]);
   const chapaAvailable = paymentConfig.chapaEnabled && (chapaLive !== false || hasAppChapaKey());
   const chapaOffline = paymentConfig.chapaEnabled && !chapaAvailable;
 
@@ -266,30 +270,53 @@ export default function BasketScreen() {
     [rawMerchantGroups, merchantInfo]
   );
 
-  // Address
-  const currentAddress =
-    reduxUser?.address || dbUser?.address || "My Location, Ethiopia";
-  const currentCoords = {
-    latitude:
-      reduxUser?.latitude && isWithinEthiopia(reduxUser.latitude, reduxUser.longitude)
-        ? reduxUser.latitude
-        : dbUser?.latitude && isWithinEthiopia(dbUser.latitude, dbUser.longitude)
-        ? dbUser.latitude
-        : 8.9806,
-    longitude:
-      reduxUser?.longitude && isWithinEthiopia(reduxUser.latitude, reduxUser.longitude)
-        ? reduxUser.longitude
-        : dbUser?.longitude && isWithinEthiopia(dbUser.latitude, dbUser.longitude)
-        ? dbUser.longitude
-        : 38.7578,
-  };
-
-  // A real delivery location must be chosen; the fallback above is only for display
-  // New accounts are saved with a default Bole point (8.9806, 38.7578); that isn't a real choice.
+  // Prefer a real saved customer location. The Addis coordinates on old/new profiles
+  // are placeholders, so don't treat them as the customer's delivery address.
   const isRealPoint = (lat, lng) =>
     Boolean(lat) && isWithinEthiopia(lat, lng) && !(Number(lat) === 8.9806 && Number(lng) === 38.7578);
-  const hasDeliveryLocation =
-    isRealPoint(reduxUser?.latitude, reduxUser?.longitude) || isRealPoint(dbUser?.latitude, dbUser?.longitude);
+  const savedLocation = [reduxUser, dbUser].find((profile) =>
+    isRealPoint(profile?.latitude, profile?.longitude)
+  );
+  const currentAddress = savedLocation?.address || (locationResolving ? "Finding your location…" : "Choose delivery location");
+  const currentCoords = savedLocation
+    ? { latitude: Number(savedLocation.latitude), longitude: Number(savedLocation.longitude) }
+    : { latitude: 8.9806, longitude: 38.7578 };
+  const hasDeliveryLocation = Boolean(savedLocation);
+
+  useEffect(() => {
+    if (!user?.uid || hasDeliveryLocation || locationAttemptUid.current === user.uid) return undefined;
+    locationAttemptUid.current = user.uid;
+    let active = true;
+    setLocationResolving(true);
+
+    (async () => {
+      try {
+        const result = await locationService.detectCurrentLocation();
+        const coords = result?.coords;
+        if (!active || !isRealPoint(coords?.latitude, coords?.longitude)) return;
+        const address = await reverseGeocodeLocation(coords.latitude, coords.longitude);
+        if (!active) return;
+        const profileLocation = {
+          address,
+          latitude: Number(coords.latitude),
+          longitude: Number(coords.longitude),
+        };
+        dispatch(setUser({ ...(reduxUser || {}), ...profileLocation, uid: user.uid }));
+        await locationService.syncLocationToProfile(user.uid, profileLocation, address);
+      } catch (error) {
+        console.warn("Checkout location detection failed:", error?.message);
+      } finally {
+        if (active) setLocationResolving(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+      if (locationAttemptUid.current === user.uid && !hasDeliveryLocation) {
+        locationAttemptUid.current = null;
+      }
+    };
+  }, [user?.uid, hasDeliveryLocation, dispatch]);
 
   // Filter merchant groups and items by search query
   const merchantGroups = useMemo(() => {
@@ -419,14 +446,21 @@ export default function BasketScreen() {
   };
 
   const handleConfirmLocation = (loc) => {
+    const profileLocation = {
+      address: loc.address,
+      latitude: Number(loc.latitude),
+      longitude: Number(loc.longitude),
+    };
     dispatch(
       setUser({
         ...(reduxUser || {}),
-        address: loc.address,
-        latitude: loc.latitude,
-        longitude: loc.longitude,
+        ...profileLocation,
+        uid: user?.uid,
       })
     );
+    if (user?.uid) {
+      locationService.syncLocationToProfile(user.uid, profileLocation, loc.address);
+    }
   };
 
   // Group items inside a single merchant
@@ -630,6 +664,11 @@ export default function BasketScreen() {
     if (isSubmitting || paymentInitializing) return;
     if (noPaymentMethod) {
       Alert.alert("Checkout Unavailable", "Online payment and Cash on Delivery are both turned off right now. Please try again later.");
+      return;
+    }
+
+    if (locationResolving) {
+      Alert.alert("Finding Your Location", "Please wait while we set your delivery address from your saved phone location.");
       return;
     }
 
@@ -1066,7 +1105,9 @@ Please try again, or choose Cash on Delivery.`,
               </View>
               <View style={{ flex: 1, marginLeft: 10 }}>
                 <Text style={s.addressTitle}>{currentAddress}</Text>
-                <Text style={s.addressSub}>Tap to change or adjust pin on map</Text>
+                <Text style={s.addressSub}>
+                  {locationResolving ? "Finding your saved phone location…" : "Using your saved delivery location · tap to change"}
+                </Text>
               </View>
               <ChevronRightIcon size={18} color="#94A3B8" />
             </TouchableOpacity>

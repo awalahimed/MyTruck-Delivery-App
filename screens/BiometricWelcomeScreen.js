@@ -223,7 +223,7 @@ export default function BiometricWelcomeScreen({ navigation }) {
         {/* Header Branding */}
         <View style={styles.brandRow}>
           <Image
-            source={require("../assets/icon.png")}
+            source={require("../assets/optimized/runtime-icon.jpg")}
             style={styles.logo}
             resizeMode="contain"
           />

@@ -35,19 +35,31 @@ Deno.serve(async (req) => {
   const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
   // A number that already belongs to an account can't be used to sign up again
-  const { data: claimed } = await admin.from("claimed_phones").select("phone").eq("phone", phone).maybeSingle();
+  const { data: claimed, error: claimedError } = await admin
+    .from("claimed_phones")
+    .select("phone")
+    .eq("phone", phone)
+    .maybeSingle();
+  if (claimedError) {
+    console.error("OTP phone lookup failed:", claimedError.message);
+    return json({ error: "storage_unavailable", message: "Phone verification is temporarily unavailable." }, 503);
+  }
   if (claimed) {
     return json({ error: "already_registered", message: "This mobile number is already registered. Please sign in instead." }, 409);
   }
 
   // Rate limits: at most 3 codes per number per 10 minutes, and 1 per minute
   const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-  const { data: recent } = await admin
+  const { data: recent, error: recentError } = await admin
     .from("phone_otps")
     .select("created_at")
     .eq("phone", phone)
     .gte("created_at", since)
     .order("created_at", { ascending: false });
+  if (recentError) {
+    console.error("OTP rate-limit lookup failed:", recentError.message);
+    return json({ error: "storage_unavailable", message: "Phone verification is temporarily unavailable." }, 503);
+  }
   if ((recent?.length ?? 0) >= 3) {
     return json({ error: "rate_limited", message: "Too many codes requested. Try again in 10 minutes." }, 429);
   }
@@ -68,15 +80,32 @@ Deno.serve(async (req) => {
   });
   if (error) return json({ error: "db_error", message: "Please try again." }, 500);
 
-  const sms = await fetch("https://smsethiopia.com/api/v2/sms/send", {
-    method: "POST",
-    headers: { KEY: smsKey, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      msisdn: phone,
-      text: `Your MyTruck verification code is ${code}. It expires in 5 minutes. Do not share it with anyone.`,
-    }),
-  });
-  if (!sms.ok) return json({ error: "sms_failed", message: "We couldn't send the SMS right now. Please try again." }, 502);
+  const rollbackOtp = async () => {
+    await admin.from("phone_otps").delete().eq("phone", phone).eq("code_hash", codeHash);
+  };
+  const smsController = new AbortController();
+  const smsTimeout = setTimeout(() => smsController.abort(), 15000);
+  let sms: Response;
+  try {
+    sms = await fetch("https://smsethiopia.com/api/v2/sms/send", {
+      method: "POST",
+      signal: smsController.signal,
+      headers: { KEY: smsKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        msisdn: phone,
+        text: `Your MyTruck verification code is ${code}. It expires in 5 minutes. Do not share it with anyone.`,
+      }),
+    });
+  } catch {
+    await rollbackOtp();
+    return json({ error: "sms_failed", message: "We couldn't send the SMS right now. Please try again." }, 502);
+  } finally {
+    clearTimeout(smsTimeout);
+  }
+  if (!sms.ok) {
+    await rollbackOtp();
+    return json({ error: "sms_failed", message: "We couldn't send the SMS right now. Please try again." }, 502);
+  }
 
   return json({ sent: true, expiresInSeconds: 300 });
 });

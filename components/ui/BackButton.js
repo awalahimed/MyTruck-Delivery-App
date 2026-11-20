@@ -37,6 +37,28 @@ export default function BackButton({
   const roleHome = homeRouteFor(getRoleInfo(authUser, dbUser));
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
+  // Resolve fallbacks against the currently mounted navigator. Some screens
+  // (for example SellerApply) are registered in both AuthStack and AppStack,
+  // but AuthStack-only routes such as SignIn must never be dispatched while
+  // the signed-in AppStack is active.
+  const navigatorForRoute = (routeName) => {
+    let current = navigation;
+    while (current) {
+      const state = current.getState?.();
+      const names = state?.routeNames || state?.routes?.map((route) => route.name) || [];
+      if (names.includes(routeName)) return current;
+      current = current.getParent?.() || null;
+    }
+    return null;
+  };
+
+  const navigateIfRegistered = (routeName, params) => {
+    const owner = navigatorForRoute(routeName);
+    if (!owner) return false;
+    owner.navigate(routeName, params);
+    return true;
+  };
+
   const handlePressIn = () => {
     Animated.spring(scaleAnim, {
       toValue: 0.92,
@@ -72,54 +94,34 @@ export default function BackButton({
     // 2. Fallback route handling (nested-aware for React Navigation v6)
     // Non-customers never fall back into the customer app
     if (roleHome !== "Home" && (!fallbackRoute || fallbackRoute === "HomeTab" || fallbackRoute === "Home")) {
-      try { navigation.navigate(roleHome); return; } catch (_) {}
+      if (navigateIfRegistered(roleHome)) return;
     }
     if (fallbackRoute) {
       if (fallbackRoute === "HomeTab" || fallbackRoute === "Home") {
-        try {
-          navigation.navigate("Home", { screen: "HomeTab" });
-          return;
-        } catch (_) {}
-        try {
-          navigation.navigate("HomeTab");
-          return;
-        } catch (_) {}
-        try {
-          navigation.navigate("Home");
-          return;
-        } catch (_) {}
+        if (navigateIfRegistered("Home", { screen: "HomeTab" })) return;
+        if (navigateIfRegistered("HomeTab")) return;
+        if (navigateIfRegistered("Welcome")) return;
       } else {
-        try {
-          navigation.navigate(fallbackRoute);
-          return;
-        } catch (_) {}
+        if (navigateIfRegistered(fallbackRoute)) return;
       }
     }
 
     // 3. Role-specific fallback navigation
     const role = (dbUser?.role || "").toLowerCase().trim();
     if (role === "driver") {
-      try { navigation.navigate("DriverDashboard"); return; } catch (_) {}
+      if (navigateIfRegistered("DriverDashboard")) return;
     }
     if (role === "restaurant" || role === "shop" || role === "pendingSeller") {
-      try { navigation.navigate("SellerHome"); return; } catch (_) {}
+      if (navigateIfRegistered("SellerHome")) return;
     }
     // For admin or customer, gracefully return to Customer Home
-    try { navigation.navigate("Home"); return; } catch (_) {}
+    if (navigateIfRegistered(roleHome)) return;
+    if (navigateIfRegistered("Home")) return;
+    if (navigateIfRegistered("Welcome")) return;
 
     // 4. Default: Customer Home
-    try {
-      navigation.navigate("Home", { screen: "HomeTab" });
-      return;
-    } catch (_) {}
-    try {
-      navigation.navigate("Home");
-      return;
-    } catch (_) {}
-    try {
-      navigation.navigate("HomeTab");
-      return;
-    } catch (_) {}
+    if (navigateIfRegistered("Home", { screen: "HomeTab" })) return;
+    if (navigateIfRegistered("HomeTab")) return;
   };
 
   const bgStyle =

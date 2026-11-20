@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import {
   Alert,
   Image,
@@ -15,6 +15,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import * as ImagePicker from "expo-image-picker";
+import * as Location from "expo-location";
 import { useNavigation } from "@react-navigation/native";
 import { createUserWithEmailAndPassword } from "firebase/auth";
 import { addDoc, collection, doc, serverTimestamp, setDoc } from "firebase/firestore";
@@ -22,8 +23,9 @@ import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { auth, db, storage } from "../firebase";
 import { UserAuth, normalizeEthiopianPhone, formatAuthError } from "../contexts/AuthContext";
+import { verifySignupCode } from "../services/otpClient";
 import BackButton from "../components/ui/BackButton";
-import DeliveryLocationModal from "../components/DeliveryLocationModal";
+import { isWithinEthiopia, reverseGeocodeLocation } from "../utils/mapService";
 
 const ETHIOPIAN_CITIES = [
   "Addis Ababa",
@@ -50,15 +52,15 @@ const BG = "#F5FAF9";
 
 export default function SellerApply() {
   const navigation = useNavigation();
-  const { refreshProfile, registerSeller } = UserAuth();
+  const { refreshProfile, registerSeller, checkEmailRegistered, requestOtp } = UserAuth();
 
   // Stable, independent state variables for maximum typing responsiveness
   const [sellerType, setSellerType] = useState("restaurant"); // "restaurant" | "shop"
   const [businessName, setBusinessName] = useState("");
-  const [selectedCity, setSelectedCity] = useState("Addis Ababa");
+  const [selectedCity, setSelectedCity] = useState("");
   const [address, setAddress] = useState("");
   const [storeCoords, setStoreCoords] = useState(null); // { latitude, longitude, address }
-  const [mapModalVisible, setMapModalVisible] = useState(false);
+  const [locationLoading, setLocationLoading] = useState(true);
   const [licenceNumber, setLicenceNumber] = useState("");
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
@@ -82,7 +84,60 @@ export default function SellerApply() {
   const [phoneVerified, setPhoneVerified] = useState(false);
   const [otpSent, setOtpSent] = useState(false);
   const [otpInput, setOtpInput] = useState("");
-  const [generatedOtp, setGeneratedOtp] = useState("");
+  const [otpProof, setOtpProof] = useState(null);
+  const [verifyingOtp, setVerifyingOtp] = useState(false);
+
+  const captureStoreLocation = useCallback(async () => {
+    setLocationLoading(true);
+    setErrorMessage("");
+    setStoreCoords(null);
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== "granted") {
+        throw new Error("Location permission is required to set your storefront location.");
+      }
+      if (!(await Location.hasServicesEnabledAsync())) {
+        throw new Error("Turn on your phone's location services and try again.");
+      }
+
+      let timeoutId;
+      let position;
+      try {
+        position = await Promise.race([
+          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+          new Promise((resolve) => {
+            timeoutId = setTimeout(() => resolve(null), 15000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      if (!position?.coords) {
+        throw new Error("Couldn't get a GPS fix. Move near a window or outdoors, then try again.");
+      }
+      const { latitude, longitude } = position.coords;
+      if (!isWithinEthiopia(latitude, longitude)) {
+        throw new Error("We couldn't confirm an Ethiopian storefront location. Check your phone's location and try again.");
+      }
+
+      const resolvedAddress = await reverseGeocodeLocation(latitude, longitude);
+      const city = ETHIOPIAN_CITIES.find((name) =>
+        resolvedAddress.toLowerCase().includes(name.toLowerCase())
+      ) || resolvedAddress.split(",").pop()?.trim() || "Ethiopia";
+
+      setSelectedCity(city);
+      setAddress(resolvedAddress);
+      setStoreCoords({ latitude: Number(latitude), longitude: Number(longitude), address: resolvedAddress });
+    } catch (error) {
+      setErrorMessage(error?.message || "Could not get your phone's location. Please try again.");
+    } finally {
+      setLocationLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    captureStoreLocation();
+  }, [captureStoreLocation]);
   const [sendingOtp, setSendingOtp] = useState(false);
 
   const ALL_ETHIOPIAN_BANKS = [
@@ -114,6 +169,10 @@ export default function SellerApply() {
   ];
 
   const handleSendOtp = async () => {
+    if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setErrorMessage("Enter a valid email address before verifying your phone.");
+      return;
+    }
     const norm = normalizeEthiopianPhone(phone);
     if (!norm.isValid) {
       Alert.alert("Invalid Phone Number", norm.error);
@@ -122,30 +181,48 @@ export default function SellerApply() {
     setSendingOtp(true);
     setErrorMessage("");
     try {
-      const code = String(Math.floor(100000 + Math.random() * 900000));
-      setGeneratedOtp(code);
+      const emailCheck = await checkEmailRegistered(email);
+      if (emailCheck.isRegistered) {
+        setErrorMessage("An account with this email already exists. Please sign in instead.");
+        return;
+      }
+      await requestOtp(norm.intlNumber);
       setOtpSent(true);
-      Alert.alert(
-        "Verification Code Sent",
-        `A 6-digit SMS verification code has been dispatched to ${norm.intlNumber}.\n\n(Verification PIN: ${code})`
-      );
+      setOtpInput("");
+      setOtpProof(null);
+      Alert.alert("Verification Code Sent", `A 6-digit SMS verification code was sent to ${norm.localNumber}.`);
     } catch (e) {
-      Alert.alert("Notice", e?.message || "Could not send verification code.");
+      const message = formatAuthError(e, "Could not send verification code. Please try again.");
+      setErrorMessage(message);
+      Alert.alert("Phone Verification", message);
     } finally {
       setSendingOtp(false);
     }
   };
 
-  const handleVerifyOtp = () => {
-    if (!otpInput.trim()) {
-      Alert.alert("Code Required", "Please enter the 6-digit verification code.");
+  const handleVerifyOtp = async () => {
+    if (!/^\d{6}$/.test(otpInput.trim())) {
+      setErrorMessage("Enter the 6-digit code sent to your phone.");
       return;
     }
-    if (otpInput.trim() === generatedOtp || otpInput.trim() === "123456" || otpInput.trim().length >= 4) {
+    const norm = normalizeEthiopianPhone(phone);
+    if (!norm.isValid) {
+      setErrorMessage(norm.error);
+      return;
+    }
+    setVerifyingOtp(true);
+    setErrorMessage("");
+    try {
+      const proof = await verifySignupCode(norm.intlNumber, otpInput.trim());
+      setOtpProof(proof);
       setPhoneVerified(true);
-      Alert.alert("Verified ✓", "Phone number verified successfully!");
-    } else {
-      Alert.alert("Incorrect Code", "The code you entered is invalid. Please try again or re-send.");
+      Alert.alert("Phone Verified", "Your phone number was verified successfully.");
+    } catch (error) {
+      const message = formatAuthError(error, "The code is invalid or expired. Request a new code and try again.");
+      setErrorMessage(message);
+      Alert.alert("Verification Failed", message);
+    } finally {
+      setVerifyingOtp(false);
     }
   };
 
@@ -212,6 +289,11 @@ export default function SellerApply() {
     if (busy) return;
     setErrorMessage("");
 
+    if (locationLoading) {
+      setErrorMessage("Please wait while we get your phone's location.");
+      return;
+    }
+
     // Form validation
     if (!businessName.trim() || !address.trim()) {
       setErrorMessage("Please enter your business name and operating address.");
@@ -220,10 +302,10 @@ export default function SellerApply() {
     }
 
     if (!storeCoords || !storeCoords.latitude || !storeCoords.longitude) {
-      setErrorMessage("Please pin your physical storefront location on the map.");
+      setErrorMessage("A phone location is required. Please allow location access and try again.");
       Alert.alert(
-        "Store Map Pin Required",
-        "Please tap 'Pin Physical Location on Map' to confirm your kitchen / store location. Customers and drivers need this to find and deliver your orders accurately."
+        "Store Location Required",
+        "Allow location access so we can set the storefront pickup location from this phone."
       );
       return;
     }
@@ -250,7 +332,7 @@ export default function SellerApply() {
       return;
     }
 
-    if (!phoneVerified) {
+    if (!phoneVerified || !otpProof) {
       setErrorMessage("Please verify your phone number with the SMS code.");
       Alert.alert("Phone Verification Required", "Please verify your phone number using the SMS verification code before submitting.");
       return;
@@ -307,6 +389,7 @@ export default function SellerApply() {
         bankName: selectedBank,
         accountNumber: accountNumber.trim(),
         accountHolder: accountHolder.trim() || fullName.trim(),
+        proof: otpProof,
       });
 
       // Once registerSeller succeeds, AuthContext sets dbUser (role: pendingSeller)
@@ -419,65 +502,33 @@ export default function SellerApply() {
               placeholderTextColor="#94A3B8"
             />
 
-            <Text style={s.label}>Operating City *</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                {ETHIOPIAN_CITIES.map((c) => {
-                  const active = selectedCity === c;
-                  return (
-                    <TouchableOpacity
-                      key={c}
-                      onPress={() => setSelectedCity(c)}
-                      style={[s.cityChip, active && s.cityChipActive]}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={[s.cityChipTxt, active && s.cityChipTxtActive]}>{c}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </ScrollView>
-
-            <Text style={s.label}>Operating Street Address *</Text>
-            <TextInput
-              style={s.input}
-              value={address}
-              onChangeText={(t) => {
-                setAddress(t);
-                if (errorMessage) setErrorMessage("");
-              }}
-              placeholder="e.g. Main Street, Near Commercial Bank"
-              placeholderTextColor="#94A3B8"
-            />
-
-            {/* Map Pinning (Mandatory for accurate distance) */}
-            <Text style={s.label}>Physical Location on Map * (Required)</Text>
-            <TouchableOpacity
-              style={[s.mapPinCard, storeCoords ? s.mapPinCardPinned : s.mapPinCardUnpinned]}
-              onPress={() => setMapModalVisible(true)}
-              activeOpacity={0.8}
-            >
+            <Text style={s.label}>Storefront Area and Pickup Location *</Text>
+            <View style={[s.mapPinCard, storeCoords ? s.mapPinCardPinned : s.mapPinCardUnpinned]}>
               <MaterialCommunityIcons
-                name={storeCoords ? "map-marker-check" : "map-marker-radius"}
+                name={locationLoading ? "crosshairs-gps" : storeCoords ? "map-marker-check" : "map-marker-alert"}
                 size={26}
                 color={storeCoords ? "#059669" : ORANGE}
               />
               <View style={{ flex: 1, marginLeft: 10 }}>
                 <Text style={[s.mapPinTitle, storeCoords && { color: "#065F46" }]}>
-                  {storeCoords ? "Store Location Pinned ✓" : "Tap to Pin Your Kitchen on Map *"}
+                  {locationLoading ? "Getting this phone's location…" : storeCoords ? `${selectedCity} · location fixed` : "Phone location required"}
                 </Text>
-                <Text style={s.mapPinSub} numberOfLines={1}>
+                <Text style={s.mapPinSub} numberOfLines={2}>
                   {storeCoords
-                    ? `${storeCoords.latitude.toFixed(4)}, ${storeCoords.longitude.toFixed(4)}${storeCoords.address ? ` · ${storeCoords.address}` : ""}`
-                    : "Required for delivery radius & driver pickup"}
+                    ? `${address} · ${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)}`
+                    : errorMessage || "Allow location access to set the storefront pickup point."}
+                </Text>
+                <Text style={[s.mapPinSub, { marginTop: 4 }]}>
+                  This phone location will be used for your storefront and cannot be changed here.
                 </Text>
               </View>
-              <View style={[s.mapPinBadge, storeCoords && { backgroundColor: "#DCFCE7" }]}>
-                <Text style={[s.mapPinBadgeTxt, storeCoords && { color: "#059669" }]}>
-                  {storeCoords ? "Change" : "Pin Location"}
-                </Text>
-              </View>
-            </TouchableOpacity>
+              {locationLoading ? <ActivityIndicator color={TEAL} /> : null}
+              {!locationLoading && !storeCoords ? (
+                <TouchableOpacity onPress={captureStoreLocation} style={s.mapPinBadge}>
+                  <Text style={s.mapPinBadgeTxt}>Retry</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
 
             {/* Working Hours Interval */}
             <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
@@ -542,6 +593,8 @@ export default function SellerApply() {
                   handlePhoneChange(t);
                   setPhoneVerified(false);
                   setOtpSent(false);
+                  setOtpProof(null);
+                  setOtpInput("");
                 }}
                 placeholder="9XXXXXXXX"
                 placeholderTextColor="#94A3B8"
@@ -563,7 +616,7 @@ export default function SellerApply() {
                     <TouchableOpacity
                       style={{ backgroundColor: TEAL, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, alignItems: "center", alignSelf: "flex-start", flexDirection: "row" }}
                       onPress={handleSendOtp}
-                      disabled={sendingOtp || phone.length < 9}
+                      disabled={sendingOtp || verifyingOtp || phone.length < 9}
                     >
                       {sendingOtp ? (
                         <ActivityIndicator size="small" color="white" />
@@ -592,14 +645,16 @@ export default function SellerApply() {
                         <TouchableOpacity
                           style={{ backgroundColor: TEAL, paddingHorizontal: 14, justifyContent: "center", borderRadius: 8 }}
                           onPress={handleVerifyOtp}
+                          disabled={verifyingOtp || sendingOtp}
                         >
-                          <Text style={{ fontSize: 12, fontWeight: "800", color: "white" }}>Verify</Text>
+                          {verifyingOtp ? <ActivityIndicator size="small" color="white" /> : <Text style={{ fontSize: 12, fontWeight: "800", color: "white" }}>Verify</Text>}
                         </TouchableOpacity>
                         <TouchableOpacity
                           style={{ backgroundColor: "#F1F5F9", paddingHorizontal: 10, justifyContent: "center", borderRadius: 8 }}
                           onPress={handleSendOtp}
+                          disabled={sendingOtp || verifyingOtp}
                         >
-                          <Text style={{ fontSize: 11, color: "#64748B", fontWeight: "700" }}>Resend</Text>
+                          {sendingOtp ? <ActivityIndicator size="small" color={TEAL} /> : <Text style={{ fontSize: 11, color: "#64748B", fontWeight: "700" }}>Resend</Text>}
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -774,25 +829,6 @@ export default function SellerApply() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {mapModalVisible ? (
-        <DeliveryLocationModal
-          visible={mapModalVisible}
-          onClose={() => setMapModalVisible(false)}
-          initialLocation={storeCoords}
-          onConfirmLocation={(loc) => {
-            setStoreCoords({
-              latitude: Number(loc.latitude),
-              longitude: Number(loc.longitude),
-              address: loc.address,
-            });
-            if (loc.address && !address.trim() && loc.address !== "My Location, Ethiopia") {
-              setAddress(loc.address);
-            }
-            setMapModalVisible(false);
-            Alert.alert("Store Pinned ✓", "Location coordinates saved for your store application.");
-          }}
-        />
-      ) : null}
     </View>
   );
 }

@@ -16,7 +16,7 @@ const DARK = "#0B2A26";
 const ORANGE = "#F47721";
 
 // Official MyTruck Logo and Delivery Assets
-const APP_ICON = require("../assets/icon.png");
+const APP_ICON = require("../assets/optimized/runtime-icon.jpg");
 
 export default function AnimatedSplash({ onFinish, message = "Initializing MyTruck..." }) {
   const glowAnim = useRef(new Animated.Value(0.4)).current;
@@ -178,9 +178,9 @@ const s = StyleSheet.create({
   },
   logoGlow: {
     position: "absolute",
-    width: 130,
-    height: 130,
-    borderRadius: 65,
+    width: 190,
+    height: 190,
+    borderRadius: 95,
     backgroundColor: "rgba(23, 155, 131, 0.4)",
     shadowColor: TEAL,
     shadowOffset: { width: 0, height: 0 },
@@ -189,9 +189,9 @@ const s = StyleSheet.create({
     elevation: 16,
   },
   appLogo: {
-    width: 76,
-    height: 76,
-    borderRadius: 20,
+    width: 144,
+    height: 144,
+    borderRadius: 30,
     marginBottom: 10,
     elevation: 10,
   },

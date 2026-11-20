@@ -13,7 +13,6 @@ import {
   Dimensions,
   Alert,
 } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useNavigation } from "@react-navigation/native";
@@ -54,8 +53,6 @@ const SHOP_CATEGORIES = [
   "Health & Care",
 ];
 
-const DEFAULT_SHOP_IMAGE = require("../assets/cropped/banner_burger.png");
-
 export default function ShopsScreen() {
   // Re-render with the Super Admin's live pricing
   const pricingConfig = usePricingConfig();
@@ -77,24 +74,6 @@ export default function ShopsScreen() {
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [selectedShopId, setSelectedShopId] = useState(null);
 
-  // Fast-path: mount with offline cached shops & products immediately
-  useEffect(() => {
-    (async () => {
-      try {
-        const [cachedShops, cachedProds] = await Promise.all([
-          AsyncStorage.getItem("@mytruck_cached_shops"),
-          AsyncStorage.getItem("@mytruck_cached_products"),
-        ]);
-        if (cachedShops) setShops(JSON.parse(cachedShops));
-        if (cachedProds) {
-          setProducts(JSON.parse(cachedProds));
-          setLoading(false);
-        }
-      } catch (_) {}
-      loadShopsAndProducts();
-    })();
-  }, [loadShopsAndProducts]);
-
   const loadShopsAndProducts = useCallback(async () => {
     try {
       const [shopSnap, prodSnap, dishSnap] = await Promise.all([
@@ -106,7 +85,7 @@ export default function ShopsScreen() {
       const shopList = [];
       shopSnap.forEach((d) => {
         const data = d.data();
-        if (data.status === "APPROVED" || !data.status) {
+        if (String(data.status || data.approvalStatus || "").toUpperCase() === "APPROVED" && data.isVerified !== false && data.isActive !== false) {
           shopList.push({ id: d.id, ...data });
         }
       });
@@ -120,7 +99,7 @@ export default function ShopsScreen() {
           data.isApproved === true ||
           data.status === "APPROVED" ||
           data.status === "Published" ||
-          (!data.status && data.isActive !== false);
+          data.isPublished === true;
 
         if (isApprovedItem && data.isActive !== false) {
           prodList.push({ id: d.id, ...data });
@@ -142,14 +121,11 @@ export default function ShopsScreen() {
           data.isApproved === true ||
           data.status === "APPROVED" ||
           data.status === "Published" ||
-          data.lifecycleStatus === "Published";
+          data.lifecycleStatus === "Published" || data.isPublished === true;
 
         if (isShopItem && isApprovedItem && data.isAvailable !== false) {
-          const matchedShopId =
-            data.shopId ||
-            (data.restaurantName?.toLowerCase().includes("bambis")
-              ? "shop-bambis-supermarket"
-              : data.restaurantId || "shop-bambis-supermarket");
+          const matchedShopId = data.shopId || data.restaurantId;
+          if (!matchedShopId || !shopList.some((shop) => shop.id === matchedShopId)) return;
           const mappedId = `dish-${d.id}`;
           if (!seenIds.has(mappedId) && !seenIds.has(d.id)) {
             seenIds.add(mappedId);
@@ -176,105 +152,9 @@ export default function ShopsScreen() {
         }
       });
 
-      // Curated fallback products with seeded discounts if Firestore is empty
-      if (prodList.length === 0) {
-        prodList.push(
-          {
-            id: "shop-prod-coffee",
-            dishId: "shop-prod-coffee",
-            name: "Highland Yirgacheffe Roast Coffee (500g)",
-            price: 520,
-            originalPrice: 680,
-            discountPercent: 24,
-            hasDiscount: true,
-            category: "Beverages",
-            description: "Freshly roasted single-origin Ethiopian highland Arabica coffee beans.",
-            image: "https://images.unsplash.com/photo-1559056199-641a0ac8b55e?w=400",
-            shopId: "shop-bambis-supermarket",
-            inStock: true,
-            isActive: true,
-          },
-          {
-            id: "shop-prod-honey",
-            dishId: "shop-prod-honey",
-            name: "Pure Natural White Honey (1kg)",
-            price: 480,
-            originalPrice: 600,
-            discountPercent: 20,
-            hasDiscount: true,
-            category: "Groceries",
-            description: "Raw unfiltered Ethiopian mountain blossom honey in glass jar.",
-            image: "https://images.unsplash.com/photo-1587049352846-4a222e784d38?w=400",
-            shopId: "shop-bambis-supermarket",
-            inStock: true,
-            isActive: true,
-          },
-          {
-            id: "shop-prod-oil",
-            dishId: "shop-prod-oil",
-            name: "Mama Pure Sunflower Cooking Oil (3L)",
-            price: 690,
-            originalPrice: 890,
-            discountPercent: 22,
-            hasDiscount: true,
-            category: "Groceries",
-            description: "Triple-refined pure vegetable sunflower oil for healthy cooking.",
-            image: "https://images.unsplash.com/photo-1474979266404-7eaacbcd87c5?w=400",
-            shopId: "shop-bambis-supermarket",
-            inStock: true,
-            isActive: true,
-          },
-          {
-            id: "shop-prod-milk",
-            dishId: "shop-prod-milk",
-            name: "Shola Fresh Whole Milk (1L Bottle)",
-            price: 110,
-            originalPrice: 145,
-            discountPercent: 24,
-            hasDiscount: true,
-            category: "Groceries",
-            description: "Pasteurized homogenized full-cream fresh Ethiopian farm milk.",
-            image: "https://images.unsplash.com/photo-1550583724-b2692b85b150?w=400",
-            shopId: "shop-bambis-supermarket",
-            inStock: true,
-            isActive: true,
-          },
-          {
-            id: "shop-prod-bread",
-            dishId: "shop-prod-bread",
-            name: "Artisanal Whole Wheat Toast Bread",
-            price: 85,
-            originalPrice: 110,
-            discountPercent: 23,
-            hasDiscount: true,
-            category: "Groceries",
-            description: "Freshly baked morning toast bread made with 100% whole grains.",
-            image: "https://images.unsplash.com/photo-1509440159596-0249088772ff?w=400",
-            shopId: "shop-bambis-supermarket",
-            inStock: true,
-            isActive: true,
-          }
-        );
-      }
-
-      if (shopList.length === 0) {
-        shopList.push({
-          id: "shop-bambis-supermarket",
-          name: "Bambis Supermarket",
-          genre: "Supermarket & Groceries",
-          rating: "4.9",
-          reviews: "2.4k+",
-          deliveryTime: "30-40 min",
-          image: "https://images.unsplash.com/photo-1578916171728-46686eac8d58?w=500",
-          address: "Kazanchis, Addis Ababa",
-          deal: "25% OFF Groceries",
-        });
-      }
-
+      // Customer catalogue is populated only by approved Firestore records.
       setShops(shopList);
       setProducts(prodList);
-      AsyncStorage.setItem("@mytruck_cached_shops", JSON.stringify(shopList)).catch(() => {});
-      AsyncStorage.setItem("@mytruck_cached_products", JSON.stringify(prodList)).catch(() => {});
     } catch (e) {
       console.warn("ShopsScreen: error loading data", e?.message);
     } finally {
@@ -284,7 +164,9 @@ export default function ShopsScreen() {
 
   useEffect(() => {
     loadShopsAndProducts();
-  }, [loadShopsAndProducts]);
+    const unsubscribe = navigation.addListener("focus", loadShopsAndProducts);
+    return unsubscribe;
+  }, [loadShopsAndProducts, navigation]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -317,7 +199,7 @@ export default function ShopsScreen() {
         merchantBasePrice: info.rawSellingPrice,
         originalPrice: info.customerOriginalPrice,
         discountedPrice: info.customerSellingPrice,
-        hasDiscount: true,
+        hasDiscount: info.hasDiscount,
         discountPercent: info.discountPercent,
         savingsAmount: info.savingsAmount,
         imgUrl: product.image,
@@ -330,7 +212,7 @@ export default function ShopsScreen() {
 
   const visibleShops = useMemo(() => {
     const maxRadius = getMaxOrderDistanceKm("shop");
-    const uAddress = String(reduxUser?.address || dbUser?.address || "").toLowerCase();
+    const uAddress = String(reduxUser?.address || "").toLowerCase();
     return shops.filter((shop) => {
       const sLat = Number(shop.latitude ?? shop.lat ?? shop.storeLatitude);
       const sLng = Number(shop.longitude ?? shop.lng ?? shop.storeLongitude);
@@ -348,7 +230,7 @@ export default function ShopsScreen() {
       }
       return true;
     });
-  }, [shops, userCoords, reduxUser?.address, dbUser?.address]);
+  }, [shops, userCoords, reduxUser?.address]);
 
   const filteredProducts = useMemo(() => {
     const deliverableShopIds = new Set(visibleShops.map((s) => s.id));
@@ -481,8 +363,8 @@ export default function ShopsScreen() {
                   activeOpacity={0.85}
                 >
                   <ResilientImage
-                    source={shop.image || DEFAULT_SHOP_IMAGE}
-                    fallbackCategory="shop"
+                    source={shop.image || shop.imgUrl || shop.logoUrl}
+                    fallbackCategory="none"
                     style={s.shopImg}
                     resizeMode="cover"
                   />
@@ -490,9 +372,8 @@ export default function ShopsScreen() {
                     <Text style={s.shopName} numberOfLines={1}>{shop.name}</Text>
                     <Text style={s.shopType} numberOfLines={1}>{shop.category || "Retail"}</Text>
                     <View style={s.shopRatingRow}>
-                      <StarIcon size={12} color="#EAB308" />
-                      <Text style={s.shopRatingTxt}>{shop.rating || 4.8}</Text>
-                      <Text style={s.shopEta}> · 20-35 min</Text>
+                      {shop.rating != null ? <><StarIcon size={12} color="#EAB308" /><Text style={s.shopRatingTxt}>{shop.rating}</Text></> : null}
+                      {shop.deliveryTime ? <Text style={s.shopEta}> · {shop.deliveryTime}</Text> : null}
                     </View>
                   </View>
                 </TouchableOpacity>
@@ -528,8 +409,8 @@ export default function ShopsScreen() {
                 return (
                   <View key={p.id} style={s.productCard}>
                     <ResilientImage
-                      source={p.image || DEFAULT_SHOP_IMAGE}
-                      fallbackCategory="shop"
+                      source={p.image || p.imgUrl}
+                      fallbackCategory="none"
                       style={s.productImg}
                       resizeMode="cover"
                     />

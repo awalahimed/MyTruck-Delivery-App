@@ -40,7 +40,7 @@ Deno.serve(async (req) => {
 
   const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-  const { data: row } = await admin
+  const { data: row, error: lookupError } = await admin
     .from("phone_otps")
     .select("id, code_hash, attempts")
     .eq("phone", phone)
@@ -49,16 +49,28 @@ Deno.serve(async (req) => {
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
+  if (lookupError) {
+    console.error("OTP verification lookup failed:", lookupError.message);
+    return json({ error: "storage_unavailable", message: "Phone verification is temporarily unavailable." }, 503);
+  }
   if (!row) return json({ error: "no_code", message: "No active code. Request a new one." }, 400);
   if (row.attempts >= 5) return json({ error: "too_many_attempts", message: "Too many wrong attempts. Request a new code." }, 429);
 
   const expected = await hmacHex(otpSecret, `${phone}:${code}`);
   if (!constantTimeEqual(expected, row.code_hash)) {
-    await admin.from("phone_otps").update({ attempts: row.attempts + 1 }).eq("id", row.id);
+    const { error: attemptError } = await admin.from("phone_otps").update({ attempts: row.attempts + 1 }).eq("id", row.id);
+    if (attemptError) {
+      console.error("OTP attempt update failed:", attemptError.message);
+      return json({ error: "storage_unavailable", message: "Phone verification is temporarily unavailable." }, 503);
+    }
     return json({ error: "wrong_code", message: "Incorrect code. Check your SMS and try again." }, 400);
   }
 
-  await admin.from("phone_otps").update({ consumed: true }).eq("id", row.id);
+  const { error: consumeError } = await admin.from("phone_otps").update({ consumed: true }).eq("id", row.id);
+  if (consumeError) {
+    console.error("OTP consume failed:", consumeError.message);
+    return json({ error: "storage_unavailable", message: "Phone verification is temporarily unavailable." }, 503);
+  }
 
   // Short-lived proof that this number was verified (checked by claim-phone)
   const payload = btoa(JSON.stringify({ phone, exp: Date.now() + 15 * 60 * 1000, n: crypto.randomUUID() }))

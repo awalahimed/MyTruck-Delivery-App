@@ -59,7 +59,15 @@ Deno.serve(async (req) => {
   if (!valid) return json({ error: "bad_proof", message: "Please verify your phone number again." }, 401);
 
   const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-  const { data: existing } = await admin.from("claimed_phones").select("uid").eq("phone", phone).maybeSingle();
+  const { data: existing, error: lookupError } = await admin
+    .from("claimed_phones")
+    .select("uid")
+    .eq("phone", phone)
+    .maybeSingle();
+  if (lookupError) {
+    console.error("Phone claim lookup failed:", lookupError.message);
+    return json({ error: "storage_unavailable", message: "Phone verification is temporarily unavailable." }, 503);
+  }
   if (existing && existing.uid !== uid) {
     return json({ error: "taken", message: "This mobile number is already used by another account. Please sign in instead." }, 409);
   }

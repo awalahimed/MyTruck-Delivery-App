@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigation } from "@react-navigation/native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { UserAuth } from "../contexts/AuthContext";
 import {
   View,
@@ -10,7 +9,6 @@ import {
   RefreshControl,
   ActivityIndicator,
   StyleSheet,
-  Image,
   Dimensions,
   TextInput,
   Animated,
@@ -29,6 +27,7 @@ import { StatusBar } from "expo-status-bar";
 import DeliveryLocationModal from "../components/DeliveryLocationModal";
 import SearchCard from "../components/SearchCard";
 import NotificationBell from "../components/ui/NotificationBell";
+import SmartImage from "../components/ui/SmartImage";
 import { isWithinEthiopia, reverseGeocodeLocation } from "../utils/mapService";
 import locationService from "../services/locationService";
 import {
@@ -46,6 +45,7 @@ const { width } = Dimensions.get("window");
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
 const ORANGE = "#F47721";
+const TRANSPARENT_BURGER = require("../assets/transparent-burger-img.png");
 
 const formatPriceTier = (raw) => {
   if (!raw) return "Moderate · ETB";
@@ -55,50 +55,13 @@ const formatPriceTier = (raw) => {
   return String(raw).replace(/\$/g, "");
 };
 
-// High fidelity cropped & transparent assets
-const WELCOME_TRUCK_BG = require("../assets/cropped/welcome_truck_bg.png");
-const TRANSPARENT_BURGER = require("../assets/transparent-burger-img.png");
-const BURGER_ASSET = require("../assets/cropped/banner_burger.png");
-const HABESHA_ASSET = require("../assets/cropped/habesha_kitchen.png");
-const PIZZA_ASSET = require("../assets/cropped/pizza_house.png");
-
-// Instant first-time launch baseline dataset (< 10ms zero-wait startup)
-const INSTANT_BASELINE_RESTAURANTS = [
-  {
-    id: "res-habesha-default",
-    name: "Habesha Kitchen",
-    rating: 4.8,
-    reviews: 142,
-    genre: "Authentic Habesha Cuisine",
-    address: "Bole Road, Addis Ababa",
-    image: HABESHA_ASSET,
-    priceTier: "$$",
-    latitude: 8.995,
-    longitude: 38.7885,
-    status: "APPROVED",
-  },
-  {
-    id: "res-pizza-default",
-    name: "Pizza House",
-    rating: 4.7,
-    reviews: 98,
-    genre: "Artisan Pizza & Fast Food",
-    address: "Kazanchis, Addis Ababa",
-    image: PIZZA_ASSET,
-    priceTier: "$$",
-    latitude: 9.018,
-    longitude: 38.766,
-    status: "APPROVED",
-  },
-];
-
 // A dish is orderable only once approved and available (same rule as RestaurantDetails)
 const isOrderableDish = (d) => {
   if (!d) return false;
   const status = String(d.status || "");
   if (["PENDING", "REJECTED"].includes(status.toUpperCase()) || d.isApproved === false) return false;
   if (d.isAvailable === false || d.inStock === false) return false;
-  return d.isApproved === true || status === "APPROVED" || status === "Published" || !status;
+  return d.isApproved === true || d.isPublished === true || status === "APPROVED" || status === "Published";
 };
 
 export default function Home() {
@@ -242,7 +205,7 @@ export default function Home() {
       const resList = [];
       resSnap.forEach((d) => {
         const data = d.data();
-        if (data.status === "APPROVED" || !data.status) {
+        if (String(data.status || data.approvalStatus || "").toUpperCase() === "APPROVED" && data.isVerified !== false && data.isActive !== false) {
           resList.push({ id: d.id, ...data });
         }
       });
@@ -269,8 +232,6 @@ export default function Home() {
 
       setRestaurants(uniqueResList);
       setDishes(dishList);
-      AsyncStorage.setItem("@mytruck_cached_home_restaurants", JSON.stringify(uniqueResList)).catch(() => {});
-      AsyncStorage.setItem("@mytruck_cached_home_dishes", JSON.stringify(dishList)).catch(() => {});
     } catch (e) {
       console.warn("Home: error loading data", e?.message);
     } finally {
@@ -278,23 +239,11 @@ export default function Home() {
     }
   }, []);
 
-  // Fast-path: instantly hydrate from local cache on mount
   useEffect(() => {
-    (async () => {
-      try {
-        const [cachedRes, cachedDishes] = await Promise.all([
-          AsyncStorage.getItem("@mytruck_cached_home_restaurants"),
-          AsyncStorage.getItem("@mytruck_cached_home_dishes"),
-        ]);
-        if (cachedRes) setRestaurants(JSON.parse(cachedRes));
-        if (cachedDishes) {
-          setDishes((JSON.parse(cachedDishes) || []).filter(isOrderableDish));
-          setLoading(false);
-        }
-      } catch (_) {}
-      loadData();
-    })();
-  }, [loadData]);
+    loadData();
+    const unsubscribe = navigation.addListener("focus", loadData);
+    return unsubscribe;
+  }, [loadData, navigation]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -399,7 +348,7 @@ export default function Home() {
   const featuredDeals = useMemo(() => {
     const storeById = new Map((filteredRestaurants || []).map((r) => [r.id, r]));
     return (dishes || [])
-      .filter((d) => isOrderableDish(d) && storeById.has(d.restaurantId) && Number(d.price) > 0)
+      .filter((d) => isOrderableDish(d) && storeById.has(d.restaurantId) && Number(d.price) > 0 && getItemDiscountInfo(d).hasDiscount)
       .map((d) => {
         const store = storeById.get(d.restaurantId);
         return {
@@ -470,9 +419,9 @@ export default function Home() {
       id: res.id,
       title: res.name,
       imgUrl: res.image,
-      rating: res.rating || 4.8,
-      genre: res.genre || "Ethiopian",
-      address: res.address || "Ethiopia",
+      rating: res.rating,
+      genre: res.genre || "",
+      address: res.address || "",
       short_description: res.description,
       dishes: dishes.filter((d) => d.restaurantId === res.id),
     });
@@ -509,7 +458,7 @@ export default function Home() {
         merchantBasePrice: info.rawSellingPrice,
         originalPrice: info.customerOriginalPrice,
         discountedPrice: info.customerSellingPrice,
-        hasDiscount: true,
+        hasDiscount: info.hasDiscount,
         discountPercent: info.discountPercent,
         image: deal.image,
       })
@@ -780,20 +729,7 @@ export default function Home() {
                       ? filteredRestaurants
                       : filteredRestaurants.slice(0, 4)
                     ).map((res) => {
-                      const name = String(res.name || "").toLowerCase();
-                      const imageSource = name.includes("burger")
-                        ? BURGER_ASSET
-                        : name.includes("pizza")
-                        ? PIZZA_ASSET
-                        : name.includes("habesha") || name.includes("ethiopian")
-                        ? HABESHA_ASSET
-                        : res.imageAsset
-                        ? res.imageAsset
-                        : res.image && String(res.image).startsWith("http")
-                        ? { uri: res.image, cache: "force-cache" }
-                        : res.imgUrl && String(res.imgUrl).startsWith("http")
-                        ? { uri: res.imgUrl, cache: "force-cache" }
-                        : HABESHA_ASSET;
+                      const imageUrl = res.image || res.imgUrl || res.logoUrl || res.profileImage;
 
                       return (
                         <TouchableOpacity
@@ -803,29 +739,16 @@ export default function Home() {
                           onPress={() => openRestaurantDetails(res)}
                         >
                           <View style={{ position: "relative" }}>
-                            <Image
-                              source={imageSource}
-                              defaultSource={HABESHA_ASSET}
-                              style={s.cardImage}
-                              resizeMode="cover"
-                            />
-                            <View style={s.cardDealBadge}>
-                              <Text style={s.cardDealBadgeTxt}>{res.deal || "25% OFF Deals"}</Text>
-                            </View>
+                            <SmartImage uri={imageUrl} fallbackType="restaurant" style={s.cardImage} resizeMode="cover" />
                           </View>
                           <View style={s.cardInfo}>
                             <Text style={s.cardTitle} numberOfLines={1}>
                               {res.name}
                             </Text>
                             <Text style={s.cardSubtitle}>
-                              {res.genre || "Ethiopian"} • {formatPriceTier(res.priceRange || res.priceTier)}
+                              {[res.genre, res.priceRange || res.priceTier ? formatPriceTier(res.priceRange || res.priceTier) : ""].filter(Boolean).join(" · ")}
                             </Text>
-                            <View style={s.ratingRow}>
-                              <StarIcon size={14} color="#FBBF24" />
-                              <Text style={s.ratingText}>
-                                {res.rating || "4.8"} • 📍 {res.distanceKm || "2.1"} km • ⏱️ {res.etaMinutes || "25"} min
-                              </Text>
-                            </View>
+                            <View style={s.ratingRow}>{res.rating != null ? <><StarIcon size={14} color="#FBBF24" /><Text style={s.ratingText}>{res.rating}</Text></> : null}{Number.isFinite(res.distanceKm) ? <Text style={s.ratingText}>📍 {res.distanceKm.toFixed(1)} km</Text> : null}{Number.isFinite(res.etaMinutes) ? <Text style={s.ratingText}>⏱️ {res.etaMinutes} min</Text> : null}</View>
                           </View>
                         </TouchableOpacity>
                       );
@@ -883,19 +806,7 @@ export default function Home() {
                       }}
                     >
                       <View style={s.dishDealImgWrap}>
-                        <Image
-                          source={
-                            deal.imageAsset ||
-                            (typeof deal.image === "number"
-                              ? deal.image
-                              : deal.image && String(deal.image).startsWith("http")
-                              ? { uri: deal.image }
-                              : HABESHA_ASSET)
-                          }
-                          defaultSource={HABESHA_ASSET}
-                          style={s.dishDealImg}
-                          resizeMode="cover"
-                        />
+                        <SmartImage uri={deal.image} fallbackType="dish" style={s.dishDealImg} resizeMode="cover" />
                         <View style={s.dishDealBadge}>
                           <Text style={s.dishDealBadgeTxt}>-{String(info.discountPercent ?? 0)}% OFF</Text>
                         </View>

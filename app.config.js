@@ -3,8 +3,9 @@
 // .env for development) so it is never committed to the repository.
 //
 // SECURITY NOTE: anything in `extra` ships inside the APK and can be extracted.
-// This is an interim measure until the Chapa calls run on a server
-// (functions/index.js). The app always tries the server first.
+// Keep CHAPA_SECRET_KEY in the build environment, never in app.json. This is an
+// interim measure until Chapa calls run on a server (functions/index.js).
+// The app always tries the server first.
 
 // Accept the value however it was pasted: "CHAPA_SECRET_KEY=CHASECK-…", quoted, or with spaces.
 // (A pasted "NAME=value" line made Chapa reject every payment in 1.0.5.)
@@ -15,40 +16,61 @@ function cleanChapaKey(raw) {
   return v;
 }
 
+function cleanGoogleKey(raw) {
+  let v = String(raw || "").trim();
+  v = v.replace(/^\s*(export\s+)?(EXPO_PUBLIC_)?GOOGLE_MAPS_API_KEY\s*=\s*/i, "");
+  v = v.replace(/^["']|["']$/g, "").trim();
+  return v;
+}
+
 module.exports = ({ config }) => {
-  const chapaSecretKey = cleanChapaKey(process.env.CHAPA_SECRET_KEY || config.extra?.chapaSecretKey);
+  const chapaSecretKey = cleanChapaKey(process.env.CHAPA_SECRET_KEY);
+  const googleMapsApiKey =
+    cleanGoogleKey(process.env.GOOGLE_MAPS_API_KEY) ||
+    cleanGoogleKey(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY) ||
+    config.android?.config?.googleMaps?.apiKey ||
+    config.extra?.googleMapsApiKey ||
+    "";
+
   // Only a Chapa SECRET key (CHASECK-…) can start payments. A public key (CHAPUBK-…)
   // makes Chapa answer "Invalid API Key" for every customer, so stop the build instead.
-  if (chapaSecretKey && !chapaSecretKey.startsWith("CHASECK-")) {
+  if (chapaSecretKey && !chapaSecretKey.startsWith("CHASECK-") && !chapaSecretKey.startsWith("CHASECK_TEST-")) {
     throw new Error(
       `CHAPA_SECRET_KEY must be your Chapa SECRET key (starts with "CHASECK-"), ` +
         `but it starts with "${chapaSecretKey.slice(0, 8)}". Update it with: ` +
         `eas env:update preview --variable-name CHAPA_SECRET_KEY`
     );
   }
-  // Google Maps key: EAS variable GOOGLE_MAPS_API_KEY wins; app.json's googleMapsApiKey is the fallback.
-  // It is used for the native map (Android) and for Geocoding + Directions (addresses, road distance).
-  const googleMapsKey = String(process.env.GOOGLE_MAPS_API_KEY || config.extra?.googleMapsApiKey || "").trim();
-  if (!googleMapsKey) {
-    console.warn("[config] No Google Maps key: maps will be blank and distances will be straight-line.");
-  }
-
   return {
     ...config,
     android: {
       ...config.android,
       config: {
         ...(config.android?.config || {}),
-        googleMaps: { apiKey: googleMapsKey },
+        googleMaps: {
+          apiKey: googleMapsApiKey,
+        },
       },
     },
+    ios: {
+      ...config.ios,
+      config: {
+        ...(config.ios?.config || {}),
+        googleMapsApiKey: googleMapsApiKey,
+      },
+    },
+    plugins: [
+      ...(config.plugins || []).filter((p) => p !== "@maplibre/maplibre-react-native"),
+      "@react-native-community/datetimepicker",
+    ],
     extra: {
       ...config.extra,
+      googleMapsApiKey,
       chapaSecretKey,
-      googleMapsWebKey: googleMapsKey,
       perfTimings: process.env.PERF_TIMINGS === "1",
     },
   };
 };
 
 module.exports.cleanChapaKey = cleanChapaKey;
+module.exports.cleanGoogleKey = cleanGoogleKey;

@@ -1296,14 +1296,31 @@ export default function DriverDashboard() {
                     title: "Customer",
                   };
                   const toStore = isAwaitingPickup(activeOrder);
+                  const routeStart = driverPos || pickup;
+                  const routeEnd = toStore ? pickup : dropoff;
+                  const pLat = Number(pickup.latitude) || 8.9806;
+                  const pLng = Number(pickup.longitude) || 38.7578;
+                  const dLat = Number(dropoff.latitude) || 8.9806;
+                  const dLng = Number(dropoff.longitude) || 38.7578;
+                  const centerLat = (pLat + dLat) / 2;
+                  const centerLng = (pLng + dLng) / 2;
+                  const latDelta = Math.max(0.02, Math.abs(pLat - dLat) * 1.5);
+                  const lngDelta = Math.max(0.02, Math.abs(pLng - dLng) * 1.5);
+
                   return (
                     <View style={{ height: 260, marginHorizontal: 16, marginBottom: 12, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: "#E2E8F0" }}>
                       <SharedMapView
+                        initialRegion={{
+                          latitude: centerLat,
+                          longitude: centerLng,
+                          latitudeDelta: latDelta,
+                          longitudeDelta: lngDelta,
+                        }}
                         mode="route"
                         origin={pickup}
                         destination={dropoff}
-                        routeFrom={driverPos || null}
-                        routeTo={toStore ? pickup : dropoff}
+                        routeFrom={routeStart}
+                        routeTo={routeEnd}
                         driverLocation={driverPos ? { ...driverPos, title: "You" } : null}
                         onRouteInfo={setMissionRoute}
                         showControls={false}

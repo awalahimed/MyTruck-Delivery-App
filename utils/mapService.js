@@ -2,14 +2,22 @@ import * as Location from "expo-location";
 import Constants from "expo-constants";
 
 /**
- * Map, address and route services — Google Maps Platform.
+ * Map, address and route helpers.
  *
- * The web key (Geocoding + Directions APIs) is injected at build time from the
- * GOOGLE_MAPS_WEB_KEY EAS variable by app.config.js. The map tiles on Android use
- * the Android key (GOOGLE_MAPS_ANDROID_KEY) through the native Google Maps SDK.
- * Without a web key, addresses fall back to the device's own geocoder and routes
- * fall back to straight-line distance.
+ * Uses Google Maps SDK, Google Directions and Geocoding when an API key is configured.
+ * Device geocoding, Komoot Photon, OSRM routing and local known zones provide resilient fallbacks.
  */
+
+export function getGoogleMapsApiKey() {
+  return (
+    Constants.expoConfig?.extra?.googleMapsApiKey ||
+    Constants.expoConfig?.android?.config?.googleMaps?.apiKey ||
+    Constants.expoConfig?.ios?.config?.googleMapsApiKey ||
+    process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ||
+    process.env.GOOGLE_MAPS_API_KEY ||
+    "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU"
+  );
+}
 
 export const DEFAULT_COORDS = {
   latitude: 8.9806,
@@ -17,12 +25,6 @@ export const DEFAULT_COORDS = {
   latitudeDelta: 0.015,
   longitudeDelta: 0.015,
 };
-
-const WEB_KEY = String(
-  Constants.expoConfig?.extra?.googleMapsWebKey || Constants.manifest?.extra?.googleMapsWebKey || ""
-).trim();
-
-export const hasGoogleMaps = () => WEB_KEY.length > 0;
 
 /**
  * Validates whether coordinates fall within Ethiopian national boundaries.
@@ -88,15 +90,6 @@ async function fetchJson(url, timeoutMs = 5000) {
   }
 }
 
-/** "Bole Rd, Addis Ababa, Ethiopia" -> "Bole Rd, Addis Ababa" */
-const shortAddress = (formatted) => {
-  const parts = String(formatted || "")
-    .split(",")
-    .map((p) => p.trim())
-    .filter((p) => p && p.toLowerCase() !== "ethiopia");
-  return parts.slice(0, 2).join(", ") || String(formatted || "");
-};
-
 /** Nearest known Ethiopian city name (last resort). */
 function nearestZoneName(latitude, longitude) {
   let best = "Ethiopia";
@@ -112,18 +105,25 @@ function nearestZoneName(latitude, longitude) {
 }
 
 /**
- * Human-readable address for a point in Ethiopia.
- * 1. Google Geocoding API.  2. Device geocoder.  3. Nearest known city.
+ * Human-readable address for a point in Ethiopia using Google Geocoding or device geocoder.
  */
 export async function reverseGeocodeLocation(latitude, longitude) {
   if (!latitude || !longitude || !isWithinEthiopia(latitude, longitude)) return "Ethiopia";
 
-  if (hasGoogleMaps()) {
-    const data = await fetchJson(
-      `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&language=en&key=${encodeURIComponent(WEB_KEY)}`
-    );
-    const formatted = data?.status === "OK" ? data.results?.[0]?.formatted_address : null;
-    if (formatted) return shortAddress(formatted);
+  const googleKey = getGoogleMapsApiKey();
+  if (googleKey) {
+    try {
+      const res = await fetchJson(
+        `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${googleKey}`,
+        4000
+      );
+      if (res?.status === "OK" && Array.isArray(res.results) && res.results.length > 0) {
+        const addr = res.results[0].formatted_address;
+        if (addr && !addr.includes("Montana") && !addr.includes("Cascade")) {
+          return addr;
+        }
+      }
+    } catch (_) {}
   }
 
   try {
@@ -139,15 +139,12 @@ export async function reverseGeocodeLocation(latitude, longitude) {
 }
 
 /**
- * Places matching a search, anywhere in Ethiopia.
- * Local city/zone names first, then Google Geocoding (restricted to Ethiopia).
+ * Search local delivery zones first, then Photon on explicit user submission.
  */
-export async function searchPlaces(queryText) {
+export function searchLocalPlaces(queryText) {
   if (!queryText || queryText.trim().length < 2) return [];
-  const q = queryText.trim();
-  const clean = q.toLowerCase();
-
-  const localMatches = ADDIS_DELIVERY_ZONES.filter(
+  const clean = queryText.trim().toLowerCase();
+  return ADDIS_DELIVERY_ZONES.filter(
     (z) => z.name.toLowerCase().includes(clean) || z.sub.toLowerCase().includes(clean)
   ).map((z) => ({
     id: `local-${z.id}`,
@@ -156,25 +153,67 @@ export async function searchPlaces(queryText) {
     latitude: z.latitude,
     longitude: z.longitude,
   }));
+}
 
-  if (!hasGoogleMaps()) return localMatches;
+let lastPhotonSearchAt = 0;
+export async function searchPlaces(queryText) {
+  const q = String(queryText || "").trim();
+  const localMatches = searchLocalPlaces(q);
+  if (q.length < 2) return localMatches;
 
-  const data = await fetchJson(
-    `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(q)}&components=country:ET&language=en&key=${encodeURIComponent(WEB_KEY)}`,
-    6000
-  );
-  const remote =
-    data?.status === "OK"
-      ? data.results.slice(0, 8).map((r, idx) => ({
-          id: `google-${r.place_id || idx}`,
-          title: shortAddress(r.formatted_address),
-          fullAddress: r.formatted_address,
-          latitude: r.geometry.location.lat,
-          longitude: r.geometry.location.lng,
-        }))
-      : [];
+  const googleKey = getGoogleMapsApiKey();
+  let googleResults = [];
+  if (googleKey) {
+    try {
+      const gData = await fetchJson(
+        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(q)}&components=country:ET&key=${googleKey}`,
+        4000
+      );
+      if (gData?.status === "OK" && Array.isArray(gData.results)) {
+        googleResults = gData.results
+          .map((item, idx) => {
+            const lat = item.geometry?.location?.lat;
+            const lng = item.geometry?.location?.lng;
+            const address = item.formatted_address || item.name;
+            return Number.isFinite(lat) && Number.isFinite(lng) && isWithinEthiopia(lat, lng)
+              ? { id: `google-${idx}-${lat}-${lng}`, title: address, fullAddress: address, latitude: lat, longitude: lng }
+              : null;
+          })
+          .filter(Boolean);
+      }
+    } catch (_) {}
+  }
 
-  return [...localMatches, ...remote];
+  // Photon fallback / secondary matches
+  let remote = [];
+  try {
+    const waitMs = Math.max(0, 1100 - (Date.now() - lastPhotonSearchAt));
+    if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    lastPhotonSearchAt = Date.now();
+    const data = await fetchJson(
+      `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=8&lang=en&lat=8.9806&lon=38.7578&bbox=33,3,48,15`,
+      5000
+    );
+    remote = (data?.features || []).map((feature, idx) => {
+      const [longitude, latitude] = feature?.geometry?.coordinates || [];
+      const p = feature?.properties || {};
+      const address = [p.name, p.street, p.city || p.district, p.state, p.country]
+        .filter((part, index, all) => part && all.indexOf(part) === index)
+        .join(", ");
+      return Number.isFinite(latitude) && Number.isFinite(longitude) && isWithinEthiopia(latitude, longitude)
+        ? { id: `photon-${p.osm_id || idx}-${latitude}-${longitude}`, title: address || q, fullAddress: address || q, latitude, longitude }
+        : null;
+    }).filter(Boolean);
+  } catch (_) {}
+
+  const seen = new Set(localMatches.map((place) => `${place.latitude.toFixed(4)},${place.longitude.toFixed(4)}`));
+  const combined = [...localMatches, ...googleResults, ...remote];
+  return combined.filter((place) => {
+    const key = `${place.latitude.toFixed(4)},${place.longitude.toFixed(4)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** Decode a Google encoded polyline into { latitude, longitude } points. */
@@ -206,12 +245,13 @@ const routeCache = new Map();
 const ROUTE_CACHE_LIMIT = 60;
 
 /**
- * Real road route between two points (Google Routes API, driving).
- * Returns { distanceKm, etaMinutes, points } or null when unavailable.
+ * Real road route between two points.
+ * Tries Google Directions API first when configured, then OpenStreetMap OSRM.
+ * Returns { distanceKm, etaMinutes, points, source } or null when unavailable.
  * Results are cached by rounded coordinates to keep API use low.
  */
 export async function getRoute(from, to) {
-  if (!hasGoogleMaps() || !from || !to) return null;
+  if (!from || !to) return null;
   const fLat = Number(from.latitude);
   const fLng = Number(from.longitude);
   const tLat = Number(to.latitude);
@@ -221,41 +261,101 @@ export async function getRoute(from, to) {
   const key = [fLat, fLng, tLat, tLng].map((n) => n.toFixed(4)).join(",");
   if (routeCache.has(key)) return routeCache.get(key);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const googleKey = getGoogleMapsApiKey();
+
+  // 1. Google Routes API (Active & Enabled)
+  if (googleKey) {
+    const rCtrl = new AbortController();
+    const rTimer = setTimeout(() => rCtrl.abort(), 6000);
+    try {
+      const rRes = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+        method: "POST",
+        signal: rCtrl.signal,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": googleKey,
+          "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline",
+        },
+        body: JSON.stringify({
+          origin: { location: { latLng: { latitude: fLat, longitude: fLng } } },
+          destination: { location: { latLng: { latitude: tLat, longitude: tLng } } },
+          travelMode: "DRIVE",
+        }),
+      });
+      if (rRes.ok) {
+        const rData = await rRes.json();
+        const rRoute = rData?.routes?.[0];
+        const poly = rRoute?.polyline?.encodedPolyline;
+        if (rRoute && poly) {
+          const durationSeconds = parseInt(rRoute.duration || "0", 10) || 0;
+          const result = {
+            distanceKm: Number(((rRoute.distanceMeters || 0) / 1000).toFixed(1)),
+            etaMinutes: Math.max(1, Math.round(durationSeconds / 60)),
+            points: decodePolyline(poly),
+            source: "google",
+          };
+          if (routeCache.size >= ROUTE_CACHE_LIMIT) routeCache.delete(routeCache.keys().next().value);
+          routeCache.set(key, result);
+          return result;
+        }
+      }
+    } catch (_) {
+      // Fallback
+    } finally {
+      clearTimeout(rTimer);
+    }
+
+    // 1b. Google Directions API (Standard fallback)
+    const gCtrl = new AbortController();
+    const gTimer = setTimeout(() => gCtrl.abort(), 6000);
+    try {
+      const gUrl = `https://maps.googleapis.com/maps/api/directions/json?origin=${fLat},${fLng}&destination=${tLat},${tLng}&mode=driving&key=${googleKey}`;
+      const gRes = await fetch(gUrl, { signal: gCtrl.signal, headers: { Accept: "application/json" } });
+      if (gRes.ok) {
+        const gData = await gRes.json();
+        const gRoute = gData?.routes?.[0];
+        const gLeg = gRoute?.legs?.[0];
+        if (gData?.status === "OK" && gRoute && gLeg && gRoute.overview_polyline?.points) {
+          const result = {
+            distanceKm: Number(((gLeg.distance?.value || 0) / 1000).toFixed(1)),
+            etaMinutes: Math.max(1, Math.round((gLeg.duration?.value || 0) / 60)),
+            points: decodePolyline(gRoute.overview_polyline.points),
+            source: "google",
+          };
+          if (routeCache.size >= ROUTE_CACHE_LIMIT) routeCache.delete(routeCache.keys().next().value);
+          routeCache.set(key, result);
+          return result;
+        }
+      }
+    } catch (_) {
+      // Fallback to OSRM
+    } finally {
+      clearTimeout(gTimer);
+    }
+  }
+
+  // 2. OpenStreetMap OSRM fallback (independent controller)
+  const oCtrl = new AbortController();
+  const oTimer = setTimeout(() => oCtrl.abort(), 6000);
   let data = null;
   try {
-    const res = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": WEB_KEY,
-        "X-Goog-FieldMask": "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline",
-      },
-      body: JSON.stringify({
-        origin: { location: { latLng: { latitude: fLat, longitude: fLng } } },
-        destination: { location: { latLng: { latitude: tLat, longitude: tLng } } },
-        travelMode: "DRIVE",
-        routingPreference: "TRAFFIC_UNAWARE",
-      }),
-    });
+    const url = `https://router.project-osrm.org/route/v1/driving/${fLng},${fLat};${tLng},${tLat}?overview=full&geometries=geojson`;
+    const res = await fetch(url, { signal: oCtrl.signal, headers: { Accept: "application/json" } });
     if (res.ok) data = await res.json();
   } catch (_) {
     data = null;
   } finally {
-    clearTimeout(timer);
+    clearTimeout(oTimer);
   }
 
-  const route = data?.routes?.[0];
-  if (!route || !Number.isFinite(Number(route.distanceMeters))) return null;
+  const route = data?.code === "Ok" ? data.routes?.[0] : null;
+  if (!route || !Number.isFinite(Number(route.distance))) return null;
 
-  // duration comes as a string such as "780s"
-  const seconds = Number(String(route.duration || "0").replace("s", "")) || 0;
   const result = {
-    distanceKm: Number((Number(route.distanceMeters) / 1000).toFixed(1)),
-    etaMinutes: Math.max(1, Math.round(seconds / 60)),
-    points: decodePolyline(route.polyline?.encodedPolyline || ""),
+    distanceKm: Number((Number(route.distance) / 1000).toFixed(1)),
+    etaMinutes: Math.max(1, Math.round((Number(route.duration) || 0) / 60)),
+    points: (route.geometry?.coordinates || []).map(([longitude, latitude]) => ({ latitude, longitude })),
+    source: "road",
   };
 
   if (routeCache.size >= ROUTE_CACHE_LIMIT) routeCache.delete(routeCache.keys().next().value);

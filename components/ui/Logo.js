@@ -4,7 +4,7 @@ export default function Logo({ size = 48, showText = false }) {
   return (
     <View style={s.wrap}>
       <Image
-        source={require("../../assets/icon.png")}
+        source={require("../../assets/optimized/runtime-icon.jpg")}
         style={{ width: size, height: size, borderRadius: size * 0.2 }}
         resizeMode="contain"
       />

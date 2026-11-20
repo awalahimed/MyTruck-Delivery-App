@@ -9,15 +9,14 @@ import {
   onAuthStateChanged,
   fetchSignInMethodsForEmail,
 } from "firebase/auth";
-import { getFunctions, httpsCallable } from "firebase/functions";
-import { auth, db, app } from "../firebase";
+import { auth, db } from "../firebase";
 import { sendSignupCode, claimPhone } from "../services/otpClient";
-import { doc, getDoc, setDoc, updateDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore";
+import { signInWithPhonePassword } from "../services/phoneSignIn";
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-// ── OTP bypass flag ───────────────────────────────────────────────────────────
-// Set to false to skip mandatory phone verification for all users.
-// Set to true to re-enable OTP enforcement in a future release.
+// Controls the post-sign-in legacy phone-verification gate only.
+// Customer and seller registration always require server-verified OTP proof.
 export const OTP_VERIFICATION_REQUIRED = false;
 
 /**
@@ -93,12 +92,17 @@ export const formatAuthError = (
     code.includes("invalid-credential") ||
     code.includes("wrong-password") ||
     code.includes("user-not-found") ||
+    code.includes("functions/unauthenticated") ||
     rawMsg.includes("invalid-login-credentials") ||
     rawMsg.includes("invalid-credential") ||
     rawMsg.includes("wrong-password") ||
     rawMsg.includes("user-not-found")
   ) {
     return "Incorrect phone/email or password. Please double-check your credentials and try again.";
+  }
+
+  if (code.includes("functions/failed-precondition")) {
+    return "This phone number is linked to more than one account. Please contact MyTruck support.";
   }
 
   // Account exists
@@ -488,6 +492,27 @@ export const AuthContextProvder = ({ children }) => {
   }, [loadProfileFromFirestore]);
 
   /**
+   * Checks whether a signup email is already in Firebase Auth before sending
+   * an SMS. This uses the client SDK, so it respects Firebase email
+   * enumeration protection (which may hide whether an account exists).
+   */
+  const checkEmailRegistered = useCallback(async (emailInput) => {
+    const email = String(emailInput || "").trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new Error("Enter a valid email address.");
+    }
+    try {
+      const methods = await fetchSignInMethodsForEmail(auth, email);
+      return { isRegistered: Array.isArray(methods) && methods.length > 0 };
+    } catch (error) {
+      console.warn("Signup email check failed:", error?.code || error?.message);
+      const unavailable = new Error("We couldn't verify this email right now. Please try again.");
+      unavailable.code = "auth/email-check-unavailable";
+      throw unavailable;
+    }
+  }, []);
+
+  /**
    * Check if a phone number is already registered in the system.
    * Checks both Firestore and Firebase Auth email methods.
    */
@@ -529,13 +554,14 @@ export const AuthContextProvder = ({ children }) => {
   }, []);
 
   /**
-   * Complete, atomic registration for customers and drivers.
+   * Complete, atomic public registration for customers only.
    * Creates the Firebase Auth account, writes the Firestore profile across schemas,
    * updates state, and sets dbUser so RootNavigator seamlessly renders AppStack.
    */
-  const registerCustomer = useCallback(async ({ fullName, phone, password, email, proof, role = "customer" }) => {
+  const registerCustomer = useCallback(async ({ fullName, phone, password, email, proof }) => {
     const norm = normalizeEthiopianPhone(phone);
     if (!norm.isValid) throw new Error(norm.error);
+    if (!proof) throw new Error("Verify your phone number before creating an account.");
     // Email is required: it's the account's sign-in and the address password reset goes to
     const cleanEmail = String(email || "").trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) throw new Error("Enter a valid email address.");
@@ -553,8 +579,6 @@ export const AuthContextProvder = ({ children }) => {
       const nameParts = (fullName || "").trim().split(" ");
       const firstName = nameParts[0] || fullName.trim();
       const lastName = nameParts.slice(1).join(" ") || "";
-      const isDriver = role === "driver";
-
       const profileData = {
         uid: createdUid,
         fullName: fullName.trim(),
@@ -564,9 +588,9 @@ export const AuthContextProvder = ({ children }) => {
         phone: norm.localNumber,
         workingPhone: norm.localNumber,
         email: cleanEmail,
-        phoneVerified: Boolean(proof),
-        role: isDriver ? "driver" : "customer",
-        isDriver: isDriver,
+      phoneVerified: true,
+        role: "customer",
+        isDriver: false,
         isOnline: false,
         address: "Bole, Addis Ababa",
         latitude: 8.9806,
@@ -585,17 +609,9 @@ export const AuthContextProvder = ({ children }) => {
         setDoc(doc(db, "users", createdUid), profileData, { merge: true }),
       ]);
 
-      // 4. Reserve the verified phone number for this account on the server.
-      //    If another account already owns it, undo this sign-up.
-      if (proof) {
-        try {
-          await claimPhone(norm.intlNumber, createdUid, proof);
-        } catch (claimErr) {
-          if (claimErr?.code === "otp/taken" || claimErr?.code === "otp/bad_proof") throw claimErr;
-          // Network trouble here shouldn't block a verified new user
-          console.warn("Phone claim not saved:", claimErr?.code, claimErr?.message);
-        }
-      }
+      // 4. Reserve the verified phone number on the server. Do not mark the
+      // account verified or complete signup if the server cannot confirm it.
+      await claimPhone(norm.intlNumber, createdUid, proof);
 
       // 5. Update local state immediately
       AsyncStorage.setItem(`@mytruck_profile_${createdUid}`, JSON.stringify({ ...profileData, createdAt: null })).catch(() => {});
@@ -607,6 +623,12 @@ export const AuthContextProvder = ({ children }) => {
 
       return { user: userCred.user, profile: profileData };
     } catch (err) {
+      if (createdUser?.uid) {
+        await Promise.allSettled([
+          deleteDoc(doc(db, "user", createdUser.uid)),
+          deleteDoc(doc(db, "users", createdUser.uid)),
+        ]);
+      }
       await rollbackCreatedUser(createdUser);
       endRegistration();
       throw err;
@@ -641,14 +663,18 @@ export const AuthContextProvder = ({ children }) => {
     bankName = "Commercial Bank of Ethiopia (CBE)",
     accountNumber = "",
     accountHolder = "",
+    proof,
   }) => {
     const norm = normalizeEthiopianPhone(phone);
     if (!norm.isValid) {
       throw new Error(norm.error);
     }
+    if (!proof) throw new Error("Verify your phone number before creating a seller account.");
 
     startRegistration();
     let createdUser = null;
+    let createdBusinessRef = null;
+    let createdApplicationRef = null;
 
     try {
       // 1. Create Firebase Auth account
@@ -663,6 +689,7 @@ export const AuthContextProvder = ({ children }) => {
       // 2. Generate business record ID
       const businessCollection = sellerType === "shop" ? "shops" : "restaurants";
       const businessRef = doc(collection(db, businessCollection));
+      createdBusinessRef = businessRef;
 
       // 3. Write business entity document
       await setDoc(businessRef, {
@@ -708,7 +735,8 @@ export const AuthContextProvder = ({ children }) => {
       });
 
       // 4. Write seller application audit document
-      await addDoc(collection(db, "sellerApplications"), {
+      createdApplicationRef = doc(collection(db, "sellerApplications"));
+      await setDoc(createdApplicationRef, {
         ownerUid: createdUid,
         ownerName: fullName.trim(),
         phone: norm.intlNumber,
@@ -777,6 +805,10 @@ export const AuthContextProvder = ({ children }) => {
         setDoc(doc(db, "users", createdUid), profileData, { merge: true }),
       ]);
 
+      // Reserve the verified phone after the Firestore records are ready. If
+      // this fails, the catch block removes those records and the Auth account.
+      await claimPhone(norm.intlNumber, createdUid, proof);
+
       // 6. Update local state immediately
       AsyncStorage.setItem(`@mytruck_profile_${createdUid}`, JSON.stringify({ ...profileData, createdAt: null })).catch(() => {});
       setUser(userCred.user);
@@ -787,6 +819,14 @@ export const AuthContextProvder = ({ children }) => {
 
       return { user: userCred.user, profile: profileData };
     } catch (err) {
+      const cleanup = [];
+      if (createdUser?.uid) {
+        cleanup.push(deleteDoc(doc(db, "user", createdUser.uid)));
+        cleanup.push(deleteDoc(doc(db, "users", createdUser.uid)));
+      }
+      if (createdBusinessRef) cleanup.push(deleteDoc(createdBusinessRef));
+      if (createdApplicationRef) cleanup.push(deleteDoc(createdApplicationRef));
+      await Promise.allSettled(cleanup);
       await rollbackCreatedUser(createdUser);
       endRegistration();
       throw err;
@@ -800,13 +840,11 @@ export const AuthContextProvder = ({ children }) => {
   }, []);
 
   const signInUser = useCallback((identifier, password) => {
-    let authEmail = identifier.trim();
-    if (!identifier.includes("@")) {
-      const norm = normalizeEthiopianPhone(identifier);
-      if (!norm.isValid) throw new Error(norm.error);
-      authEmail = norm.authEmail;
+    const cleanIdentifier = String(identifier || "").trim();
+    if (!cleanIdentifier.includes("@")) {
+      return signInWithPhonePassword(cleanIdentifier, password);
     }
-    return signInWithEmailAndPassword(auth, authEmail, password);
+    return signInWithEmailAndPassword(auth, cleanIdentifier.toLowerCase(), password);
   }, []);
 
   const refreshProfile = useCallback(async () => {
@@ -867,6 +905,7 @@ export const AuthContextProvder = ({ children }) => {
         signOutUser,
         refreshProfile,
         checkPhoneRegistered,
+        checkEmailRegistered,
         otpFlowInProgress,
         registering,
         sessionPhoneVerified,

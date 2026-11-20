@@ -69,7 +69,10 @@ service cloud.firestore {
     function safeSelfUpdate() {
       let oldRole = resource.data.get('role', '');
       let newRole = request.resource.data.get('role', '');
+      let isSellerProfile = oldRole in ['pendingSeller', 'restaurant', 'shop', 'seller'];
+      let locationKeys = ['address', 'city', 'latitude', 'longitude', 'storeLatitude', 'storeLongitude'];
       return !changed().hasAny(protectedProfileKeys().removeAll(['role'])) &&
+             (!isSellerProfile || !changed().hasAny(locationKeys)) &&
              (newRole == oldRole ||
               (oldRole == '' && newRole == 'customer') ||
               (oldRole in ['', 'customer'] && newRole == 'pendingSeller'));
@@ -313,21 +316,30 @@ service cloud.firestore {
       let d = request.resource.data;
       return d.get('ownerUid', '') == uid() && d.get('status', '') == 'PENDING' && d.get('isVerified', false) == false;
     }
-    function ownerEditsStorefront() {
-      return resource.data.get('ownerUid', '') == uid() &&
-             onlyChanges(['address', 'workingHours', 'image', 'profileImage', 'logoUrl',
-                          'latitude', 'longitude', 'updatedAt']);
+    function ownerEditsStorefront(storeId) {
+      // New merchant documents have ownerUid; older/admin-created records may
+      // be linked by the protected sellerId/restaurantId/shopId on the user's
+      // own profile instead.
+      return isSeller() &&
+             (resource.data.get('ownerUid', '') == uid() || ownsStoreId(storeId)) &&
+             onlyChanges(['workingHours', 'openingTime', 'closingTime', 'image', 'profileImage', 'logoUrl', 'updatedAt']);
+    }
+    function ownerSetsStoreAvailability(storeId) {
+      return isSeller() &&
+             resource.data.get('status', '') == 'APPROVED' &&
+             (resource.data.get('ownerUid', '') == uid() || ownsStoreId(storeId)) &&
+             onlyChanges(['isOpen', 'isAvailable', 'isTemporarilyClosed', 'updatedAt']);
     }
     match /restaurants/{storeId} {
       allow read: if signedIn();
       allow create: if isStaff() || (signedIn() && newStoreValid());
-      allow update: if isStaff() || (signedIn() && !isBlocked() && ownerEditsStorefront());
+      allow update: if isStaff() || (signedIn() && !isBlocked() && (ownerEditsStorefront(storeId) || ownerSetsStoreAvailability(storeId)));
       allow delete: if isStaff();
     }
     match /shops/{storeId} {
       allow read: if signedIn();
       allow create: if isStaff() || (signedIn() && newStoreValid());
-      allow update: if isStaff() || (signedIn() && !isBlocked() && ownerEditsStorefront());
+      allow update: if isStaff() || (signedIn() && !isBlocked() && (ownerEditsStorefront(storeId) || ownerSetsStoreAvailability(storeId)));
       allow delete: if isStaff();
     }
 

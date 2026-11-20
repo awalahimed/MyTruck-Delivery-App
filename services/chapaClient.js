@@ -204,26 +204,3 @@ export async function checkChapaPaymentForStore(txRef) {
   if (currency !== "ETB") return { ok: false, reason: `The payment was made in ${currency}, not ETB.` };
   return { ok: true, amount: Number(result.data.amount) || 0 };
 }
-
-/**
- * Fast payment status from the server's record (written by the Chapa webhook).
- * Returns "SUCCESS", "UNVERIFIED" or "PENDING". Never throws; falls back to PENDING.
- */
-export async function getPaymentStatusFast(txRef) {
-  if (!txRef) return "PENDING";
-  try {
-    const res = await fetch("https://ubfeichwvegdbkjnsltv.supabase.co/functions/v1/payment-status", {
-      method: "POST",
-      headers: {
-        apikey: "sb_publishable_W25wOYiJe2g9NF8Mr84--w_jYl__P8f",
-        Authorization: "Bearer sb_publishable_W25wOYiJe2g9NF8Mr84--w_jYl__P8f",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ tx_ref: txRef }),
-    });
-    const data = await res.json().catch(() => ({}));
-    return String(data?.status || "PENDING").toUpperCase();
-  } catch (_) {
-    return "PENDING";
-  }
-}

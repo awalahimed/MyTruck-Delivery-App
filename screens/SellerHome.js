@@ -18,6 +18,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useNavigation } from "@react-navigation/native";
+import DateTimePicker, { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import * as ImagePicker from "expo-image-picker";
 import { UserAuth } from "../contexts/AuthContext";
@@ -39,8 +40,8 @@ import {
   deleteDoc,
   runTransaction,
   getDoc,
+  writeBatch,
 } from "firebase/firestore";
-import DeliveryLocationModal from "../components/DeliveryLocationModal";
 import { notifyCustomer } from "../services/orderNotifications";
 import { checkChapaPaymentForStore } from "../services/chapaClient";
 import NotificationBell from "../components/ui/NotificationBell";
@@ -49,6 +50,27 @@ import SmartImage from "../components/ui/SmartImage";
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
 const ORANGE = "#F47721";
+
+const parseTimeForPicker = (value) => {
+  const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!match) return new Date(2000, 0, 1, 8, 0, 0, 0);
+  let hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (match[3]?.toUpperCase() === "PM" && hours < 12) hours += 12;
+  if (match[3]?.toUpperCase() === "AM" && hours === 12) hours = 0;
+  return new Date(2000, 0, 1, hours, minutes, 0, 0);
+};
+
+const formatStoreTime = (date) => {
+  const hours24 = date.getHours();
+  const hours12 = hours24 % 12 || 12;
+  return `${String(hours12).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")} ${hours24 >= 12 ? "PM" : "AM"}`;
+};
+
+const splitStoredHours = (value) => {
+  if (typeof value !== "string" || !value.includes("-")) return [];
+  return value.split("-").map((part) => part.trim());
+};
 const BG = "#F5FAF9";
 
 const STATUS_CONFIG = {
@@ -108,6 +130,7 @@ export default function SellerHome() {
   const [catalogCategory, setCatalogCategory] = useState("All");
   const [catalogSearch, setCatalogSearch] = useState("");
   const [isOpenForOrders, setIsOpenForOrders] = useState(true);
+  const [savingStoreStatus, setSavingStoreStatus] = useState(false);
 
   // Add/Edit Product Modal State
   const [productModalVisible, setProductModalVisible] = useState(false);
@@ -125,16 +148,19 @@ export default function SellerHome() {
   const [prodAvailable, setProdAvailable] = useState(true);
   const [savingProduct, setSavingProduct] = useState(false);
 
-  // Storefront Editable Profile State (Only 3 permitted fields)
-  const [storeAddress, setStoreAddress] = useState(dbUser?.address || "");
+  // Storefront editable settings. Store pickup location is fixed after registration.
   // Store map location: used for delivery fees, distance limits and the driver's pickup point
   const [storeCoords, setStoreCoords] = useState(
     dbUser?.storeLatitude && dbUser?.storeLongitude
       ? { latitude: Number(dbUser.storeLatitude), longitude: Number(dbUser.storeLongitude) }
       : null
   );
-  const [storeLocationModalVisible, setStoreLocationModalVisible] = useState(false);
-  const [storeWorkingHours, setStoreWorkingHours] = useState(dbUser?.workingHours || "08:00 AM - 10:00 PM");
+  const storedHours = splitStoredHours(dbUser?.workingHours);
+  const [storeOpeningTime, setStoreOpeningTime] = useState(dbUser?.openingTime || storedHours[0] || "08:00 AM");
+  const [storeClosingTime, setStoreClosingTime] = useState(dbUser?.closingTime || storedHours[1] || "10:00 PM");
+  const [storeOpen24Hours, setStoreOpen24Hours] = useState(String(dbUser?.workingHours || "").toLowerCase().includes("24 hours"));
+  const [editingTimeField, setEditingTimeField] = useState(null);
+  const [iosPickerValue, setIosPickerValue] = useState(new Date(2000, 0, 1, 8, 0, 0, 0));
   const [storeLogoUri, setStoreLogoUri] = useState(dbUser?.image || dbUser?.profileImage || "");
   const [savingStorefront, setSavingStorefront] = useState(false);
 
@@ -145,10 +171,39 @@ export default function SellerHome() {
   const [isRejectingBusy, setIsRejectingBusy] = useState(false);
 
   useEffect(() => {
-    if (dbUser?.address) setStoreAddress(dbUser.address);
-    if (dbUser?.workingHours) setStoreWorkingHours(dbUser.workingHours);
+    if (dbUser?.workingHours) {
+      const savedHours = splitStoredHours(dbUser.workingHours);
+      setStoreOpeningTime(dbUser.openingTime || savedHours[0] || "08:00 AM");
+      setStoreClosingTime(dbUser.closingTime || savedHours[1] || "10:00 PM");
+      setStoreOpen24Hours(dbUser.workingHours.toLowerCase().includes("24 hours"));
+    }
     if (dbUser?.image || dbUser?.profileImage) setStoreLogoUri(dbUser.image || dbUser.profileImage);
   }, [dbUser]);
+
+  const selectStoreTime = (field, date) => {
+    const value = formatStoreTime(date);
+    if (field === "opening") setStoreOpeningTime(value);
+    else setStoreClosingTime(value);
+  };
+
+  const openStoreTimePicker = (field) => {
+    const currentValue = field === "opening" ? storeOpeningTime : storeClosingTime;
+    const value = parseTimeForPicker(currentValue);
+    if (Platform.OS === "android") {
+      DateTimePickerAndroid.open({
+        value,
+        mode: "time",
+        display: "default",
+        is24Hour: false,
+        onChange: (event, selectedTime) => {
+          if (event.type === "set" && selectedTime) selectStoreTime(field, selectedTime);
+        },
+      });
+      return;
+    }
+    setEditingTimeField(field);
+    setIosPickerValue(value);
+  };
 
   const isShop = dbUser?.role === "shop";
   const merchantId = dbUser?.shopId || (isShop ? (dbUser?.businessName?.toLowerCase().includes("bambis") ? "shop-bambis-supermarket" : (dbUser?.sellerId || user?.uid)) : (dbUser?.restaurantId || dbUser?.sellerId || user?.uid));
@@ -158,6 +213,57 @@ export default function SellerHome() {
     dbUser?.approvalStatus === "APPROVED" ||
     dbUser?.status === "APPROVED" ||
     dbUser?.isApproved === true;
+
+  useEffect(() => {
+    if (!sellerId) return;
+    const storeCollection = isShop ? "shops" : "restaurants";
+    return onSnapshot(doc(db, storeCollection, sellerId), (snapshot) => {
+      if (!snapshot.exists()) return;
+      const store = snapshot.data();
+      setIsOpenForOrders(
+        store.isOpen !== false &&
+        store.isAvailable !== false &&
+        store.isTemporarilyClosed !== true
+      );
+    }, (error) => console.warn("SellerHome: store availability listener error", error?.message));
+  }, [sellerId, isShop]);
+
+  const confirmStoreStatusChange = () => {
+    const nextIsOpen = !isOpenForOrders;
+    const storeLabel = isShop ? "shop" : "restaurant";
+    Alert.alert(
+      `${nextIsOpen ? "Open" : "Close"} ${storeLabel}?`,
+      nextIsOpen
+        ? "Customers will be able to place new orders from your store. Continue?"
+        : "Customers will no longer be able to place new orders from your store. Continue?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: nextIsOpen ? "Open Store" : "Close Store",
+          style: nextIsOpen ? "default" : "destructive",
+          onPress: async () => {
+            if (!sellerId || savingStoreStatus) return;
+            setSavingStoreStatus(true);
+            try {
+              const storeCollection = isShop ? "shops" : "restaurants";
+              await updateDoc(doc(db, storeCollection, sellerId), {
+                isOpen: nextIsOpen,
+                isAvailable: nextIsOpen,
+                isTemporarilyClosed: !nextIsOpen,
+                updatedAt: serverTimestamp(),
+              });
+              setIsOpenForOrders(nextIsOpen);
+            } catch (error) {
+              console.warn("SellerHome: could not change store availability", error?.code, error?.message);
+              Alert.alert("Update Failed", error?.message || "Could not update your store status.");
+            } finally {
+              setSavingStoreStatus(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   useEffect(() => {
     if (!sellerId) return;
@@ -619,37 +725,26 @@ export default function SellerHome() {
     if (!user?.uid) return;
     setSavingStorefront(true);
     try {
-      let opTime = null;
-      let clTime = null;
-      if (storeWorkingHours.includes("-")) {
-        const parts = storeWorkingHours.split("-").map((s) => s.trim());
-        if (parts.length === 2) {
-          opTime = parts[0];
-          clTime = parts[1];
-        }
-      }
+      const openingTime = storeOpen24Hours ? "12:00 AM" : storeOpeningTime;
+      const closingTime = storeOpen24Hours ? "12:00 AM" : storeClosingTime;
       const updates = {
-        address: storeAddress.trim(),
-        workingHours: storeWorkingHours.trim(),
-        ...(opTime && clTime ? { openingTime: opTime, closingTime: clTime } : {}),
+        workingHours: storeOpen24Hours ? "Open 24 hours" : `${openingTime} - ${closingTime}`,
+        openingTime,
+        closingTime,
         image: storeLogoUri || null,
         profileImage: storeLogoUri || null,
         updatedAt: serverTimestamp(),
       };
-      await updateDoc(doc(db, "user", user.uid), {
-        ...updates,
-        ...(storeCoords ? { storeLatitude: storeCoords.latitude, storeLongitude: storeCoords.longitude } : {}),
-      });
+      const batch = writeBatch(db);
+      batch.update(doc(db, "user", user.uid), updates);
       if (sellerId) {
         const col = isShop ? "shops" : "restaurants";
-        await setDoc(
-          doc(db, col, sellerId),
-          { ...updates, ...(storeCoords ? { latitude: storeCoords.latitude, longitude: storeCoords.longitude } : {}) },
-          { merge: true }
-        );
+        batch.update(doc(db, col, sellerId), updates);
       }
-      Alert.alert("Storefront Updated ✓", "Your address, operating hours, and storefront photo have been saved.");
+      await batch.commit();
+      Alert.alert("Storefront Updated ✓", "Your operating hours and storefront photo have been saved.");
     } catch (e) {
+      console.warn("Storefront update failed:", e?.code, e?.message);
       Alert.alert("Update Failed", e?.message || "Could not update storefront settings.");
     } finally {
       setSavingStorefront(false);
@@ -920,7 +1015,8 @@ export default function SellerHome() {
               badgeColor={ORANGE}
             />
             <TouchableOpacity
-              onPress={() => setIsOpenForOrders((prev) => !prev)}
+              onPress={confirmStoreStatusChange}
+              disabled={savingStoreStatus}
               style={[s.storeToggleBtn, isOpenForOrders ? s.storeOpen : s.storeClosed]}
               activeOpacity={0.8}
             >
@@ -1542,7 +1638,7 @@ export default function SellerHome() {
                 <MaterialCommunityIcons name="pencil-outline" size={20} color={TEAL} style={{ marginRight: 8 }} />
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontSize: 15, fontWeight: "800", color: DARK }}>Storefront Customization</Text>
-                  <Text style={{ fontSize: 11, color: "#64748B" }}>Permitted updates: Logo, hours & address</Text>
+                  <Text style={{ fontSize: 11, color: "#64748B" }}>Permitted updates: Logo & operating hours</Text>
                 </View>
               </View>
 
@@ -1564,43 +1660,76 @@ export default function SellerHome() {
                 </TouchableOpacity>
               </View>
 
-              {/* Working Hours Interval */}
-              <Text style={s.modalLabel}>Operating / Working Hours Interval</Text>
-              <TextInput
-                style={s.modalInput}
-                value={storeWorkingHours}
-                onChangeText={setStoreWorkingHours}
-                placeholder="e.g. 08:00 AM - 10:00 PM"
-                placeholderTextColor="#94A3B8"
-              />
+              {/* Native business-hours time selectors */}
+              <Text style={s.modalLabel}>Operating Hours</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 8 }}>
+                <View style={{ flex: 1, paddingRight: 12 }}>
+                  <Text style={{ color: DARK, fontWeight: "700", fontSize: 13 }}>Open 24 hours</Text>
+                  <Text style={{ color: "#64748B", fontSize: 11, marginTop: 2 }}>Accept orders all day and night</Text>
+                </View>
+                <Switch value={storeOpen24Hours} onValueChange={setStoreOpen24Hours} trackColor={{ false: "#CBD5E1", true: TEAL }} />
+              </View>
+              {!storeOpen24Hours ? (
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
+                  {[{ field: "opening", label: "Opens at", value: storeOpeningTime }, { field: "closing", label: "Closes at", value: storeClosingTime }].map((time) => (
+                    <View key={time.field} style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 11, color: "#64748B", marginBottom: 5 }}>{time.label}</Text>
+                      <TouchableOpacity
+                        onPress={() => openStoreTimePicker(time.field)}
+                        style={{ minHeight: 48, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: "#CBD5E1", backgroundColor: "#F8FAFC", flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${time.label} ${time.value}. Tap to change time.`}
+                      >
+                        <Text style={{ color: DARK, fontSize: 15, fontWeight: "700" }}>{time.value}</Text>
+                        <MaterialCommunityIcons name="clock-outline" size={18} color={TEAL} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <View style={{ backgroundColor: "#ECFDF5", padding: 12, borderRadius: 10, marginTop: 6 }}>
+                  <Text style={{ color: "#047857", fontWeight: "700", textAlign: "center" }}>Customers can order 24 hours a day</Text>
+                </View>
+              )}
+              {Platform.OS === "ios" && editingTimeField ? (
+                <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: "#F1F5F9" }}>
+                  <Text style={{ color: DARK, fontWeight: "700", textAlign: "center" }}>
+                    Select {editingTimeField === "opening" ? "opening" : "closing"} time
+                  </Text>
+                  <DateTimePicker
+                    value={iosPickerValue}
+                    mode="time"
+                    display="spinner"
+                    is24Hour={false}
+                    onChange={(_event, selectedTime) => { if (selectedTime) setIosPickerValue(selectedTime); }}
+                    style={{ alignSelf: "center" }}
+                  />
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 6 }}>
+                    <TouchableOpacity onPress={() => setEditingTimeField(null)} style={{ padding: 10 }}>
+                      <Text style={{ color: "#64748B", fontWeight: "700" }}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => { selectStoreTime(editingTimeField, iosPickerValue); setEditingTimeField(null); }} style={{ padding: 10 }}>
+                      <Text style={{ color: TEAL, fontWeight: "800" }}>Use time</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ) : null}
 
-              {/* Operating Address */}
-              <Text style={s.modalLabel}>Operating Address & Location</Text>
-              <TextInput
-                style={s.modalInput}
-                value={storeAddress}
-                onChangeText={setStoreAddress}
-                placeholder="e.g. Bole, Addis Ababa, Ethiopia"
-                placeholderTextColor="#94A3B8"
-              />
-
-              <TouchableOpacity
-                onPress={() => setStoreLocationModalVisible(true)}
-                style={{ flexDirection: "row", alignItems: "center", marginTop: 10, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: storeCoords ? "#A7F3D0" : "#FDBA74", backgroundColor: storeCoords ? "#ECFDF5" : "#FFF7ED" }}
-                activeOpacity={0.85}
-              >
-                <MaterialCommunityIcons name={storeCoords ? "map-marker-check" : "map-marker-alert"} size={20} color={storeCoords ? "#047857" : "#C2410C"} />
+              {/* Store pickup location stays fixed after it is captured during registration. */}
+              <Text style={s.modalLabel}>Storefront Pickup Location (Fixed)</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", marginTop: 4, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: "#A7F3D0", backgroundColor: "#ECFDF5" }}>
+                <MaterialCommunityIcons name="map-marker-lock" size={20} color="#047857" />
                 <View style={{ flex: 1, marginLeft: 10 }}>
-                  <Text style={{ fontSize: 13, fontWeight: "800", color: storeCoords ? "#065F46" : "#9A3412" }}>
-                    {storeCoords ? "Store location pinned" : "Pin your store on the map"}
+                  <Text style={{ fontSize: 13, fontWeight: "800", color: "#065F46" }}>
+                    {dbUser?.address || "Location set during registration"}
                   </Text>
                   <Text style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>
                     {storeCoords
-                      ? `${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)} · tap to change, then Save`
-                      : "Required for correct delivery fees and so drivers find your pickup point"}
+                      ? `${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)} · location changes are disabled`
+                      : "Store pickup location is managed by MyTruck support"}
                   </Text>
                 </View>
-              </TouchableOpacity>
+              </View>
 
               <TouchableOpacity
                 style={[{ marginTop: 12, backgroundColor: TEAL, paddingVertical: 14, borderRadius: 12, alignItems: "center" }, savingStorefront && { opacity: 0.7 }]}
@@ -1637,19 +1766,6 @@ export default function SellerHome() {
           </View>
         )}
       </ScrollView>
-
-      {storeLocationModalVisible ? (
-        <DeliveryLocationModal
-          visible={storeLocationModalVisible}
-          onClose={() => setStoreLocationModalVisible(false)}
-          initialLocation={storeCoords}
-          onConfirmLocation={(loc) => {
-            setStoreCoords({ latitude: Number(loc.latitude), longitude: Number(loc.longitude) });
-            if (!storeAddress.trim() && loc.address && loc.address !== "My Location, Ethiopia") setStoreAddress(loc.address);
-            Alert.alert("Location Selected", "Tap \"Save Storefront Changes\" to publish your store location.");
-          }}
-        />
-      ) : null}
 
       {/* Add / Edit Product Modal */}
       <Modal

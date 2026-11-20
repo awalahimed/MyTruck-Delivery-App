@@ -488,22 +488,18 @@ export function getItemDiscountInfo(item, config = null) {
   } else if (item.discountPercent && Number(item.discountPercent) > 0 && Number(item.discountPercent) < 100) {
     rawOriginalPrice = Math.round(rawPrice / (1 - Number(item.discountPercent) / 100));
   } else {
-    // Seeded attractive promotional discount: 20% to 25% OFF
-    rawOriginalPrice = Math.round(rawPrice * 1.25);
+    rawOriginalPrice = rawPrice;
   }
 
   let customerOriginalPrice = getCustomerPrice(rawOriginalPrice, config);
 
-  // Guarantee that customerOriginalPrice is always strictly higher than customerSellingPrice for visual integrity
-  if (customerOriginalPrice <= customerSellingPrice && customerSellingPrice > 0) {
-    customerOriginalPrice = Math.round(customerSellingPrice * 1.25);
-  }
+  if (customerOriginalPrice < customerSellingPrice) customerOriginalPrice = customerSellingPrice;
 
   const savingsAmount = Math.max(0, customerOriginalPrice - customerSellingPrice);
   const discountPercent =
     customerOriginalPrice > 0 && savingsAmount > 0
       ? Math.round((savingsAmount / customerOriginalPrice) * 100)
-      : (item.discountPercent || 20);
+      : 0;
 
   return {
     customerSellingPrice,

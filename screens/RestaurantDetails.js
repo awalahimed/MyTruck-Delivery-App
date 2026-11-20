@@ -40,10 +40,6 @@ const TEAL = "#179B83";
 const DARK = "#0B2A26";
 const ORANGE = "#F47721";
 
-const HABESHA_ASSET = require("../assets/cropped/habesha_kitchen.png");
-const PIZZA_ASSET = require("../assets/cropped/pizza_house.png");
-const BURGER_ASSET = require("../assets/cropped/banner_burger.png");
-
 const formatETB = (amount) => {
   const num = Number(amount) || 0;
   return `ETB ${num.toFixed(2)}`;
@@ -63,7 +59,8 @@ export function parseTimeToMinutes(t) {
 }
 
 const isRestaurantOpen = (info) => {
-  if (!info || info.isTemporarilyClosed === true) return false;
+  if (!info || info.isOpen === false || info.isAvailable === false || info.isTemporarilyClosed === true) return false;
+  if (String(info.workingHours || "").toLowerCase().includes("24 hours")) return true;
   let opTime = info.openingTime;
   let clTime = info.closingTime;
   if ((!opTime || !clTime) && typeof info.workingHours === "string" && info.workingHours.includes("-")) {
@@ -73,7 +70,7 @@ const isRestaurantOpen = (info) => {
       clTime = parts[1];
     }
   }
-  if (!opTime || !clTime) return true;
+  if (!opTime || !clTime) return info.isOpen === true;
   const now = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Africa/Addis_Ababa",
     hour: "2-digit",
@@ -83,7 +80,8 @@ const isRestaurantOpen = (info) => {
   const current = parseTimeToMinutes(now);
   const opening = parseTimeToMinutes(opTime);
   const closing = parseTimeToMinutes(clTime);
-  if (current == null || opening == null || closing == null) return true;
+  if (current == null || opening == null || closing == null) return false;
+  if (opening === closing) return true;
   return opening <= closing
     ? current >= opening && current < closing
     : current >= opening || current < closing;
@@ -100,15 +98,15 @@ export default function RestaurantDetails() {
   const route = useRoute();
   const restaurantUid = route?.params?.id || route?.params?.restaurantId || "";
 
-  const [dishes, setDishes] = useState(route?.params?.dishes || []);
+  const [dishes, setDishes] = useState([]);
   const [restaurantInfo, setRestaurantInfo] = useState({
     name: route?.params?.title || route?.params?.name || "Restaurant",
     image: route?.params?.imgUrl || route?.params?.image || "",
-    rating: route?.params?.rating || 4.8,
-    reviews: route?.params?.reviews || "1.2k+",
-    deliveryTime: route?.params?.deliveryTime || "25 min",
-    genre: route?.params?.genre || "Ethiopian",
-    address: route?.params?.address || "Ethiopia",
+    rating: route?.params?.rating,
+    reviews: route?.params?.reviews,
+    deliveryTime: route?.params?.deliveryTime,
+    genre: route?.params?.genre || "",
+    address: route?.params?.address || "",
     description: route?.params?.short_description || route?.params?.description || "",
     latitude: Number(route?.params?.lat || route?.params?.latitude || 8.992),
     longitude: Number(route?.params?.lng || route?.params?.longitude || 38.752),
@@ -145,167 +143,8 @@ export default function RestaurantDetails() {
   const getImageSource = () => {
     const img = restaurantInfo.image || route?.params?.imgUrl || route?.params?.image;
     if (img && typeof img === "object") return img;
-    if (typeof img === "string" && img.startsWith("http")) return { uri: img };
-    const name = String(restaurantInfo.name || route?.params?.title || "").toLowerCase();
-    if (name.includes("habesha") || name.includes("kategna") || name.includes("ethiopian")) return HABESHA_ASSET;
-    if (name.includes("pizza") || name.includes("italian")) return PIZZA_ASSET;
-    if (name.includes("burger") || name.includes("grill") || name.includes("fast")) return BURGER_ASSET;
-    return HABESHA_ASSET;
+    return typeof img === "string" ? img : null;
   };
-
-  // Generate signature dishes with attractive seeded discounts so no merchant ever renders empty
-  const getSignatureDishes = (rId, name, genre) => {
-    const rName = String(name || "").toLowerCase();
-    const rGenre = String(genre || "").toLowerCase();
-    const displayName = name || "Restaurant";
-
-    if (rName.includes("burger") || rGenre.includes("burger") || rGenre.includes("fast")) {
-      return [
-        {
-          id: `${rId || "res"}-burger-1`,
-          restaurantId: rId || "res-burger",
-          restaurantName: displayName,
-          name: "Classic Cheeseburger Deluxe",
-          price: 320,
-          originalPrice: 420,
-          discountPercent: 24,
-          hasDiscount: true,
-          description: "Handcrafted grilled beef patty with melted cheddar, crisp lettuce, red onion, pickles, and signature house sauce on a toasted brioche bun.",
-          image: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400",
-        },
-        {
-          id: `${rId || "res"}-burger-2`,
-          restaurantId: rId || "res-burger",
-          restaurantName: displayName,
-          name: "Double Bacon Monster Burger",
-          price: 420,
-          originalPrice: 560,
-          discountPercent: 25,
-          hasDiscount: true,
-          description: "Double seasoned beef patties, smoked crispy bacon, caramelized onions, double cheddar, and smoky BBQ drizzle.",
-          image: "https://images.unsplash.com/photo-1586190848861-99aa4a171e90?w=400",
-        },
-        {
-          id: `${rId || "res"}-burger-3`,
-          restaurantId: rId || "res-burger",
-          restaurantName: displayName,
-          name: "Crispy Spicy Chicken Burger",
-          price: 290,
-          originalPrice: 380,
-          discountPercent: 24,
-          hasDiscount: true,
-          description: "Crispy buttermilk fried chicken breast tossed in Ethiopian hot spice blend with tangy creamy coleslaw.",
-          image: "https://images.unsplash.com/photo-1625813506062-0aeb1d7a094b?w=400",
-        },
-        {
-          id: `${rId || "res"}-burger-4`,
-          restaurantId: rId || "res-burger",
-          restaurantName: displayName,
-          name: "Loaded Cheesy Truffle Fries",
-          price: 180,
-          originalPrice: 240,
-          discountPercent: 25,
-          hasDiscount: true,
-          description: "Golden hand-cut fries smothered in warm cheddar cheese sauce, white truffle oil, and fresh jalapeños.",
-          image: "https://images.unsplash.com/photo-1576107232684-1279f3908594?w=400",
-        },
-      ];
-    }
-
-    if (rName.includes("pizza") || rGenre.includes("pizza") || rGenre.includes("italian")) {
-      return [
-        {
-          id: `${rId || "res"}-pizza-1`,
-          restaurantId: rId || "res-pizza",
-          restaurantName: displayName,
-          name: "Signature Pepperoni Pizza",
-          price: 450,
-          originalPrice: 600,
-          discountPercent: 25,
-          hasDiscount: true,
-          description: "Authentic wood-fired crust with rich tomato sauce, melted mozzarella, and generous premium halal pepperoni slices.",
-          image: "https://images.unsplash.com/photo-1534308983496-4fabb1a015ee?w=400",
-        },
-        {
-          id: `${rId || "res"}-pizza-2`,
-          restaurantId: rId || "res-pizza",
-          restaurantName: displayName,
-          name: "Classic Margherita",
-          price: 360,
-          originalPrice: 480,
-          discountPercent: 25,
-          hasDiscount: true,
-          description: "San Marzano marinara, fresh Fior di Latte mozzarella, virgin olive oil, and aromatic garden basil.",
-          image: "https://images.unsplash.com/photo-1604382355076-af4b0eb60143?w=400",
-        },
-        {
-          id: `${rId || "res"}-pizza-3`,
-          restaurantId: rId || "res-pizza",
-          restaurantName: displayName,
-          name: "Four Seasons Special Pizza",
-          price: 490,
-          originalPrice: 650,
-          discountPercent: 25,
-          hasDiscount: true,
-          description: "Artisanal crust divided with mushrooms, smoked ham, black olives, artichoke hearts, and fresh oregano.",
-          image: "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=400",
-        },
-      ];
-    }
-
-    // Authentic Ethiopian fallback with seeded deals
-    return [
-      {
-        id: `${rId || "res"}-ethio-1`,
-        restaurantId: rId || "res-habesha",
-        restaurantName: displayName,
-        name: "Special Doro Wot",
-        price: 420,
-        originalPrice: 560,
-        discountPercent: 25,
-        hasDiscount: true,
-        description: "Authentic slow-simmered chicken stew with berbere, hard-boiled egg, and freshly baked teff injera.",
-        image: "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400",
-      },
-      {
-        id: `${rId || "res"}-ethio-2`,
-        restaurantId: rId || "res-habesha",
-        restaurantName: displayName,
-        name: "Sizzling Shekla Tibs",
-        price: 390,
-        originalPrice: 520,
-        discountPercent: 25,
-        hasDiscount: true,
-        description: "Tender beef cubes sautéed on clay pot with rosemary, garlic, sliced green peppers, and awaze.",
-        image: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400",
-      },
-      {
-        id: `${rId || "res"}-ethio-3`,
-        restaurantId: rId || "res-habesha",
-        restaurantName: displayName,
-        name: "Gurage Special Kitfo",
-        price: 450,
-        originalPrice: 600,
-        discountPercent: 25,
-        hasDiscount: true,
-        description: "Finely minced prime beef seasoned with spiced clarified butter (niter kibbeh) and mitmita, served with ayib and kocho.",
-        image: "https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=400",
-      },
-      {
-        id: `${rId || "res"}-ethio-4`,
-        restaurantId: rId || "res-habesha",
-        restaurantName: displayName,
-        name: "Shiro Tegamino",
-        price: 210,
-        originalPrice: 280,
-        discountPercent: 25,
-        hasDiscount: true,
-        description: "Simmering clay bowl of ground seasoned chickpeas with garlic, diced tomatoes, and green chili peppers.",
-        image: "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=400",
-      },
-    ];
-  };
-
 
   useEffect(() => {
     let active = true;
@@ -341,7 +180,7 @@ export default function RestaurantDetails() {
         console.warn("RestaurantDetails: could not load restaurant", e?.message);
       }
 
-      // 2. Fetch dishes — always guarantee fallback so menu never shows empty
+      // 2. Fetch only approved, available dishes from the restaurant menu
       try {
         let items = [];
         if (restaurantUid) {
@@ -350,37 +189,18 @@ export default function RestaurantDetails() {
           const snapshot = await getDocs(q);
           snapshot.forEach((d) => {
             const data = d.data();
-            const isApproved =
-              data.isApproved === true ||
-              data.status === "APPROVED" ||
-              data.status === "Published" ||
-              (!data.status && data.isAvailable !== false);
-            const isPendingOrRejected =
-              data.status === "PENDING" ||
-              data.status === "REJECTED" ||
-              data.lifecycleStatus === "Pending" ||
-              data.lifecycleStatus === "Rejected";
-            if (isApproved && !isPendingOrRejected) {
+            const status = String(data.status || data.lifecycleStatus || "").trim().toUpperCase();
+            const approved = data.isApproved === true || data.isPublished === true || status === "APPROVED" || status === "PUBLISHED";
+            if (approved && data.isAvailable !== false && data.isActive !== false) {
               items.push({ ...data, id: d.id });
             }
           });
         }
 
-        // If no real dishes in Firestore, apply curated signature fallback
-        if (items.length === 0) {
-          const rName = rData?.name || restaurantInfo.name || route?.params?.title || route?.params?.name || "";
-          const rGenre = rData?.genre || restaurantInfo.genre || route?.params?.genre || "";
-          items = getSignatureDishes(restaurantUid || "default", rName, rGenre);
-        }
-
         if (active) setDishes(items);
       } catch (e) {
-        console.warn("RestaurantDetails: error loading dishes, using fallback", e?.message);
-        if (active) {
-          const rName = rData?.name || restaurantInfo.name || route?.params?.title || route?.params?.name || "";
-          const rGenre = rData?.genre || restaurantInfo.genre || route?.params?.genre || "";
-          setDishes(getSignatureDishes(restaurantUid || "default", rName, rGenre));
-        }
+        console.warn("RestaurantDetails: error loading dishes", e?.message);
+        if (active) setDishes([]);
       } finally {
         if (active) setLoading(false);
       }
@@ -414,7 +234,7 @@ export default function RestaurantDetails() {
     if (!open) {
       Alert.alert(
         "Restaurant Currently Closed",
-        `"${restaurantInfo.name}" is currently closed and not taking orders.\n\nOpening hours: ${restaurantInfo.openingTime || "08:00 AM"} – ${restaurantInfo.closingTime || "10:00 PM"}`
+        `"${restaurantInfo.name}" is currently closed and not taking orders.\n\nOpening hours: ${String(restaurantInfo.workingHours || "").toLowerCase().includes("24 hours") ? "Open 24 hours" : restaurantInfo.openingTime && restaurantInfo.closingTime ? `${restaurantInfo.openingTime} – ${restaurantInfo.closingTime}` : "Hours not set"}`
       );
       return;
     }
@@ -454,7 +274,7 @@ export default function RestaurantDetails() {
           merchantBasePrice: info.rawSellingPrice,
           originalPrice: info.customerOriginalPrice,
           discountedPrice: info.customerSellingPrice,
-          hasDiscount: true,
+          hasDiscount: info.hasDiscount,
           discountPercent: info.discountPercent,
           savingsAmount: info.savingsAmount,
           image: selectedDish.image,
@@ -491,7 +311,7 @@ export default function RestaurantDetails() {
         <View style={s.heroWrapper}>
           <ResilientImage
             source={getImageSource()}
-            fallbackCategory={restaurantInfo.genre || "burger"}
+            fallbackCategory="none"
             style={s.heroImg}
             resizeMode="cover"
           />
@@ -512,23 +332,35 @@ export default function RestaurantDetails() {
           >
             <Text style={{ color: open ? "#087F5B" : "#B54708", fontWeight: "700", fontSize: 12 }}>
               {open
-                ? "Open now · 9:00 AM – 10:00 PM"
-                : `Closed now · Hours ${restaurantInfo.openingTime || "9:00 AM"}–${restaurantInfo.closingTime || "10:00 PM"}`}
+                ? (String(restaurantInfo.workingHours || "").toLowerCase().includes("24 hours")
+                    ? "Open 24 hours"
+                    : restaurantInfo.openingTime && restaurantInfo.closingTime
+                    ? `Open now · ${restaurantInfo.openingTime}–${restaurantInfo.closingTime}`
+                    : "Open now")
+                : (restaurantInfo.openingTime && restaurantInfo.closingTime
+                    ? `Closed now · Hours ${restaurantInfo.openingTime}–${restaurantInfo.closingTime}`
+                    : "Closed · Hours not set")}
             </Text>
           </View>
 
-          <View style={s.metaRow}>
-            <StarIcon color="#10B981" size={18} />
-            <Text style={s.metaRating}>{restaurantInfo.rating || 4.8}</Text>
-            <Text style={s.metaSub}>({restaurantInfo.reviews || "1.2k+"})</Text>
-            <Text style={s.metaDot}>·</Text>
-            <MaterialCommunityIcons name="clock-outline" size={15} color="#64748B" />
-            <Text style={s.metaSub}>{restaurantInfo.deliveryTime || "25–35 mins"}</Text>
-          </View>
+          {(restaurantInfo.rating != null || restaurantInfo.deliveryTime) ? (
+            <View style={s.metaRow}>
+              {restaurantInfo.rating != null ? <>
+                <StarIcon color="#10B981" size={18} />
+                <Text style={s.metaRating}>{restaurantInfo.rating}</Text>
+                {restaurantInfo.reviews != null ? <Text style={s.metaSub}>({restaurantInfo.reviews})</Text> : null}
+              </> : null}
+              {restaurantInfo.deliveryTime ? <>
+                <Text style={s.metaDot}>·</Text>
+                <MaterialCommunityIcons name="clock-outline" size={15} color="#64748B" />
+                <Text style={s.metaSub}>{restaurantInfo.deliveryTime}</Text>
+              </> : null}
+            </View>
+          ) : null}
 
           <View style={s.addressRow}>
             <MapPinIcon color="#94A3B8" size={17} />
-            <Text style={s.addressTxt}>{restaurantInfo.address || "Ethiopia"}</Text>
+            <Text style={s.addressTxt}>{restaurantInfo.address || "Address not provided"}</Text>
           </View>
 
           {isTooFar && (
@@ -605,25 +437,23 @@ export default function RestaurantDetails() {
                       <Text style={s.dishDesc} numberOfLines={2}>{dish.description}</Text>
                     )}
                     <View style={{ flexDirection: "row", alignItems: "baseline", gap: 5, marginTop: 3 }}>
-                      <Text style={[s.dishPrice, { color: "#E11D48" }]}>{info.formattedSelling}</Text>
-                      <Text style={{ fontSize: 11.5, color: "#94A3B8", textDecorationLine: "line-through" }}>
-                        {info.formattedOriginal}
-                      </Text>
-                      <View style={{ backgroundColor: "#FEE2E2", paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3 }}>
-                        <Text style={{ fontSize: 9.5, fontWeight: "800", color: "#E11D48" }}>
-                          -{info.discountPercent}% OFF
-                        </Text>
-                      </View>
+                      <Text style={[s.dishPrice, { color: info.hasDiscount ? "#E11D48" : DARK }]}>{info.formattedSelling}</Text>
+                      {info.hasDiscount ? <>
+                        <Text style={{ fontSize: 11.5, color: "#94A3B8", textDecorationLine: "line-through" }}>{info.formattedOriginal}</Text>
+                        <View style={{ backgroundColor: "#FEE2E2", paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3 }}>
+                          <Text style={{ fontSize: 9.5, fontWeight: "800", color: "#E11D48" }}>-{info.discountPercent}% OFF</Text>
+                        </View>
+                      </> : null}
                     </View>
-                    <Text style={{ fontSize: 10, color: "#16A34A", fontWeight: "700", marginTop: 2 }}>
+                    {info.hasDiscount ? <Text style={{ fontSize: 10, color: "#16A34A", fontWeight: "700", marginTop: 2 }}>
                       Save ETB {(Number(info.savingsAmount) || 0).toFixed(0)}
-                    </Text>
+                    </Text> : null}
                   </View>
 
                   <View style={s.dishRight}>
                     <ResilientImage
-                      source={dish.image}
-                      fallbackCategory={restaurantInfo.genre || "burger"}
+                      source={dish.image || dish.imgUrl}
+                      fallbackCategory="none"
                       style={s.dishImg}
                       resizeMode="cover"
                     />
@@ -665,8 +495,8 @@ export default function RestaurantDetails() {
               <ScrollView showsVerticalScrollIndicator={false}>
                 {/* Dish image and details */}
                 <ResilientImage
-                  source={selectedDish.image}
-                  fallbackCategory={restaurantInfo.genre || "burger"}
+                  source={selectedDish.image || selectedDish.imgUrl}
+                  fallbackCategory="none"
                   style={s.modalDishImg}
                   resizeMode="cover"
                 />
@@ -679,19 +509,17 @@ export default function RestaurantDetails() {
                     return (
                       <View style={{ marginVertical: 4 }}>
                         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
-                          <Text style={[s.modalDishPrice, { color: "#E11D48" }]}>{modalInfo.formattedSelling} each</Text>
-                          <Text style={{ fontSize: 12, color: "#94A3B8", textDecorationLine: "line-through" }}>
-                            {modalInfo.formattedOriginal}
-                          </Text>
-                          <View style={{ backgroundColor: "#FEE2E2", paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 }}>
-                            <Text style={{ fontSize: 10, fontWeight: "800", color: "#E11D48" }}>
-                              -{String(modalInfo.discountPercent ?? 0)}% OFF
-                            </Text>
-                          </View>
+                          <Text style={[s.modalDishPrice, { color: modalInfo.hasDiscount ? "#E11D48" : DARK }]}>{modalInfo.formattedSelling} each</Text>
+                          {modalInfo.hasDiscount ? <>
+                            <Text style={{ fontSize: 12, color: "#94A3B8", textDecorationLine: "line-through" }}>{modalInfo.formattedOriginal}</Text>
+                            <View style={{ backgroundColor: "#FEE2E2", paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 }}>
+                              <Text style={{ fontSize: 10, fontWeight: "800", color: "#E11D48" }}>-{String(modalInfo.discountPercent)}% OFF</Text>
+                            </View>
+                          </> : null}
                         </View>
-                        <Text style={{ fontSize: 11, color: "#16A34A", fontWeight: "700", marginTop: 2 }}>
+                        {modalInfo.hasDiscount ? <Text style={{ fontSize: 11, color: "#16A34A", fontWeight: "700", marginTop: 2 }}>
                           You save ETB {(Number(modalInfo.savingsAmount || 0) * modalQuantity).toFixed(2)} on this order!
-                        </Text>
+                        </Text> : null}
                       </View>
                     );
                   })()}

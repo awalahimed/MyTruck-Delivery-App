@@ -2,8 +2,8 @@
   "expo": {
     "name": "MyTruck Delivery",
     "slug": "ebhan",
-    "owner": "ebbanufs-team",
-    "version": "1.0.8",
+    "owner": "mytruck",
+    "version": "1.0.9",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -11,7 +11,7 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow $(MyTruck Delivery) to use your location."
+          "locationWhenInUsePermission": "Allow MyTruck Delivery to use your location to set your storefront pickup area."
         }
       ],
       [
@@ -25,19 +25,35 @@
       [
         "expo-image-picker"
       ],
-      "./plugins/withGradleBinDistribution"
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/optimized/splash.jpg",
+          "imageWidth": 300,
+          "resizeMode": "contain",
+          "backgroundColor": "#0B2A26"
+        }
+      ],
+      "./plugins/withMapsHardwareAcceleration",
+      "./plugins/withWorkManagerR8Rules",
+      "./plugins/withGradleBinDistribution",
+      [
+        "react-native-maps",
+        {
+          "androidGoogleMapsApiKey": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU",
+          "iosGoogleMapsApiKey": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU"
+        }
+      ]
     ],
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0B2A26"
-    },
     "assetBundlePatterns": [
       "**/*"
     ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.mytruck.delivery",
+      "config": {
+        "googleMapsApiKey": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU"
+      },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -48,11 +64,11 @@
         "backgroundColor": "#0B2A26"
       },
       "package": "com.mytruck.delivery",
-      "versionCode": 9,
+      "versionCode": 13,
       "softwareKeyboardLayoutMode": "pan",
       "config": {
         "googleMaps": {
-          "apiKey": "AIzaSyD4Gt0hyMYv6gSoGDxsiQLQdHSKk2CWw8A"
+          "apiKey": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU"
         }
       },
       "permissions": [
@@ -69,19 +85,20 @@
       "favicon": "./assets/favicon.png"
     },
     "extra": {
-      "googleMapsApiKey": "AIzaSyD4Gt0hyMYv6gSoGDxsiQLQdHSKk2CWw8A",
-      "chapaSecretKey": "CHASECK-2wQU2SzPeV7V9Pu2Mdb9gxNY2k9Jq5nQ",
       "firebase": {
-        "apiKey": "AIzaSyDwOvj_4-Oc-jwWpw1yoNm7frhoBJuZhSo",
-        "authDomain": "mytruck-delivery.firebaseapp.com",
-        "projectId": "mytruck-delivery",
-        "storageBucket": "mytruck-delivery.firebasestorage.app",
-        "messagingSenderId": "62652685283",
-        "appId": "1:62652685283:web:f9ccb6844ba537eef75ed6",
-        "measurementId": "G-158S3N3L6Q"
+        "apiKey": "AIzaSyC-nkTw6cAbjKwpb9asX0ogzp5Zrigna2E",
+        "authDomain": "mytruck-1fa3f.firebaseapp.com",
+        "projectId": "mytruck-1fa3f",
+        "storageBucket": "mytruck-1fa3f.firebasestorage.app",
+        "messagingSenderId": "876531962485",
+        "appId": "1:876531962485:web:609b5d3a3f0a5c30a25e3c",
+        "measurementId": "G-82N7CC7L0S"
       },
+      "chapaSecretKey": "",
+      "googleMapsApiKey": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU",
+      "perfTimings": false,
       "eas": {
-        "projectId": "788f32a3-bd67-44ab-aba4-1a52ba3b844e"
+        "projectId": "4e3e9b4f-d20e-4fe5-badc-a8efbcdb7605"
       }
     }
   }

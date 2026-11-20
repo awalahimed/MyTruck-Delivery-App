@@ -17,7 +17,6 @@ import { getRoleInfo, homeRouteFor } from "../utils/roles";
 import { db } from "../firebase";
 import { doc, setDoc, getDoc } from "firebase/firestore";
 import { useNavigation } from "@react-navigation/native";
-import { Marker } from "react-native-maps";
 import SharedMapView from "../components/SharedMapView";
 import { StatusBar } from "expo-status-bar";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";

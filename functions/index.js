@@ -10,18 +10,289 @@ const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestore");
+const { createHmac, randomBytes, randomInt, timingSafeEqual, createHash } = require("node:crypto");
+const { getAuth } = require("firebase-admin/auth");
 
 initializeApp();
 const db = getFirestore();
 
 const CHAPA_SECRET_KEY = defineSecret("CHAPA_SECRET_KEY");
+const SMS_ETHIOPIA_KEY = defineSecret("SMS_ETHIOPIA_KEY");
+const OTP_SECRET = defineSecret("OTP_SECRET");
 const CHAPA_BASE_URL = "https://api.chapa.co/v1";
 const DEFAULT_RETURN_URL = "https://checkout.chapa.co/checkout/payment-receipt";
+
+function chapaSecretValue() {
+  const key = String(CHAPA_SECRET_KEY.value() || "").trim();
+  if (!key.startsWith("CHASECK-") && !key.startsWith("CHASECK_TEST-")) {
+    throw new HttpsError(
+      "failed-precondition",
+      "The Firebase CHAPA_SECRET_KEY is not a Chapa secret key. Set a Chapa key from the merchant dashboard; do not use the SMS Ethiopia key."
+    );
+  }
+  return key;
+}
 
 function requireAuth(request) {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in to pay.");
   return request.auth.uid;
 }
+
+// ── Phone OTP (Firebase Functions + Firestore; SMS Ethiopia is the SMS carrier) ──
+function normalizeOtpPhone(raw) {
+  let digits = String(raw ?? "").replace(/\D/g, "");
+  if (digits.startsWith("251")) digits = digits.slice(3);
+  else if (digits.startsWith("0")) digits = digits.slice(1);
+  if (!/^[79]\d{8}$/.test(digits)) {
+    throw new HttpsError("invalid-argument", "Enter a valid Ethiopian mobile number.");
+  }
+  return `251${digits}`;
+}
+
+function otpPhoneKey(phone) {
+  return createHash("sha256").update(phone).digest("hex");
+}
+
+function otpMac(secret, value) {
+  return createHmac("sha256", secret).update(value).digest("hex");
+}
+
+function secureStringEqual(a, b) {
+  const left = Buffer.from(String(a || ""), "hex");
+  const right = Buffer.from(String(b || ""), "hex");
+  return left.length === right.length && left.length > 0 && timingSafeEqual(left, right);
+}
+
+function otpSecretValue() {
+  const otpSecret = OTP_SECRET.value();
+  if (!otpSecret) {
+    throw new HttpsError("failed-precondition", "Phone verification is not configured on the server.");
+  }
+  return otpSecret;
+}
+
+function smsProviderKey() {
+  const smsKey = SMS_ETHIOPIA_KEY.value();
+  if (!smsKey) {
+    throw new HttpsError("failed-precondition", "Phone verification is not configured on the server.");
+  }
+  return smsKey;
+}
+
+exports.sendSignupOtp = onCall({ secrets: [SMS_ETHIOPIA_KEY, OTP_SECRET] }, async (request) => {
+  const phone = normalizeOtpPhone(request.data?.phone);
+  const key = otpPhoneKey(phone);
+  const smsKey = smsProviderKey();
+  const otpSecret = otpSecretValue();
+  const nowMs = Date.now();
+  const challengeRef = db.collection("phoneOtpChallenges").doc(key);
+  const claimRef = db.collection("claimedPhones").doc(key);
+  const code = String(randomInt(100000, 1000000));
+  const codeHash = otpMac(otpSecret, `${phone}:${code}`);
+
+  await db.runTransaction(async (tx) => {
+    const [claimSnap, challengeSnap] = await Promise.all([tx.get(claimRef), tx.get(challengeRef)]);
+    if (claimSnap.exists) {
+      throw new HttpsError("already-exists", "This mobile number is already registered. Please sign in instead.");
+    }
+    const old = challengeSnap.data() || {};
+    const lastSentAt = old.lastSentAt?.toMillis?.() || 0;
+    if (nowMs - lastSentAt < 60_000) {
+      throw new HttpsError("resource-exhausted", "Wait a minute before requesting another code.");
+    }
+    const windowStartAt = old.windowStartAt?.toMillis?.() || 0;
+    const inWindow = nowMs - windowStartAt < 10 * 60_000;
+    const requestCount = inWindow ? Number(old.requestCount || 0) : 0;
+    if (requestCount >= 3) {
+      throw new HttpsError("resource-exhausted", "Too many codes requested. Try again in 10 minutes.");
+    }
+    tx.set(challengeRef, {
+      phoneHash: key,
+      codeHash,
+      attempts: 0,
+      consumed: false,
+      expiresAt: Timestamp.fromMillis(nowMs + 5 * 60_000),
+      lastSentAt: Timestamp.fromMillis(nowMs),
+      windowStartAt: Timestamp.fromMillis(inWindow ? windowStartAt : nowMs),
+      requestCount: requestCount + 1,
+    });
+  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let smsResponse;
+  try {
+    smsResponse = await fetch("https://smsethiopia.com/api/sms/send", {
+      method: "POST",
+      signal: controller.signal,
+      headers: { KEY: smsKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        msisdn: phone,
+        text: `Your MyTruck verification code is ${code}. It expires in 5 minutes. Do not share it with anyone.`,
+      }),
+    });
+  } catch (error) {
+    console.error("OTP SMS request failed:", error?.message || error);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(challengeRef);
+      if (snap.exists && snap.data()?.codeHash === codeHash) {
+        tx.update(challengeRef, { codeHash: null, consumed: true, smsFailed: true });
+      }
+    });
+    throw new HttpsError("unavailable", "We couldn't send the SMS right now. Please try again.");
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!smsResponse.ok) {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(challengeRef);
+      if (snap.exists && snap.data()?.codeHash === codeHash) {
+        tx.update(challengeRef, { codeHash: null, consumed: true, smsFailed: true });
+      }
+    });
+    console.error("OTP SMS provider returned HTTP", smsResponse.status);
+    throw new HttpsError("unavailable", "We couldn't send the SMS right now. Please try again.");
+  }
+
+  return { sent: true, expiresInSeconds: 300 };
+});
+
+exports.verifySignupOtp = onCall({ secrets: [OTP_SECRET] }, async (request) => {
+  const phone = normalizeOtpPhone(request.data?.phone);
+  const code = String(request.data?.code ?? "").replace(/\s/g, "");
+  if (!/^\d{6}$/.test(code)) throw new HttpsError("invalid-argument", "Enter the 6-digit code.");
+  const otpSecret = otpSecretValue();
+  const key = otpPhoneKey(phone);
+  const challengeRef = db.collection("phoneOtpChallenges").doc(key);
+  const expectedHash = otpMac(otpSecret, `${phone}:${code}`);
+  const nowMs = Date.now();
+
+  const outcome = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(challengeRef);
+    if (!snap.exists) return "no-code";
+    const challenge = snap.data();
+    if (challenge.consumed || !challenge.expiresAt || challenge.expiresAt.toMillis() <= nowMs) {
+      if (!challenge.consumed) tx.update(challengeRef, { consumed: true, codeHash: null });
+      return "expired";
+    }
+    if (Number(challenge.attempts || 0) >= 5) return "too-many-attempts";
+    if (!secureStringEqual(expectedHash, challenge.codeHash)) {
+      tx.update(challengeRef, { attempts: Number(challenge.attempts || 0) + 1 });
+      return "wrong-code";
+    }
+    tx.update(challengeRef, { consumed: true, codeHash: null, verifiedAt: FieldValue.serverTimestamp() });
+    return "verified";
+  });
+
+  if (outcome === "no-code") throw new HttpsError("failed-precondition", "No active code. Request a new one.");
+  if (outcome === "expired") throw new HttpsError("deadline-exceeded", "The verification code expired. Request a new one.");
+  if (outcome === "too-many-attempts") throw new HttpsError("resource-exhausted", "Too many wrong attempts. Request a new code.");
+  if (outcome === "wrong-code") throw new HttpsError("invalid-argument", "Incorrect code. Check your SMS and try again.");
+
+  const payload = Buffer.from(JSON.stringify({ phone, exp: Date.now() + 15 * 60_000, nonce: randomBytes(16).toString("hex") })).toString("base64url");
+  const signature = otpMac(otpSecret, `proof:${payload}`);
+  return { verified: true, proof: `${payload}.${signature}` };
+});
+
+exports.claimVerifiedPhone = onCall({ secrets: [OTP_SECRET] }, async (request) => {
+  const uid = requireAuth(request);
+  const phone = normalizeOtpPhone(request.data?.phone);
+  if (String(request.data?.uid || "") !== uid) {
+    throw new HttpsError("permission-denied", "The phone can only be claimed for the signed-in account.");
+  }
+  const proof = String(request.data?.proof || "");
+  const [payload, signature, extra] = proof.split(".");
+  if (!payload || !signature || extra) throw new HttpsError("permission-denied", "Verify your phone number again.");
+  const otpSecret = otpSecretValue();
+  if (!secureStringEqual(otpMac(otpSecret, `proof:${payload}`), signature)) {
+    throw new HttpsError("permission-denied", "Verify your phone number again.");
+  }
+  let proofData;
+  try {
+    proofData = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    throw new HttpsError("permission-denied", "Verify your phone number again.");
+  }
+  if (proofData?.phone !== phone || Number(proofData?.exp) <= Date.now()) {
+    throw new HttpsError("permission-denied", "Verify your phone number again.");
+  }
+
+  const key = otpPhoneKey(phone);
+  const claimRef = db.collection("claimedPhones").doc(key);
+  await db.runTransaction(async (tx) => {
+    const existing = await tx.get(claimRef);
+    if (existing.exists && existing.data()?.uid !== uid) {
+      throw new HttpsError("already-exists", "This mobile number is already used by another account. Please sign in instead.");
+    }
+    if (!existing.exists) tx.create(claimRef, { uid, phoneHash: key, claimedAt: FieldValue.serverTimestamp() });
+  });
+  return { ok: true };
+});
+
+// Sign in existing email/password accounts using their Ethiopian phone.
+// Firebase Auth verifies the submitted password first. Only then is the linked
+// email returned so the client SDK can complete its normal email/password sign-in.
+exports.signInWithPhonePassword = onCall(async (request) => {
+  const phone = normalizeOtpPhone(request.data?.phone);
+  const password = String(request.data?.password || "");
+  const apiKey = String(request.data?.apiKey || "").trim();
+  if (password.length < 6 || password.length > 256 || !apiKey || apiKey.length > 256) {
+    throw new HttpsError("invalid-argument", "Enter a valid phone number and password.");
+  }
+
+  const phoneKey = otpPhoneKey(phone);
+  let uid = null;
+  const claim = await db.collection("claimedPhones").doc(phoneKey).get();
+  if (claim.exists) uid = String(claim.data()?.uid || "") || null;
+
+  // Older accounts may have a phone on their profile but no claimedPhones record.
+  if (!uid) {
+    const phoneForms = [`+${phone}`, `0${phone.slice(3)}`, phone];
+    for (const collectionName of ["user", "users"]) {
+      for (const field of ["phoneNumber", "phone", "workingPhone"]) {
+        const matches = await db.collection(collectionName).where(field, "in", phoneForms).limit(2).get();
+        if (matches.size > 1) {
+          throw new HttpsError("failed-precondition", "This phone number is linked to more than one account. Contact MyTruck support.");
+        }
+        if (!matches.empty) {
+          uid = matches.docs[0].id;
+          break;
+        }
+      }
+      if (uid) break;
+    }
+  }
+
+  if (!uid) throw new HttpsError("unauthenticated", "Incorrect phone number or password.");
+
+  let user;
+  try {
+    user = await getAuth().getUser(uid);
+  } catch (_) {
+    throw new HttpsError("unauthenticated", "Incorrect phone number or password.");
+  }
+  if (!user.email) throw new HttpsError("unauthenticated", "Incorrect phone number or password.");
+
+  // Firebase Auth is the password authority. Do not log this request or its data.
+  let verified;
+  try {
+    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(apiKey)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: user.email, password, returnSecureToken: true }),
+    });
+    if (!response.ok) throw new Error("credential-check-failed");
+    verified = await response.json();
+  } catch (_) {
+    throw new HttpsError("unauthenticated", "Incorrect phone number or password.");
+  }
+  if (verified?.localId !== uid) {
+    throw new HttpsError("unauthenticated", "Incorrect phone number or password.");
+  }
+
+  return { email: user.email };
+});
 
 function cleanPhone(raw) {
   const digits = String(raw || "").replace(/\D/g, "");
@@ -44,7 +315,7 @@ async function chapaFetch(path, options = {}) {
   const res = await fetch(`${CHAPA_BASE_URL}${path}`, {
     ...options,
     headers: {
-      Authorization: `Bearer ${CHAPA_SECRET_KEY.value()}`,
+      Authorization: `Bearer ${chapaSecretValue()}`,
       "Content-Type": "application/json",
       ...(options.headers || {}),
     },
@@ -76,7 +347,10 @@ exports.createChapaCheckout = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (req
   const uid = requireAuth(request);
   const data = request.data || {};
   // Availability probe from the app (lets it hide Chapa when this function isn't deployed)
-  if (data.probe === true) return { ok: true };
+  if (data.probe === true) {
+    chapaSecretValue();
+    return { ok: true };
+  }
   const orders = data.orderIds && data.orderIds.length ? await loadOwnedOrders(uid, data.orderIds) : [];
 
   let amount;
@@ -127,8 +401,19 @@ exports.createChapaCheckout = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (req
 
   const checkoutUrl = result?.data?.checkout_url;
   if (!checkoutUrl) {
-    console.warn("Chapa initialize failed", result?.message);
-    throw new HttpsError("unavailable", "Could not start Chapa checkout.");
+    const detail = String(result?.message || "").replace(/\s+/g, " ").trim().slice(0, 300);
+    console.warn("Chapa initialize failed", detail || "No checkout URL returned.");
+    const lowerDetail = detail.toLowerCase();
+    if (lowerDetail.includes("invalid api key") || lowerDetail.includes("can't accept payments")) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Chapa rejected the configured secret or the merchant account is not enabled for API payments. Check the Chapa secret key and account payment status."
+      );
+    }
+    throw new HttpsError(
+      "unavailable",
+      detail ? `Chapa could not start checkout: ${detail}` : "Chapa did not return a checkout URL."
+    );
   }
 
   if (orders.length) {

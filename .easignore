@@ -1,0 +1,16 @@
+# EAS Build ignore file
+node_modules/
+.expo/
+dist/
+npm-debug.*
+*.orig.*
+web-build/
+.DS_Store
+.metro-health-check*
+
+# Ignore lock file so EAS uses npm install --legacy-peer-deps instead of failing on npm ci
+package-lock.json
+
+# Native prebuild folders (EAS regenerates them using app.config.js & app.json)
+/android
+/ios

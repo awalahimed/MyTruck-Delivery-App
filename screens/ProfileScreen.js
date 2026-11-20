@@ -14,12 +14,11 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useNavigation } from "@react-navigation/native";
-import { Marker } from "react-native-maps";
 import SharedMapView from "../components/SharedMapView";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { UserAuth } from "../contexts/AuthContext";
 import { db } from "../firebase";
-import { doc, getDoc, updateDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, updateDoc, setDoc } from "firebase/firestore";
 import { useDispatch, useSelector } from "react-redux";
 import { setUser, selectUser } from "../features/userSlice";
 import BackButton from "../components/ui/BackButton";
@@ -30,7 +29,6 @@ import {
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
-const ORANGE = "#F47721";
 
 export default function ProfileScreen() {
   const navigation = useNavigation();
@@ -86,6 +84,7 @@ export default function ProfileScreen() {
   const isShopUser =
     rawRole === "shop" ||
     rawRole === "store";
+  const isMerchantUser = ["pendingSeller", "restaurant", "shop", "seller", "store", "merchant"].includes(rawRole);
   const isDriverUser =
     rawRole === "driver";
 
@@ -190,7 +189,7 @@ export default function ProfileScreen() {
       return;
     }
 
-    if (!address.trim()) {
+    if (!isMerchantUser && !address.trim()) {
       Alert.alert("Missing Address", "Please enter your street address or tap 'Get Current Location'.");
       return;
     }
@@ -201,9 +200,7 @@ export default function ProfileScreen() {
       lastName: lastName.trim(),
       fullName: `${firstName.trim()} ${lastName.trim()}`,
       phoneNumber: `+251${phoneNumber.trim()}`,
-      address: address.trim(),
-      latitude,
-      longitude,
+      ...(!isMerchantUser ? { address: address.trim(), latitude, longitude } : {}),
       countryCode: "ET",
       currency: "ETB",
       updatedAt: new Date(),
@@ -381,60 +378,10 @@ export default function ProfileScreen() {
                 </TouchableOpacity>
               ) : null}
 
-              {/* PARTNER WITH MYTRUCK (For Customers: Become a Driver or Register Business) */}
+              {/* Business partner registration is available; driver accounts are assigned by admins. */}
               {!isSuperAdminUser && !isRestaurantUser && !isShopUser && !isDriverUser && (
                 <View style={s.partnerSection}>
-                  <Text style={s.partnerSectionTitle}>Work & Partner with MyTruck</Text>
-
-                  {/* Drive with MyTruck */}
-                  <TouchableOpacity
-                    style={[s.partnerCard, { backgroundColor: "#FFF7ED", borderColor: "#FFEDD5" }]}
-                    activeOpacity={0.88}
-                    onPress={() => {
-                      Alert.alert(
-                        "Join Driver Fleet",
-                        "Would you like to activate Driver mode to accept delivery requests and earn daily income?",
-                        [
-                          { text: "Cancel", style: "cancel" },
-                          {
-                            text: "Activate Driver Mode",
-                            onPress: async () => {
-                              try {
-                                if (!user?.uid) return;
-                                const driverData = {
-                                  role: "driver",
-                                  isDriver: true,
-                                  isOnline: false,
-                                  workingPhone: phoneNumber || "",
-                                  driverLat: 8.9806,
-                                  driverLng: 38.7578,
-                                  updatedAt: serverTimestamp(),
-                                };
-                                await Promise.all([
-                                  setDoc(doc(db, "user", user.uid), driverData, { merge: true }),
-                                  setDoc(doc(db, "users", user.uid), driverData, { merge: true }),
-                                ]);
-                                Alert.alert("Driver Mode Activated!", "Your driver console is ready. Switch online to receive delivery requests.");
-                              } catch (e) {
-                                Alert.alert("Error", e?.message || "Could not activate driver mode.");
-                              }
-                            },
-                          },
-                        ]
-                      );
-                    }}
-                  >
-                    <View style={s.partnerCardLeft}>
-                      <View style={[s.partnerIconCircle, { backgroundColor: "#FFEDD5" }]}>
-                        <MaterialCommunityIcons name="motorbike" size={24} color={ORANGE} />
-                      </View>
-                      <View style={{ flex: 1, marginLeft: 12 }}>
-                        <Text style={[s.partnerCardTitle, { color: "#9A3412" }]}>Drive with MyTruck</Text>
-                        <Text style={s.partnerCardSub}>Deliver orders in your area & earn daily income</Text>
-                      </View>
-                    </View>
-                    <MaterialCommunityIcons name="chevron-right" size={20} color={ORANGE} />
-                  </TouchableOpacity>
+                  <Text style={s.partnerSectionTitle}>Partner with MyTruck</Text>
 
                   {/* Register Restaurant or Shop */}
                   <TouchableOpacity
@@ -504,61 +451,78 @@ export default function ProfileScreen() {
                 </View>
                 {phoneError ? <Text style={s.errorTxt}>{phoneError}</Text> : null}
 
-                {/* Street Address & Location */}
-                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 14, marginBottom: 6 }}>
-                  <Text style={s.fieldLabel}>Delivery Address *</Text>
-                  <TouchableOpacity
-                    onPress={handleGetCurrentLocation}
-                    style={s.gpsBadge}
-                    activeOpacity={0.8}
-                  >
-                    {locating ? (
-                      <ActivityIndicator size="small" color={TEAL} />
-                    ) : (
-                      <>
-                        <MaterialCommunityIcons name="crosshairs-gps" size={14} color={TEAL} />
-                        <Text style={s.gpsBadgeTxt}>Get Current Location</Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                </View>
-
-                <View style={s.inputWrap}>
-                  <MaterialCommunityIcons name="map-marker-outline" size={20} color={TEAL} style={s.inputIcon} />
-                  <TextInput
-                    style={s.input}
-                    value={address}
-                    onChangeText={setAddress}
-                    placeholder="Street, area, building or house number"
-                    placeholderTextColor="#94A3B8"
-                  />
-                </View>
-
-                {/* Location Map Preview */}
-                <View style={s.mapWrapper}>
-                  <SharedMapView
-                    style={StyleSheet.absoluteFillObject}
-                    initialRegion={{
-                      latitude: latitude || 8.9806,
-                      longitude: longitude || 38.7578,
-                      latitudeDelta: 0.015,
-                      longitudeDelta: 0.015,
-                    }}
-                    onLocationChange={(c) => {
-                      if (c?.latitude && c?.longitude) {
-                        setLatitude(c.latitude);
-                        setLongitude(c.longitude);
-                        reverseGeocodeLocation(c.latitude, c.longitude).then(setAddress);
-                      }
-                    }}
-                    onRecenter={handleGetCurrentLocation}
-                    recenterLoading={locating}
-                  />
-
-                  <View style={s.mapOverlayHint} pointerEvents="none">
-                    <Text style={s.mapHintTxt}>Tap map or drag marker to set exact location</Text>
+                {isMerchantUser ? (
+                  <View style={{ marginTop: 14 }}>
+                    <Text style={s.fieldLabel}>Storefront Location (Fixed)</Text>
+                    <View style={s.inputWrap}>
+                      <MaterialCommunityIcons name="map-marker-lock" size={20} color={TEAL} style={s.inputIcon} />
+                      <Text style={[s.input, { paddingVertical: 12 }]}>
+                        {dbUser?.address || address || "Set from phone location during registration"}
+                      </Text>
+                    </View>
+                    <Text style={{ color: "#64748B", fontSize: 11, marginTop: 5 }}>
+                      Store pickup location changes are disabled. Contact MyTruck support if it needs correction.
+                    </Text>
                   </View>
-                </View>
+                ) : (
+                  <>
+                    {/* Customer delivery address and map location */}
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 14, marginBottom: 6 }}>
+                      <Text style={s.fieldLabel}>Delivery Address *</Text>
+                      <TouchableOpacity
+                        onPress={handleGetCurrentLocation}
+                        style={s.gpsBadge}
+                        activeOpacity={0.8}
+                      >
+                        {locating ? (
+                          <ActivityIndicator size="small" color={TEAL} />
+                        ) : (
+                          <>
+                            <MaterialCommunityIcons name="crosshairs-gps" size={14} color={TEAL} />
+                            <Text style={s.gpsBadgeTxt}>Get Current Location</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={s.inputWrap}>
+                      <MaterialCommunityIcons name="map-marker-outline" size={20} color={TEAL} style={s.inputIcon} />
+                      <TextInput
+                        style={s.input}
+                        value={address}
+                        onChangeText={setAddress}
+                        placeholder="Street, area, building or house number"
+                        placeholderTextColor="#94A3B8"
+                      />
+                    </View>
+
+                    {/* Location Map Preview */}
+                    <View style={s.mapWrapper}>
+                      <SharedMapView
+                        style={StyleSheet.absoluteFillObject}
+                        initialRegion={{
+                          latitude: latitude || 8.9806,
+                          longitude: longitude || 38.7578,
+                          latitudeDelta: 0.015,
+                          longitudeDelta: 0.015,
+                        }}
+                        onLocationChange={(c) => {
+                          if (c?.latitude && c?.longitude) {
+                            setLatitude(c.latitude);
+                            setLongitude(c.longitude);
+                            reverseGeocodeLocation(c.latitude, c.longitude).then(setAddress);
+                          }
+                        }}
+                        onRecenter={handleGetCurrentLocation}
+                        recenterLoading={locating}
+                      />
+
+                      <View style={s.mapOverlayHint} pointerEvents="none">
+                        <Text style={s.mapHintTxt}>Tap map or drag marker to set exact location</Text>
+                      </View>
+                    </View>
+                  </>
+                )}
               </View>
 
               {/* Save Button */}

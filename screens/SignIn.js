@@ -192,7 +192,7 @@ export default function SignIn() {
           {/* Logo & Brand */}
           <View style={s.brandWrap}>
             <Image
-              source={require("../assets/icon.png")}
+              source={require("../assets/optimized/runtime-icon.jpg")}
               style={s.logo}
               resizeMode="contain"
             />
@@ -223,7 +223,7 @@ export default function SignIn() {
               />
               <TextInput
                 style={s.input}
-                placeholder="Phone (09XXXXXXXX) or Email"
+                placeholder="09XXXXXXXX, +2519XXXXXXXX, or email"
                 placeholderTextColor="#94A3B8"
                 value={identifier}
                 onChangeText={(t) => {

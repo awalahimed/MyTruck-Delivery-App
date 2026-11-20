@@ -5,8 +5,6 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -16,17 +14,14 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import BackButton from "../components/ui/BackButton";
-import { UserAuth, normalizeEthiopianPhone } from "../contexts/AuthContext";
+import { normalizeEthiopianPhone } from "../contexts/AuthContext";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
 const ORANGE = "#F47721";
 
 export default function PhoneAuthScreen({ navigation }) {
-  const { requestOtp } = UserAuth();
-
   const [phone, setPhone] = useState("");
-  const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
   const handlePhoneChange = (text) => {
@@ -37,8 +32,7 @@ export default function PhoneAuthScreen({ navigation }) {
     if (errorMessage) setErrorMessage("");
   };
 
-  const handleSendOtp = async () => {
-    if (busy) return;
+  const handleContinue = () => {
     setErrorMessage("");
 
     const norm = normalizeEthiopianPhone(phone);
@@ -47,26 +41,7 @@ export default function PhoneAuthScreen({ navigation }) {
       return;
     }
 
-    setBusy(true);
-    try {
-      const result = await requestOtp(phone);
-      navigation.navigate("OtpVerification", {
-        phoneNumber: norm.intlNumber,
-        formattedPhone: norm.localNumber,
-        expiresInSeconds: result?.expiresInSeconds || 300,
-        resendCooldown: result?.resendCooldownSeconds || 60,
-      });
-    } catch (err) {
-      console.warn("requestOtp error:", err?.message);
-      let friendly = err?.message || "Could not send verification SMS. Please check your phone number.";
-      if (err?.code === "resource-exhausted") {
-        friendly = err.message || "Too many requests. Please wait a few minutes.";
-      }
-      setErrorMessage(friendly);
-      Alert.alert("SMS Notice", friendly);
-    } finally {
-      setBusy(false);
-    }
+    navigation.navigate("SignIn", { prefillPhone: norm.localNumber });
   };
 
   return (
@@ -80,7 +55,7 @@ export default function PhoneAuthScreen({ navigation }) {
             <BackButton fallbackRoute="Welcome" iconColor="white" />
             <View style={s.headerCenter}>
               <Text style={s.navTitle}>Phone Sign In</Text>
-              <Text style={s.navSub}>Fast & secure 6-digit SMS login</Text>
+              <Text style={s.navSub}>Sign in with your phone number and password</Text>
             </View>
             <View style={{ width: 40 }} />
           </View>
@@ -99,13 +74,13 @@ export default function PhoneAuthScreen({ navigation }) {
           {/* Logo & Headline */}
           <View style={s.brandWrap}>
             <Image
-              source={require("../assets/icon.png")}
+              source={require("../assets/optimized/runtime-icon.jpg")}
               style={s.logo}
               resizeMode="contain"
             />
-            <Text style={s.title}>Instant Phone Access</Text>
+            <Text style={s.title}>Sign In with Phone</Text>
             <Text style={s.subtitle}>
-              Enter your Ethiopian mobile number to receive a secure 6-digit code via SMS.
+              Enter your Ethiopian mobile number, then sign in with your account password.
             </Text>
           </View>
 
@@ -138,19 +113,14 @@ export default function PhoneAuthScreen({ navigation }) {
 
             {/* Primary Action Button */}
             <TouchableOpacity
-              style={[s.primaryBtn, busy && { opacity: 0.7 }]}
-              onPress={handleSendOtp}
-              disabled={busy}
+              style={s.primaryBtn}
+              onPress={handleContinue}
               activeOpacity={0.88}
             >
-              {busy ? (
-                <ActivityIndicator color="white" />
-              ) : (
-                <View style={s.btnContent}>
-                  <MaterialCommunityIcons name="cellphone-message" size={20} color="white" style={{ marginRight: 8 }} />
-                  <Text style={s.primaryBtnTxt}>Send 6-Digit Code</Text>
-                </View>
-              )}
+              <View style={s.btnContent}>
+                <MaterialCommunityIcons name="cellphone" size={20} color="white" style={{ marginRight: 8 }} />
+                <Text style={s.primaryBtnTxt}>Continue to Sign In</Text>
+              </View>
             </TouchableOpacity>
 
             {/* Password Login Alternative */}

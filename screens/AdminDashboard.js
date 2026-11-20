@@ -844,30 +844,35 @@ export default function AdminDashboard() {
           onPress: async () => {
             const col = biz.businessType === "shop" ? "shops" : "restaurants";
             try {
-              await updateDoc(doc(db, col, biz.id), {
+              const approvalPayload = {
                 status: "APPROVED",
+                approvalStatus: "APPROVED",
+                isApproved: true,
                 isVerified: true,
+                isActive: true,
                 banReason: null,
                 updatedAt: serverTimestamp(),
-              });
+              };
+              const batch = writeBatch(db);
+              batch.update(doc(db, col, biz.id), approvalPayload);
               if (biz.ownerUid) {
-                const approvalPayload = {
+                const sellerProfile = {
                   role: biz.businessType || "restaurant",
                   isApproved: true,
                   approvalStatus: "APPROVED",
+                  accountStatus: "ACTIVE",
                   businessId: biz.id,
                   sellerId: biz.id,
                   ...(biz.businessType === "shop" ? { shopId: biz.id } : { restaurantId: biz.id }),
                   updatedAt: serverTimestamp(),
                 };
-                await Promise.all([
-                  setDoc(doc(db, "user", biz.ownerUid), approvalPayload, { merge: true }),
-                  setDoc(doc(db, "users", biz.ownerUid), approvalPayload, { merge: true }),
-                ]);
+                batch.set(doc(db, "user", biz.ownerUid), sellerProfile, { merge: true });
+                batch.set(doc(db, "users", biz.ownerUid), sellerProfile, { merge: true });
               }
+              await batch.commit();
               Alert.alert("Success", `"${biz.name || biz.businessName}" has been approved!`);
               setSelectedBizDetail(null);
-              loadData();
+              await loadData();
             } catch (err) {
               Alert.alert("Error", err?.message || "Could not approve merchant.");
             }
@@ -5038,17 +5043,6 @@ const s = StyleSheet.create({
     alignItems: "center",
     marginTop: 4,
     width: "48%",
-  },
-  legendDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 6,
-  },
-  legendTxt: {
-    fontSize: 11,
-    color: "#64748B",
-    fontWeight: "600",
   },
   ecoListCard: {
     backgroundColor: "#FFFFFF",

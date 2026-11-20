@@ -24,7 +24,7 @@ import { StarIcon } from "react-native-heroicons/solid";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { db, app } from "../firebase";
 import { notifyMerchant } from "../services/orderNotifications";
-import { startChapaCheckout, verifyChapaPayment, getPaymentStatusFast } from "../services/chapaClient";
+import { startChapaCheckout, verifyChapaPayment } from "../services/chapaClient";
 import { UserAuth } from "../contexts/AuthContext";
 import { getRoleInfo } from "../utils/roles";
 import { isWithinEthiopia } from "../utils/mapService";
@@ -300,10 +300,9 @@ Save order: ${t.saveMs ?? "-"} ms`
       return { state: "paid", data: snap.data(), result: null };
     }
     const txRef = snap.data()?.chapaMerchantReference || order?.chapaMerchantReference || "";
-    // Fast path: the Chapa webhook writes the result to the server, so one cheap call tells us at once.
-    // Every 3rd round we still ask Chapa directly, so payments are confirmed even if the webhook is down.
-    const fast = await getPaymentStatusFast(txRef);
-    if (fast !== "SUCCESS" && attempt % 3 !== 0) return { state: "pending", data: null, result: null };
+    // Check Chapa through the Firebase callable every third poll to keep the
+    // request rate reasonable while still handling delayed payment callbacks.
+    if (attempt % 3 !== 0) return { state: "pending", data: null, result: null };
     const result = await verifyChapaPayment({ orderId: cleanOrderId, txRef, uid: authUser?.uid });
     if (result?.verified || result?.paymentStatus === "PAID") return { state: "paid", data: null, result };
     if (result?.paymentStatus === "FAILED") return { state: "failed", data: null, result };
