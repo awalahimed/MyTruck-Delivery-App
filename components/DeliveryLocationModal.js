@@ -126,7 +126,6 @@ export default function DeliveryLocationModal({
     if (coords && coords.latitude && coords.longitude) {
       setSelectedCoords(coords);
       setSelectedZoneId(null);
-      updateAddressFromCoords(coords.latitude, coords.longitude);
     }
   };
 

@@ -143,15 +143,16 @@ const SharedMapView = forwardRef(function SharedMapView(
     };
   }, [routeKey]);
 
-<<<<<<< HEAD
-  const handleRegionComplete = (next) => {
-    const coords = { latitude: next.latitude, longitude: next.longitude };
-    onLocationChange?.(coords);
-    onRegionChangeComplete?.(coords);
+  const handleRegionChangeComplete = (r) => {
+    if (locked) return;
+    const c = { latitude: r.latitude, longitude: r.longitude };
+    onLocationChange?.(c);
+    onRegionChangeComplete?.(c);
   };
 
-  const handleMapPress = (event) => {
-    const coords = event?.nativeEvent?.coordinate;
+  const handlePress = (e) => {
+    if (locked) return;
+    const coords = e?.nativeEvent?.coordinate;
     if (coords && Number.isFinite(coords.latitude) && Number.isFinite(coords.longitude) && !isRoute) {
       mapRef.current?.animateToRegion(
         {
@@ -162,23 +163,8 @@ const SharedMapView = forwardRef(function SharedMapView(
         },
         300
       );
-      handleRegionComplete(coords);
     }
-    onPress?.(event);
-=======
-  const handleRegionChangeComplete = (r) => {
-    if (locked) return;
-    const c = { latitude: r.latitude, longitude: r.longitude };
-    onLocationChange?.(c);
-    onRegionChangeComplete?.(c);
-  };
-
-  const handlePress = (e) => {
-    if (locked) return;
-    const c = e?.nativeEvent?.coordinate;
-    if (c && mode !== "route") mapRef.current?.animateToRegion({ ...c, latitudeDelta: 0.012, longitudeDelta: 0.012 }, 400);
     onPress?.(e);
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
   };
 
   const routeColor = route?.source === "road" || route?.source === "google" ? TEAL : "#64748B";
@@ -202,15 +188,9 @@ const SharedMapView = forwardRef(function SharedMapView(
         showsUserLocation={hasLocationPermission}
         showsMyLocationButton={false}
         toolbarEnabled={false}
-<<<<<<< HEAD
-        onPress={handleMapPress}
-        onRegionChangeComplete={handleRegionComplete}
-=======
         onPress={handlePress}
         onRegionChangeComplete={handleRegionChangeComplete}
-        {...rest}
         {...(locked ? { scrollEnabled: false, zoomEnabled: false, rotateEnabled: false, pitchEnabled: false } : {})}
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
       >
         {isRoute && toCoordinate(from) ? (
           <Marker

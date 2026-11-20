@@ -11,14 +11,10 @@ import {
 } from "firebase/auth";
 import { auth, db } from "../firebase";
 import { sendSignupCode, claimPhone } from "../services/otpClient";
-<<<<<<< HEAD
 import { signInWithPhonePassword } from "../services/phoneSignIn";
-import { doc, getDoc, setDoc, updateDoc, deleteDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore";
-=======
 import { isPhoneIndexed, reservePhone, syncOwnPhone, backfillPhoneIndex } from "../services/phoneIndex";
 import { getRoleInfo } from "../utils/roles";
-import { doc, getDoc, setDoc, updateDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore";
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // Controls the post-sign-in legacy phone-verification gate only.
@@ -506,7 +502,6 @@ export const AuthContextProvder = ({ children }) => {
   }, [registering, user?.uid, dbUser?.phoneNumber, dbUser?.role]);
 
   /**
-<<<<<<< HEAD
    * Checks whether a signup email is already in Firebase Auth before sending
    * an SMS. This uses the client SDK, so it respects Firebase email
    * enumeration protection (which may hide whether an account exists).
@@ -528,12 +523,8 @@ export const AuthContextProvder = ({ children }) => {
   }, []);
 
   /**
-   * Check if a phone number is already registered in the system.
-   * Checks both Firestore and Firebase Auth email methods.
-=======
    * Check if a phone number (and, for sign-up, the email) already belongs to an account.
    * Sign-up calls this BEFORE sending the SMS code, so a taken number never costs an SMS.
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
    */
   const checkPhoneRegistered = useCallback(async (phoneInput, emailInput = "") => {
     const norm = normalizeEthiopianPhone(phoneInput);
@@ -650,11 +641,6 @@ export const AuthContextProvder = ({ children }) => {
         setDoc(doc(db, "users", createdUid), profileData, { merge: true }),
       ]);
 
-<<<<<<< HEAD
-      // 4. Reserve the verified phone number on the server. Do not mark the
-      // account verified or complete signup if the server cannot confirm it.
-      await claimPhone(norm.intlNumber, createdUid, proof);
-=======
       // 4. Reserve the phone number for this account, so the next sign-up with it is refused
       //    before any SMS is sent. If another account got it first, undo this sign-up.
       await reservePhone(norm.intlNumber, createdUid);
@@ -667,7 +653,6 @@ export const AuthContextProvder = ({ children }) => {
           console.warn("Phone claim not saved:", claimErr?.code, claimErr?.message);
         }
       }
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
 
       // 5. Update local state immediately
       AsyncStorage.setItem(`@mytruck_profile_${createdUid}`, JSON.stringify({ ...profileData, createdAt: null })).catch(() => {});
@@ -719,26 +704,25 @@ export const AuthContextProvder = ({ children }) => {
     bankName = "Commercial Bank of Ethiopia (CBE)",
     accountNumber = "",
     accountHolder = "",
-<<<<<<< HEAD
-    proof,
-=======
-    latitude = null,
-    longitude = null,
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
+    proof = null,
   }) => {
     const norm = normalizeEthiopianPhone(phone);
     if (!norm.isValid) {
       throw new Error(norm.error);
     }
-<<<<<<< HEAD
-    if (!proof) throw new Error("Verify your phone number before creating a seller account.");
-=======
     // The store's real position, captured by GPS on the registration form
     const storeLat = Number(latitude);
     const storeLng = Number(longitude);
     const hasStoreCoords = latitude != null && longitude != null && Number.isFinite(storeLat) && Number.isFinite(storeLng);
-    const storeCoordFields = hasStoreCoords ? { latitude: storeLat, longitude: storeLng } : {};
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
+    const storeCoordFields = hasStoreCoords
+      ? {
+          latitude: storeLat,
+          longitude: storeLng,
+          storeLatitude: storeLat,
+          storeLongitude: storeLng,
+          deliveryRadiusKm: Number(deliveryRadiusKm) || 25,
+        }
+      : {};
 
     startRegistration();
     let createdUser = null;
@@ -770,20 +754,8 @@ export const AuthContextProvder = ({ children }) => {
         phone: norm.intlNumber,
         telebirrPhone: telebirrPhone.trim(),
         address: address.trim(),
-<<<<<<< HEAD
         city: city ? city.trim() : "Addis Ababa",
-        ...(latitude != null && longitude != null
-          ? {
-              latitude: Number(latitude),
-              longitude: Number(longitude),
-              storeLatitude: Number(latitude),
-              storeLongitude: Number(longitude),
-              deliveryRadiusKm: Number(deliveryRadiusKm) || 25,
-            }
-          : {}),
-=======
         ...storeCoordFields,
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
         workingHours: workingHours.trim(),
         openingTime: openingTime.trim(),
         closingTime: closingTime.trim(),
@@ -818,14 +790,8 @@ export const AuthContextProvder = ({ children }) => {
         businessName: businessName.trim(),
         sellerType,
         address: address.trim(),
-<<<<<<< HEAD
         city: city ? city.trim() : "Addis Ababa",
-        latitude: latitude != null ? Number(latitude) : null,
-        longitude: longitude != null ? Number(longitude) : null,
-        deliveryRadiusKm: Number(deliveryRadiusKm) || 25,
-=======
         ...storeCoordFields,
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
         workingHours: workingHours.trim(),
         openingTime: openingTime.trim(),
         closingTime: closingTime.trim(),
@@ -859,19 +825,8 @@ export const AuthContextProvder = ({ children }) => {
         businessName: businessName.trim(),
         approvalStatus: "PENDING",
         address: address.trim(),
-<<<<<<< HEAD
         city: city ? city.trim() : "Addis Ababa",
-        ...(latitude != null && longitude != null
-          ? {
-              latitude: Number(latitude),
-              longitude: Number(longitude),
-              storeLatitude: Number(latitude),
-              storeLongitude: Number(longitude),
-            }
-          : {}),
-=======
         ...(hasStoreCoords ? { storeLatitude: storeLat, storeLongitude: storeLng } : {}),
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
         workingHours: workingHours.trim(),
         openingTime: openingTime.trim(),
         closingTime: closingTime.trim(),

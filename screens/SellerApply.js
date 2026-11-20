@@ -25,8 +25,7 @@ import { auth, db, storage } from "../firebase";
 import { UserAuth, normalizeEthiopianPhone, formatAuthError } from "../contexts/AuthContext";
 import { verifySignupCode } from "../services/otpClient";
 import BackButton from "../components/ui/BackButton";
-<<<<<<< HEAD
-import { isWithinEthiopia, reverseGeocodeLocation } from "../utils/mapService";
+import { getRealGpsLocation, isWithinEthiopia, reverseGeocodeLocation } from "../utils/mapService";
 
 const ETHIOPIAN_CITIES = [
   "Addis Ababa",
@@ -45,9 +44,6 @@ const ETHIOPIAN_CITIES = [
   "Dilla",
   "Wolaita Sodo",
 ];
-=======
-import { getRealGpsLocation, reverseGeocodeLocation } from "../utils/mapService";
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -63,32 +59,9 @@ export default function SellerApply() {
   const [businessName, setBusinessName] = useState("");
   const [selectedCity, setSelectedCity] = useState("");
   const [address, setAddress] = useState("");
-<<<<<<< HEAD
   const [storeCoords, setStoreCoords] = useState(null); // { latitude, longitude, address }
   const [locationLoading, setLocationLoading] = useState(true);
-=======
-  // The store's real position, read from this phone's GPS while the owner is at the store
-  const [storeCoords, setStoreCoords] = useState(null);
-  const [locatingStore, setLocatingStore] = useState(false);
-
-  const captureStoreLocation = async () => {
-    if (locatingStore) return;
-    setLocatingStore(true);
-    try {
-      const fix = await getRealGpsLocation();
-      setStoreCoords({ latitude: fix.latitude, longitude: fix.longitude });
-      if (errorMessage) setErrorMessage("");
-      if (!address.trim()) {
-        const addr = await reverseGeocodeLocation(fix.latitude, fix.longitude).catch(() => "");
-        if (addr && addr !== "My Location, Ethiopia") setAddress((prev) => (prev.trim() ? prev : addr));
-      }
-    } catch (e) {
-      Alert.alert("Location Not Found", e?.message || "We couldn't find your location. Please try again.");
-    } finally {
-      setLocatingStore(false);
-    }
-  };
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
+  const locatingStore = locationLoading;
   const [licenceNumber, setLicenceNumber] = useState("");
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
@@ -329,18 +302,12 @@ export default function SellerApply() {
       return;
     }
 
-<<<<<<< HEAD
     if (!storeCoords || !storeCoords.latitude || !storeCoords.longitude) {
-      setErrorMessage("A phone location is required. Please allow location access and try again.");
+      setErrorMessage("Please capture your store location. Stand inside your store and tap \"Use My Current Location\".");
       Alert.alert(
         "Store Location Required",
-        "Allow location access so we can set the storefront pickup location from this phone."
+        "Stand inside your store and tap \"Use My Current Location\", so customers and drivers get the real place."
       );
-=======
-    if (!storeCoords) {
-      setErrorMessage("Please capture your store location. Stand inside your store and tap \"Use My Current Location\".");
-      Alert.alert("Store Location Required", "Stand inside your store and tap \"Use My Current Location\", so customers and drivers get the real place.");
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
       return;
     }
 
@@ -409,18 +376,12 @@ export default function SellerApply() {
         telebirrPhone: telebirrPhone.trim(),
         businessName: businessName.trim(),
         address: address.trim(),
-<<<<<<< HEAD
-        city: selectedCity,
+        city: selectedCity || "Addis Ababa",
         latitude: storeCoords.latitude,
         longitude: storeCoords.longitude,
-        workingHours: `${openingTime} - ${closingTime}`,
+        workingHours: workingHours.trim() || `${openingTime} - ${closingTime}`,
         openingTime: openingTime.trim(),
         closingTime: closingTime.trim(),
-=======
-        latitude: storeCoords.latitude,
-        longitude: storeCoords.longitude,
-        workingHours: workingHours.trim(),
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
         licenceNumber: licenceNumber.trim(),
         sellerType,
         logoUrl: logoPath,
@@ -570,31 +531,6 @@ export default function SellerApply() {
               ) : null}
             </View>
 
-<<<<<<< HEAD
-            {/* Working Hours Interval */}
-            <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
-              <View style={{ flex: 1 }}>
-                <Text style={s.label}>Opening Time</Text>
-                <TextInput
-                  style={s.input}
-                  value={openingTime}
-                  onChangeText={setOpeningTime}
-                  placeholder="08:00 AM"
-                  placeholderTextColor="#94A3B8"
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={s.label}>Closing Time</Text>
-                <TextInput
-                  style={s.input}
-                  value={closingTime}
-                  onChangeText={setClosingTime}
-                  placeholder="10:00 PM"
-                  placeholderTextColor="#94A3B8"
-                />
-              </View>
-            </View>
-=======
             <Text style={s.label}>Store Location (GPS) *</Text>
             <TouchableOpacity
               onPress={captureStoreLocation}
@@ -636,15 +572,29 @@ export default function SellerApply() {
               </View>
             </TouchableOpacity>
 
-            <Text style={s.label}>Operating / Working Hours Interval *</Text>
-            <TextInput
-              style={s.input}
-              value={workingHours}
-              onChangeText={setWorkingHours}
-              placeholder="e.g. 08:00 AM - 10:00 PM"
-              placeholderTextColor="#94A3B8"
-            />
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
+            {/* Working Hours Interval */}
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.label}>Opening Time</Text>
+                <TextInput
+                  style={s.input}
+                  value={openingTime}
+                  onChangeText={setOpeningTime}
+                  placeholder="08:00 AM"
+                  placeholderTextColor="#94A3B8"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={s.label}>Closing Time</Text>
+                <TextInput
+                  style={s.input}
+                  value={closingTime}
+                  onChangeText={setClosingTime}
+                  placeholder="10:00 PM"
+                  placeholderTextColor="#94A3B8"
+                />
+              </View>
+            </View>
 
             <Text style={s.label}>Business Licence / Reg. No. (Optional)</Text>
             <TextInput

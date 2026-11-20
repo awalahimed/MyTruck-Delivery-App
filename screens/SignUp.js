@@ -86,20 +86,17 @@ export default function SignUp() {
     setBusy(true);
 
     try {
-<<<<<<< HEAD
-      // Check the email first so an existing account is rejected before any SMS is sent.
-      const emailCheck = await checkEmailRegistered(email);
-      if (emailCheck.isRegistered) {
-        setErrorMessage("An account with this email already exists. Please sign in instead.");
+      // Refuse a phone number or email that already has an account BEFORE sending (and paying for) the SMS
+      const check = await checkPhoneRegistered(norm.localNumber, email.trim());
+      if (check.isRegistered) {
+        setErrorMessage(
+          check.reason === "email"
+            ? "An account with this email already exists. Please sign in instead."
+            : "This mobile number is already registered. Please sign in instead."
+        );
+        setBusy(false);
         return;
       }
-
-      // Then check duplicate mobile registration.
-      const check = await checkPhoneRegistered(norm.localNumber);
-=======
-      // 1. Refuse a phone number or email that already has an account BEFORE sending (and paying for) the SMS
-      const check = await checkPhoneRegistered(norm.localNumber, email.trim());
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
       if (check.isRegistered) {
         setErrorMessage(
           check.reason === "email"

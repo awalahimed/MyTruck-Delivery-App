@@ -451,7 +451,6 @@ export default function ProfileScreen() {
                 </View>
                 {phoneError ? <Text style={s.errorTxt}>{phoneError}</Text> : null}
 
-<<<<<<< HEAD
                 {isMerchantUser ? (
                   <View style={{ marginTop: 14 }}>
                     <Text style={s.fieldLabel}>Storefront Location (Fixed)</Text>
@@ -464,56 +463,6 @@ export default function ProfileScreen() {
                     <Text style={{ color: "#64748B", fontSize: 11, marginTop: 5 }}>
                       Store pickup location changes are disabled. Contact MyTruck support if it needs correction.
                     </Text>
-=======
-                {/* Street Address & Location */}
-                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 14, marginBottom: 6 }}>
-                  <Text style={s.fieldLabel}>Delivery Address *</Text>
-                  <TouchableOpacity
-                    onPress={handleGetCurrentLocation}
-                    style={s.gpsBadge}
-                    activeOpacity={0.8}
-                  >
-                    {locating ? (
-                      <ActivityIndicator size="small" color={TEAL} />
-                    ) : (
-                      <>
-                        <MaterialCommunityIcons name="crosshairs-gps" size={14} color={TEAL} />
-                        <Text style={s.gpsBadgeTxt}>Get Current Location</Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                </View>
-
-                <View style={s.inputWrap}>
-                  <MaterialCommunityIcons name="map-marker-outline" size={20} color={TEAL} style={s.inputIcon} />
-                  <TextInput
-                    style={s.input}
-                    value={address}
-                    onChangeText={setAddress}
-                    placeholder="Street, area, building or house number"
-                    placeholderTextColor="#94A3B8"
-                  />
-                </View>
-
-                {/* Location Map Preview */}
-                <View style={s.mapWrapper}>
-                  <SharedMapView
-                    style={StyleSheet.absoluteFillObject}
-                    initialRegion={{
-                      latitude: latitude || 8.9806,
-                      longitude: longitude || 38.7578,
-                      latitudeDelta: 0.015,
-                      longitudeDelta: 0.015,
-                    }}
-                    key={`${latitude},${longitude}`}
-                    locked
-                    onRecenter={handleGetCurrentLocation}
-                    recenterLoading={locating}
-                  />
-
-                  <View style={s.mapOverlayHint} pointerEvents="none">
-                    <Text style={s.mapHintTxt}>Your location comes from your phone's GPS. Tap the GPS button to update it.</Text>
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
                   </View>
                 ) : (
                   <>
@@ -557,19 +506,14 @@ export default function ProfileScreen() {
                           latitudeDelta: 0.015,
                           longitudeDelta: 0.015,
                         }}
-                        onLocationChange={(c) => {
-                          if (c?.latitude && c?.longitude) {
-                            setLatitude(c.latitude);
-                            setLongitude(c.longitude);
-                            reverseGeocodeLocation(c.latitude, c.longitude).then(setAddress);
-                          }
-                        }}
+                        key={`${latitude},${longitude}`}
+                        locked
                         onRecenter={handleGetCurrentLocation}
                         recenterLoading={locating}
                       />
 
                       <View style={s.mapOverlayHint} pointerEvents="none">
-                        <Text style={s.mapHintTxt}>Tap map or drag marker to set exact location</Text>
+                        <Text style={s.mapHintTxt}>Your location comes from your phone's GPS. Tap the GPS button to update it.</Text>
                       </View>
                     </View>
                   </>

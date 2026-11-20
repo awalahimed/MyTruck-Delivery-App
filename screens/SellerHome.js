@@ -1720,23 +1720,13 @@ export default function SellerHome() {
               <View style={{ flexDirection: "row", alignItems: "center", marginTop: 4, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: "#A7F3D0", backgroundColor: "#ECFDF5" }}>
                 <MaterialCommunityIcons name="map-marker-lock" size={20} color="#047857" />
                 <View style={{ flex: 1, marginLeft: 10 }}>
-<<<<<<< HEAD
-                  <Text style={{ fontSize: 13, fontWeight: "800", color: "#065F46" }}>
-                    {dbUser?.address || "Location set during registration"}
-                  </Text>
-                  <Text style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>
-                    {storeCoords
-                      ? `${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)} · location changes are disabled`
-                      : "Store pickup location is managed by MyTruck support"}
-=======
                   <Text style={{ fontSize: 13, fontWeight: "800", color: storeCoords ? "#065F46" : "#9A3412" }}>
-                    {storeCoords ? "Store location set" : "Set your store location"}
+                    {storeCoords ? (dbUser?.address || "Store location set") : "Set your store location"}
                   </Text>
                   <Text style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>
                     {storeCoords
                       ? `${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)} · to update it, stand in your store and tap here, then Save`
                       : "Required for correct delivery fees and so drivers find your pickup point"}
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
                   </Text>
                 </View>
               </View>
@@ -1777,8 +1767,6 @@ export default function SellerHome() {
         )}
       </ScrollView>
 
-<<<<<<< HEAD
-=======
       {storeLocationModalVisible ? (
         <DeliveryLocationModal
           visible={storeLocationModalVisible}
@@ -1796,7 +1784,6 @@ export default function SellerHome() {
         />
       ) : null}
 
->>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
       {/* Add / Edit Product Modal */}
       <Modal
         animationType="slide"
