@@ -25,6 +25,7 @@ import { auth, db, storage } from "../firebase";
 import { UserAuth, normalizeEthiopianPhone, formatAuthError } from "../contexts/AuthContext";
 import { verifySignupCode } from "../services/otpClient";
 import BackButton from "../components/ui/BackButton";
+<<<<<<< HEAD
 import { isWithinEthiopia, reverseGeocodeLocation } from "../utils/mapService";
 
 const ETHIOPIAN_CITIES = [
@@ -44,6 +45,9 @@ const ETHIOPIAN_CITIES = [
   "Dilla",
   "Wolaita Sodo",
 ];
+=======
+import { getRealGpsLocation, reverseGeocodeLocation } from "../utils/mapService";
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";
@@ -59,8 +63,32 @@ export default function SellerApply() {
   const [businessName, setBusinessName] = useState("");
   const [selectedCity, setSelectedCity] = useState("");
   const [address, setAddress] = useState("");
+<<<<<<< HEAD
   const [storeCoords, setStoreCoords] = useState(null); // { latitude, longitude, address }
   const [locationLoading, setLocationLoading] = useState(true);
+=======
+  // The store's real position, read from this phone's GPS while the owner is at the store
+  const [storeCoords, setStoreCoords] = useState(null);
+  const [locatingStore, setLocatingStore] = useState(false);
+
+  const captureStoreLocation = async () => {
+    if (locatingStore) return;
+    setLocatingStore(true);
+    try {
+      const fix = await getRealGpsLocation();
+      setStoreCoords({ latitude: fix.latitude, longitude: fix.longitude });
+      if (errorMessage) setErrorMessage("");
+      if (!address.trim()) {
+        const addr = await reverseGeocodeLocation(fix.latitude, fix.longitude).catch(() => "");
+        if (addr && addr !== "My Location, Ethiopia") setAddress((prev) => (prev.trim() ? prev : addr));
+      }
+    } catch (e) {
+      Alert.alert("Location Not Found", e?.message || "We couldn't find your location. Please try again.");
+    } finally {
+      setLocatingStore(false);
+    }
+  };
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
   const [licenceNumber, setLicenceNumber] = useState("");
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
@@ -301,12 +329,18 @@ export default function SellerApply() {
       return;
     }
 
+<<<<<<< HEAD
     if (!storeCoords || !storeCoords.latitude || !storeCoords.longitude) {
       setErrorMessage("A phone location is required. Please allow location access and try again.");
       Alert.alert(
         "Store Location Required",
         "Allow location access so we can set the storefront pickup location from this phone."
       );
+=======
+    if (!storeCoords) {
+      setErrorMessage("Please capture your store location. Stand inside your store and tap \"Use My Current Location\".");
+      Alert.alert("Store Location Required", "Stand inside your store and tap \"Use My Current Location\", so customers and drivers get the real place.");
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
       return;
     }
 
@@ -375,12 +409,18 @@ export default function SellerApply() {
         telebirrPhone: telebirrPhone.trim(),
         businessName: businessName.trim(),
         address: address.trim(),
+<<<<<<< HEAD
         city: selectedCity,
         latitude: storeCoords.latitude,
         longitude: storeCoords.longitude,
         workingHours: `${openingTime} - ${closingTime}`,
         openingTime: openingTime.trim(),
         closingTime: closingTime.trim(),
+=======
+        latitude: storeCoords.latitude,
+        longitude: storeCoords.longitude,
+        workingHours: workingHours.trim(),
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
         licenceNumber: licenceNumber.trim(),
         sellerType,
         logoUrl: logoPath,
@@ -530,6 +570,7 @@ export default function SellerApply() {
               ) : null}
             </View>
 
+<<<<<<< HEAD
             {/* Working Hours Interval */}
             <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
               <View style={{ flex: 1 }}>
@@ -553,6 +594,57 @@ export default function SellerApply() {
                 />
               </View>
             </View>
+=======
+            <Text style={s.label}>Store Location (GPS) *</Text>
+            <TouchableOpacity
+              onPress={captureStoreLocation}
+              disabled={locatingStore}
+              activeOpacity={0.85}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                padding: 12,
+                marginBottom: 12,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: storeCoords ? "#A7F3D0" : "#FDBA74",
+                backgroundColor: storeCoords ? "#ECFDF5" : "#FFF7ED",
+              }}
+            >
+              {locatingStore ? (
+                <ActivityIndicator size="small" color={TEAL} />
+              ) : (
+                <MaterialCommunityIcons
+                  name={storeCoords ? "map-marker-check" : "crosshairs-gps"}
+                  size={20}
+                  color={storeCoords ? "#047857" : "#C2410C"}
+                />
+              )}
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={{ fontSize: 13, fontWeight: "800", color: storeCoords ? "#065F46" : "#9A3412" }}>
+                  {locatingStore
+                    ? "Finding your location…"
+                    : storeCoords
+                    ? "Store location captured"
+                    : "Use My Current Location"}
+                </Text>
+                <Text style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>
+                  {storeCoords
+                    ? `${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)} · tap to refresh while standing in your store`
+                    : "Stand inside your store and tap here. The location comes from your phone's GPS and can't be typed in."}
+                </Text>
+              </View>
+            </TouchableOpacity>
+
+            <Text style={s.label}>Operating / Working Hours Interval *</Text>
+            <TextInput
+              style={s.input}
+              value={workingHours}
+              onChangeText={setWorkingHours}
+              placeholder="e.g. 08:00 AM - 10:00 PM"
+              placeholderTextColor="#94A3B8"
+            />
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
 
             <Text style={s.label}>Business Licence / Reg. No. (Optional)</Text>
             <TextInput

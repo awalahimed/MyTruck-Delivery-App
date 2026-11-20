@@ -883,6 +883,7 @@ export default function Home() {
         <DeliveryLocationModal
           visible={deliveryModalVisible}
           onClose={() => setDeliveryModalVisible(false)}
+          gpsOnly
           initialLocation={{
             address: currentAddress,
             latitude: currentCoords.latitude,

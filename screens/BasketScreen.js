@@ -1307,6 +1307,7 @@ Please try again, or choose Cash on Delivery.`,
         <DeliveryLocationModal
           visible={deliveryModalVisible}
           onClose={() => setDeliveryModalVisible(false)}
+          gpsOnly
           initialLocation={{
             address: currentAddress,
             latitude: currentCoords.latitude,

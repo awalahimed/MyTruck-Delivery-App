@@ -24,7 +24,7 @@ import BackButton from "../components/ui/BackButton";
 import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
 import {
-  requestGpsLocation,
+  getRealGpsLocation,
   reverseGeocodeLocation,
 } from "../utils/mapService";
 
@@ -69,7 +69,7 @@ export default function UserDetails() {
   const handleGetCurrentLocation = async () => {
     setLocating(true);
     try {
-      const c = await requestGpsLocation();
+      const c = await getRealGpsLocation();
       setCoords(c);
       const addr = await reverseGeocodeLocation(c.latitude, c.longitude);
       setAddress(addr);
@@ -243,12 +243,8 @@ export default function UserDetails() {
                   latitudeDelta: 0.015,
                   longitudeDelta: 0.015,
                 }}
-                onLocationChange={(c) => {
-                  if (c?.latitude && c?.longitude) {
-                    setCoords(c);
-                    reverseGeocodeLocation(c.latitude, c.longitude).then(setAddress);
-                  }
-                }}
+                key={`${coords.latitude},${coords.longitude}`}
+                locked
                 onRecenter={handleGetCurrentLocation}
                 recenterLoading={locating}
               />

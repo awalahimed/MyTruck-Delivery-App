@@ -11,8 +11,14 @@ import {
 } from "firebase/auth";
 import { auth, db } from "../firebase";
 import { sendSignupCode, claimPhone } from "../services/otpClient";
+<<<<<<< HEAD
 import { signInWithPhonePassword } from "../services/phoneSignIn";
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore";
+=======
+import { isPhoneIndexed, reservePhone, syncOwnPhone, backfillPhoneIndex } from "../services/phoneIndex";
+import { getRoleInfo } from "../utils/roles";
+import { doc, getDoc, setDoc, updateDoc, getDocs, collection, query, where, limit, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore";
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // Controls the post-sign-in legacy phone-verification gate only.
@@ -491,7 +497,16 @@ export const AuthContextProvder = ({ children }) => {
     };
   }, [loadProfileFromFirestore]);
 
+  // Keep this account's number in the phone index (also adds accounts that existed before the index).
+  // Staff additionally fill in every other existing account, once per session.
+  useEffect(() => {
+    if (registering || !user?.uid || !dbUser?.phoneNumber) return;
+    syncOwnPhone(user.uid, dbUser.phoneNumber);
+    if (getRoleInfo(user, dbUser).isStaffAdmin) backfillPhoneIndex();
+  }, [registering, user?.uid, dbUser?.phoneNumber, dbUser?.role]);
+
   /**
+<<<<<<< HEAD
    * Checks whether a signup email is already in Firebase Auth before sending
    * an SMS. This uses the client SDK, so it respects Firebase email
    * enumeration protection (which may hide whether an account exists).
@@ -515,12 +530,21 @@ export const AuthContextProvder = ({ children }) => {
   /**
    * Check if a phone number is already registered in the system.
    * Checks both Firestore and Firebase Auth email methods.
+=======
+   * Check if a phone number (and, for sign-up, the email) already belongs to an account.
+   * Sign-up calls this BEFORE sending the SMS code, so a taken number never costs an SMS.
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
    */
-  const checkPhoneRegistered = useCallback(async (phoneInput) => {
+  const checkPhoneRegistered = useCallback(async (phoneInput, emailInput = "") => {
     const norm = normalizeEthiopianPhone(phoneInput);
     if (!norm.isValid) return { isRegistered: false, error: norm.error };
 
     try {
+      // 0. Public phone index: the only lookup that works on a signed-out device (see services/phoneIndex.js)
+      if ((await isPhoneIndexed(norm.intlNumber)) === true) {
+        return { isRegistered: true, reason: "phone" };
+      }
+
       // 1. Profile lookup only when signed in: user profiles are private, so a signed-out device
       //    can't search them. For sign-up, the phone number is checked on the server instead
       //    (send-otp refuses claimed numbers), so this lookup is only a shortcut for signed-in users.
@@ -531,18 +555,28 @@ export const AuthContextProvder = ({ children }) => {
         );
         const snap = await getDocs(q);
         if (!snap.empty) {
-          return { isRegistered: true };
+          return { isRegistered: true, reason: "phone" };
         }
       }
 
-      // 2. Check Firebase Auth methods if available
+      // 2. Check Firebase Auth methods if available: the old phone-alias login, and the email typed
+      //    on the sign-up form (accounts are created with the real email, so that's the one that clashes)
       try {
         const methods = await fetchSignInMethodsForEmail(auth, norm.authEmail);
         if (methods && methods.length > 0) {
-          return { isRegistered: true };
+          return { isRegistered: true, reason: "phone" };
         }
       } catch (_) {
         // Enumeration protection might throw; safe to continue
+      }
+      const cleanEmail = String(emailInput || "").trim().toLowerCase();
+      if (cleanEmail) {
+        try {
+          const methods = await fetchSignInMethodsForEmail(auth, cleanEmail);
+          if (methods && methods.length > 0) {
+            return { isRegistered: true, reason: "email" };
+          }
+        } catch (_) {}
       }
 
       return { isRegistered: false };
@@ -570,6 +604,13 @@ export const AuthContextProvder = ({ children }) => {
     let createdUser = null;
 
     try {
+      // 0. A number that already has an account can't sign up again (normally caught before the SMS is sent)
+      if ((await isPhoneIndexed(norm.intlNumber)) === true) {
+        const taken = new Error("This mobile number is already registered. Please sign in instead.");
+        taken.code = "otp/taken";
+        throw taken;
+      }
+
       // 1. Create Firebase Auth user
       const userCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
       createdUser = userCred.user;
@@ -609,9 +650,24 @@ export const AuthContextProvder = ({ children }) => {
         setDoc(doc(db, "users", createdUid), profileData, { merge: true }),
       ]);
 
+<<<<<<< HEAD
       // 4. Reserve the verified phone number on the server. Do not mark the
       // account verified or complete signup if the server cannot confirm it.
       await claimPhone(norm.intlNumber, createdUid, proof);
+=======
+      // 4. Reserve the phone number for this account, so the next sign-up with it is refused
+      //    before any SMS is sent. If another account got it first, undo this sign-up.
+      await reservePhone(norm.intlNumber, createdUid);
+      if (proof) {
+        try {
+          await claimPhone(norm.intlNumber, createdUid, proof);
+        } catch (claimErr) {
+          if (claimErr?.code === "otp/taken" || claimErr?.code === "otp/bad_proof") throw claimErr;
+          // Network trouble here shouldn't block a verified new user
+          console.warn("Phone claim not saved:", claimErr?.code, claimErr?.message);
+        }
+      }
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
 
       // 5. Update local state immediately
       AsyncStorage.setItem(`@mytruck_profile_${createdUid}`, JSON.stringify({ ...profileData, createdAt: null })).catch(() => {});
@@ -663,13 +719,26 @@ export const AuthContextProvder = ({ children }) => {
     bankName = "Commercial Bank of Ethiopia (CBE)",
     accountNumber = "",
     accountHolder = "",
+<<<<<<< HEAD
     proof,
+=======
+    latitude = null,
+    longitude = null,
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
   }) => {
     const norm = normalizeEthiopianPhone(phone);
     if (!norm.isValid) {
       throw new Error(norm.error);
     }
+<<<<<<< HEAD
     if (!proof) throw new Error("Verify your phone number before creating a seller account.");
+=======
+    // The store's real position, captured by GPS on the registration form
+    const storeLat = Number(latitude);
+    const storeLng = Number(longitude);
+    const hasStoreCoords = latitude != null && longitude != null && Number.isFinite(storeLat) && Number.isFinite(storeLng);
+    const storeCoordFields = hasStoreCoords ? { latitude: storeLat, longitude: storeLng } : {};
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
 
     startRegistration();
     let createdUser = null;
@@ -701,6 +770,7 @@ export const AuthContextProvder = ({ children }) => {
         phone: norm.intlNumber,
         telebirrPhone: telebirrPhone.trim(),
         address: address.trim(),
+<<<<<<< HEAD
         city: city ? city.trim() : "Addis Ababa",
         ...(latitude != null && longitude != null
           ? {
@@ -711,6 +781,9 @@ export const AuthContextProvder = ({ children }) => {
               deliveryRadiusKm: Number(deliveryRadiusKm) || 25,
             }
           : {}),
+=======
+        ...storeCoordFields,
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
         workingHours: workingHours.trim(),
         openingTime: openingTime.trim(),
         closingTime: closingTime.trim(),
@@ -745,10 +818,14 @@ export const AuthContextProvder = ({ children }) => {
         businessName: businessName.trim(),
         sellerType,
         address: address.trim(),
+<<<<<<< HEAD
         city: city ? city.trim() : "Addis Ababa",
         latitude: latitude != null ? Number(latitude) : null,
         longitude: longitude != null ? Number(longitude) : null,
         deliveryRadiusKm: Number(deliveryRadiusKm) || 25,
+=======
+        ...storeCoordFields,
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
         workingHours: workingHours.trim(),
         openingTime: openingTime.trim(),
         closingTime: closingTime.trim(),
@@ -782,6 +859,7 @@ export const AuthContextProvder = ({ children }) => {
         businessName: businessName.trim(),
         approvalStatus: "PENDING",
         address: address.trim(),
+<<<<<<< HEAD
         city: city ? city.trim() : "Addis Ababa",
         ...(latitude != null && longitude != null
           ? {
@@ -791,6 +869,9 @@ export const AuthContextProvder = ({ children }) => {
               storeLongitude: Number(longitude),
             }
           : {}),
+=======
+        ...(hasStoreCoords ? { storeLatitude: storeLat, storeLongitude: storeLng } : {}),
+>>>>>>> 926112f1226f72186e5816a1d19abad43fcf4468
         workingHours: workingHours.trim(),
         openingTime: openingTime.trim(),
         closingTime: closingTime.trim(),
