@@ -12,6 +12,7 @@ const { initializeApp } = require("firebase-admin/app");
 const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestore");
 const { createHmac, randomBytes, randomInt, timingSafeEqual, createHash } = require("node:crypto");
 const { getAuth } = require("firebase-admin/auth");
+const logger = require("firebase-functions/logger");
 
 initializeApp();
 const db = getFirestore();
@@ -308,7 +309,7 @@ function cleanEmail(raw, phone) {
 }
 
 function newTxRef() {
-  return `MT${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+  return `MT${Date.now().toString(36).toUpperCase()}${randomBytes(10).toString("hex").toUpperCase()}`;
 }
 
 async function chapaFetch(path, options = {}) {
@@ -334,15 +335,153 @@ async function loadOwnedOrders(uid, orderIds) {
   });
 }
 
-/**
- * createChapaCheckout({ orderIds?, amount?, email?, firstName?, lastName?, phone?, description?, txRef?, returnUrl? })
- *
- * With orderIds: the amount is taken from the orders in Firestore and the new
- * tx_ref / checkout URL are written back to them.
- * Without orderIds (checkout started before the orders are written): the
- * client amount is used. That is safe because verifyChapaPayment only marks
- * orders PAID when Chapa's verified amount covers the orders' totals.
- */
+const DEFAULT_PAYMENT_PRICING = {
+  itemMarkupPercent: 20, itemMarkupFlat: 100, deliveryRatePerKm: 25, minimumDeliveryFee: 50,
+  serviceFee: 15, deliveryCommissionPercent: 20, packageBaseFee: 60, packageRatePerKm: 25,
+  packageMinimumFee: 80,
+  maxDeliveryRadiusKm: 25, maxShopRadiusKm: 35, maxPackageRadiusKm: 50,
+  packageTypeSurcharges: { "Documents / Envelope": 0, "Small Box (< 3kg)": 20, "Medium Box (3-10kg)": 50, "Fragile Item": 80 },
+};
+
+async function paymentPricing() {
+  const snap = await db.collection("platformSettings").doc("config").get();
+  const raw = snap.exists ? snap.data() : {};
+  const nonNegative = (value, fallback) => Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : fallback;
+  return {
+    ...DEFAULT_PAYMENT_PRICING, ...raw,
+    itemMarkupPercent: Math.min(500, nonNegative(raw.itemMarkupPercent, DEFAULT_PAYMENT_PRICING.itemMarkupPercent)),
+    itemMarkupFlat: nonNegative(raw.itemMarkupFlat, DEFAULT_PAYMENT_PRICING.itemMarkupFlat),
+    deliveryRatePerKm: nonNegative(raw.deliveryRatePerKm ?? raw.perKmFee, DEFAULT_PAYMENT_PRICING.deliveryRatePerKm),
+    minimumDeliveryFee: nonNegative(raw.minimumDeliveryFee ?? raw.baseFee, DEFAULT_PAYMENT_PRICING.minimumDeliveryFee),
+    serviceFee: nonNegative(raw.serviceFee, DEFAULT_PAYMENT_PRICING.serviceFee),
+    deliveryCommissionPercent: Math.min(100, nonNegative(raw.deliveryCommissionPercent, DEFAULT_PAYMENT_PRICING.deliveryCommissionPercent)),
+    packageBaseFee: nonNegative(raw.packageBaseFee, DEFAULT_PAYMENT_PRICING.packageBaseFee),
+    packageRatePerKm: nonNegative(raw.packageRatePerKm, DEFAULT_PAYMENT_PRICING.packageRatePerKm),
+    packageMinimumFee: nonNegative(raw.packageMinimumFee, DEFAULT_PAYMENT_PRICING.packageMinimumFee),
+    maxDeliveryRadiusKm: nonNegative(raw.maxDeliveryRadiusKm ?? raw.maxDistanceKm, DEFAULT_PAYMENT_PRICING.maxDeliveryRadiusKm),
+    maxShopRadiusKm: nonNegative(raw.maxShopRadiusKm, DEFAULT_PAYMENT_PRICING.maxShopRadiusKm),
+    maxPackageRadiusKm: nonNegative(raw.maxPackageRadiusKm, DEFAULT_PAYMENT_PRICING.maxPackageRadiusKm),
+    packageTypeSurcharges: Object.fromEntries(Object.entries(DEFAULT_PAYMENT_PRICING.packageTypeSurcharges).map(([type, fallback]) =>
+      [type, nonNegative(raw.packageTypeSurcharges?.[type], fallback)])),
+  };
+}
+
+function validEthiopiaPoint(point) {
+  const lat = Number(point?.latitude ?? point?.lat);
+  const lng = Number(point?.longitude ?? point?.lng);
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat >= 3.4 && lat <= 14.9 && lng >= 32.9 && lng <= 48.0
+    ? { latitude: lat, longitude: lng } : null;
+}
+
+function roundMoney(value) { return Number(Number(value).toFixed(2)); }
+function paymentDistanceKm(a, b) {
+  const rad = (n) => n * Math.PI / 180;
+  const x = Math.sin(rad(b.latitude - a.latitude) / 2) ** 2 +
+    Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(rad(b.longitude - a.longitude) / 2) ** 2;
+  return Number((6371 * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x))).toFixed(1));
+}
+
+/** Recomputes the amount from trusted catalog/config data; client order totals are never used. */
+async function validateAndPriceChapaOrders(uid, orderSnaps) {
+  if (!orderSnaps.length) throw new HttpsError("invalid-argument", "At least one order is required.");
+  if (orderSnaps.length > 10) throw new HttpsError("invalid-argument", "Too many orders in one payment.");
+  const cfg = await paymentPricing();
+  let expected = 0;
+  for (const snap of orderSnaps) {
+    const order = snap.data();
+    if (order.userId !== uid) throw new HttpsError("permission-denied", "Not your order.");
+    if (order.paymentMethod !== "CHAPA" || order.status !== "AWAITING_PAYMENT" || !["UNPAID", "PENDING"].includes(order.paymentStatus))
+      throw new HttpsError("failed-precondition", "Order is not awaiting Chapa payment.");
+    if (order.currency && String(order.currency).toUpperCase() !== "ETB") throw new HttpsError("failed-precondition", "Order currency must be ETB.");
+    if (order.status === "CANCELLED") throw new HttpsError("failed-precondition", "Cancelled orders cannot be paid.");
+
+    if (order.orderType === "PACKAGE") {
+      const pickup = validEthiopiaPoint(order.pickupCoords);
+      const dropoff = validEthiopiaPoint(order.dropoffCoords || order.deliveryCoords);
+      const surcharge = cfg.packageTypeSurcharges?.[order.packageType];
+      if (!pickup || !dropoff || !Number.isFinite(Number(surcharge)) || !String(order.recipientName || "").trim() || !String(order.recipientPhone || "").trim())
+        throw new HttpsError("invalid-argument", "Package details or locations are invalid.");
+      const km = paymentDistanceKm(pickup, dropoff);
+      if (km > cfg.maxPackageRadiusKm) throw new HttpsError("failed-precondition", "Package route is outside the delivery area.");
+      const fee = Math.round(Math.max(cfg.packageMinimumFee, cfg.packageBaseFee + km * cfg.packageRatePerKm) + Number(surcharge));
+      const total = roundMoney(fee + cfg.serviceFee);
+      const commission = roundMoney(fee * cfg.deliveryCommissionPercent / 100);
+      await snap.ref.update({ pickupCoords: pickup, dropoffCoords: dropoff, deliveryCoords: dropoff, deliveryDistanceKm: km,
+        packageBaseFee: cfg.packageBaseFee, packageDistanceCharge: Math.round(km * cfg.packageRatePerKm), packageTypeSurcharge: Number(surcharge),
+        subtotal: 0, deliveryFee: fee, serviceFee: cfg.serviceFee, total, currency: "ETB",
+        deliveryCommissionPercent: cfg.deliveryCommissionPercent, deliveryCommission: commission,
+        driverEarnings: roundMoney(fee - commission), companyProfit: roundMoney(cfg.serviceFee + commission), restaurantEarnings: 0,
+        totalOwedOut: roundMoney(fee - commission), updatedAt: FieldValue.serverTimestamp() });
+      expected += total;
+      continue;
+    }
+
+    const destination = validEthiopiaPoint(order.deliveryCoords || order.dropoffCoords);
+    const restaurantId = String(order.restaurantId || "");
+    if (!destination || !restaurantId || restaurantId.startsWith("package_")) throw new HttpsError("invalid-argument", "Delivery location or store is invalid.");
+    const collectionName = order.sellerType === "shop" ? "shops" : "restaurants";
+    const storeSnap = await db.collection(collectionName).doc(restaurantId).get();
+    if (!storeSnap.exists) throw new HttpsError("failed-precondition", "The selected store is unavailable.");
+    const store = storeSnap.data();
+    if (String(store.status || "").toUpperCase() !== "APPROVED" || store.isVerified === false || store.isActive === false)
+      throw new HttpsError("failed-precondition", "The selected store is not approved for orders.");
+    if (store.isOpen === false || store.isAvailable === false) throw new HttpsError("failed-precondition", "The selected store is closed.");
+    const origin = validEthiopiaPoint({ latitude: store.latitude ?? store.lat ?? store.storeLatitude, longitude: store.longitude ?? store.lng ?? store.storeLongitude });
+    if (!origin) throw new HttpsError("failed-precondition", "The selected store has no valid delivery location.");
+    const linesSnap = await db.collection("orderDishes").where("orderId", "==", snap.id).get();
+    if (linesSnap.empty || linesSnap.size > 50) throw new HttpsError("failed-precondition", "Order items are missing or invalid.");
+    let subtotal = 0;
+    let baseSubtotal = 0;
+    for (const lineSnap of linesSnap.docs) {
+      const line = lineSnap.data();
+      const quantity = Number(line.quantity);
+      const catalogId = String(line.dishId || line.productId || "");
+      if (!catalogId || !Number.isInteger(quantity) || quantity < 1 || quantity > 50 || String(line.restaurantId) !== restaurantId)
+        throw new HttpsError("invalid-argument", "An order item or quantity is invalid.");
+      let catalogSnap = await db.collection(order.sellerType === "shop" ? "products" : "dishes").doc(catalogId).get();
+      if (!catalogSnap.exists && order.sellerType === "shop") catalogSnap = await db.collection("dishes").doc(catalogId).get();
+      if (!catalogSnap.exists) throw new HttpsError("failed-precondition", "An item is no longer available.");
+      const item = catalogSnap.data();
+      const itemStore = String(item.shopId || item.restaurantId || item.storeId || "");
+      const itemApproved = item.isApproved === true || item.isPublished === true || item.status === "APPROVED" || item.status === "Published" || item.lifecycleStatus === "Published";
+      if (itemStore !== restaurantId || !itemApproved || item.isAvailable === false || item.inStock === false || item.isActive === false)
+        throw new HttpsError("failed-precondition", "An item is not available from this store.");
+      const base = Number(item.price ?? item.discountedPrice);
+      if (!Number.isFinite(base) || base <= 0) throw new HttpsError("failed-precondition", "An item has an invalid catalog price.");
+      const unit = Math.round(base * (1 + cfg.itemMarkupPercent / 100) + cfg.itemMarkupFlat);
+      subtotal += unit * quantity;
+      baseSubtotal += base * quantity;
+      await lineSnap.ref.update({ price: unit, merchantBasePrice: base, totalPrice: roundMoney(unit * quantity), name: item.name || line.name });
+    }
+    subtotal = roundMoney(subtotal);
+    const distance = paymentDistanceKm(origin, destination);
+    const maxDistance = order.sellerType === "shop" ? cfg.maxShopRadiusKm : cfg.maxDeliveryRadiusKm;
+    if (distance > maxDistance) throw new HttpsError("failed-precondition", "Store is outside the delivery area.");
+    const deliveryFee = Math.max(cfg.minimumDeliveryFee, Math.round(distance * cfg.deliveryRatePerKm));
+    const serviceFee = cfg.serviceFee;
+    const promoCode = String(order.promoCode || "").toUpperCase();
+    let promoDiscount = 0;
+    if (promoCode === "MYTRUCK20") promoDiscount = roundMoney(subtotal * 0.2);
+    else if (promoCode === "WELCOME" || promoCode === "WELCOME50") promoDiscount = Math.min(subtotal, 50);
+    else if (promoCode === "FREESHIP") promoDiscount = Math.min(subtotal, deliveryFee);
+    else if (promoCode) throw new HttpsError("failed-precondition", "Promo code is invalid.");
+    const total = roundMoney(Math.max(0, subtotal + deliveryFee + serviceFee - promoDiscount));
+    baseSubtotal = roundMoney(baseSubtotal);
+    const commission = roundMoney(deliveryFee * cfg.deliveryCommissionPercent / 100);
+    const platformMarkup = roundMoney(subtotal - baseSubtotal);
+    await snap.ref.update({ subtotal, merchantBaseSubtotal: baseSubtotal, platformItemMarkup: platformMarkup,
+      deliveryFee, serviceFee, promoDiscount, total, currency: "ETB", deliveryDistanceKm: distance,
+      deliveryCommissionPercent: cfg.deliveryCommissionPercent, deliveryCommission: commission,
+      restaurantEarnings: baseSubtotal, driverEarnings: roundMoney(deliveryFee - commission),
+      companyProfit: roundMoney(platformMarkup + serviceFee + commission), totalOwedOut: roundMoney(baseSubtotal + deliveryFee - commission),
+      deliveryCoords: destination, dropoffCoords: destination, restaurantLat: origin.latitude, restaurantLng: origin.longitude,
+      updatedAt: FieldValue.serverTimestamp() });
+    expected += total;
+  }
+  return roundMoney(expected);
+}
+
+/** Initializes payments only for caller-owned persisted drafts, priced here from trusted data. */
 exports.createChapaCheckout = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (request) => {
   const uid = requireAuth(request);
   const data = request.data || {};
@@ -351,27 +490,27 @@ exports.createChapaCheckout = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (req
     chapaSecretValue();
     return { ok: true };
   }
-  const orders = data.orderIds && data.orderIds.length ? await loadOwnedOrders(uid, data.orderIds) : [];
-
-  let amount;
-  if (orders.length) {
-    if (orders.some((s) => s.data().paymentStatus === "PAID")) {
-      throw new HttpsError("failed-precondition", "Order is already paid.");
+  if (!Array.isArray(data.orderIds) || !data.orderIds.length) throw new HttpsError("invalid-argument", "Order IDs are required.");
+  const ids = [...new Set(data.orderIds.map((id) => String(id).trim()).filter(Boolean))];
+  if (ids.length !== data.orderIds.length) throw new HttpsError("invalid-argument", "Order IDs must be unique.");
+  const orders = await loadOwnedOrders(uid, ids);
+  for (const orderSnap of orders) {
+    const priorRef = String(orderSnap.data().chapaMerchantReference || "");
+    if (!priorRef) continue;
+    const prior = await db.collection("chapaPaymentVerifications").doc(priorRef).get();
+    if (prior.exists && !["FAILED", "CANCELLED", "EXPIRED", "INITIALIZATION_FAILED", "INITIALIZATION_ERROR"].includes(String(prior.data().status || ""))) {
+      throw new HttpsError("failed-precondition", "This order already has an active or verified Chapa payment. Check its payment status before retrying.");
     }
-    if (orders.some((s) => s.data().status === "CANCELLED")) {
-      throw new HttpsError("failed-precondition", "This order was cancelled.");
-    }
-    amount = orders.reduce((sum, s) => sum + (Number(s.data().total) || 0), 0);
-  } else {
-    amount = Number(data.amount);
   }
-  if (!Number.isFinite(amount) || amount <= 0) throw new HttpsError("invalid-argument", "Invalid amount.");
+  const amount = await validateAndPriceChapaOrders(uid, orders);
+  if (!Number.isFinite(amount) || amount <= 0) throw new HttpsError("failed-precondition", "The validated order total is invalid.");
 
   const first = orders[0]?.data() || {};
   const phone = cleanPhone(data.phone || first.customerPhone);
   const fullName = String(data.firstName ? `${data.firstName} ${data.lastName || ""}` : first.customerName || "Customer User").trim();
   const [firstName = "Customer", ...rest] = fullName.split(" ");
-  const txRef = String(data.txRef || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 50) || newTxRef();
+  // Client references are not accepted: the server creates a unique payment binding.
+  const txRef = newTxRef();
 
   const base = {
     amount: amount.toFixed(2),
@@ -381,22 +520,38 @@ exports.createChapaCheckout = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (req
     first_name: firstName || "Customer",
     last_name: rest.join(" ") || "Client",
     phone_number: phone,
-    return_url: data.returnUrl || DEFAULT_RETURN_URL,
+    return_url: DEFAULT_RETURN_URL,
   };
 
-  let result = await chapaFetch("/transaction/initialize", {
-    method: "POST",
-    body: JSON.stringify({
-      ...base,
-      customization: {
-        title: "MyTruck Delivery",
-        description: String(data.description || "MyTruck order").replace(/[^A-Za-z0-9 ._,-]/g, "").slice(0, 50),
-      },
-    }),
-  });
-  // Chapa sometimes rejects the customization block; retry without it.
-  if (!result?.data?.checkout_url) {
-    result = await chapaFetch("/transaction/initialize", { method: "POST", body: JSON.stringify(base) });
+  const paymentRef = db.collection("chapaPaymentVerifications").doc(txRef);
+  const bindBatch = db.batch();
+  bindBatch.create(paymentRef, { uid, orderIds: orders.map((s) => s.id).sort(), amount: roundMoney(amount), currency: "ETB", status: "INITIALIZING", createdAt: FieldValue.serverTimestamp() });
+  orders.forEach((s) => bindBatch.update(s.ref, {
+    chapaMerchantReference: txRef, chapaCheckoutUrl: "", paymentInitiatedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  }));
+  await bindBatch.commit();
+
+  let result;
+  try {
+    result = await chapaFetch("/transaction/initialize", {
+      method: "POST",
+      body: JSON.stringify({
+        ...base,
+        customization: {
+          title: "MyTruck Delivery",
+          description: String(data.description || "MyTruck order").replace(/[^A-Za-z0-9 ._,-]/g, "").slice(0, 50),
+        },
+      }),
+    });
+    // Chapa sometimes rejects the customization block; retry without it.
+    if (!result?.data?.checkout_url) {
+      result = await chapaFetch("/transaction/initialize", { method: "POST", body: JSON.stringify(base) });
+    }
+  } catch (error) {
+    await paymentRef.set({ status: "INITIALIZATION_ERROR", updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError("unavailable", "Couldn't reach Chapa to start payment. Please try again.");
   }
 
   const checkoutUrl = result?.data?.checkout_url;
@@ -404,6 +559,7 @@ exports.createChapaCheckout = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (req
     const detail = String(result?.message || "").replace(/\s+/g, " ").trim().slice(0, 300);
     console.warn("Chapa initialize failed", detail || "No checkout URL returned.");
     const lowerDetail = detail.toLowerCase();
+    await paymentRef.set({ status: "INITIALIZATION_FAILED", updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
     if (lowerDetail.includes("invalid api key") || lowerDetail.includes("can't accept payments")) {
       throw new HttpsError(
         "failed-precondition",
@@ -416,17 +572,10 @@ exports.createChapaCheckout = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (req
     );
   }
 
-  if (orders.length) {
-    const batch = db.batch();
-    orders.forEach((s) =>
-      batch.update(s.ref, {
-        chapaMerchantReference: txRef,
-        chapaCheckoutUrl: checkoutUrl,
-        updatedAt: FieldValue.serverTimestamp(),
-      })
-    );
-    await batch.commit();
-  }
+  const batch = db.batch();
+  batch.set(paymentRef, { status: "PENDING", checkoutUrl, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  orders.forEach((s) => batch.update(s.ref, { chapaCheckoutUrl: checkoutUrl, updatedAt: FieldValue.serverTimestamp() }));
+  await batch.commit();
 
   return { checkoutUrl, txRef, amount: Number(amount.toFixed(2)) };
 });
@@ -447,36 +596,48 @@ exports.verifyChapaPayment = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (requ
   const txRef = String(data.tx_ref || seed[0]?.data().chapaMerchantReference || "").trim();
   if (!txRef) throw new HttpsError("failed-precondition", "No Chapa reference on this order.");
 
-  // Every order of this user sharing the reference (one checkout can cover several merchants).
-  const linked = await db
-    .collection("orders")
-    .where("chapaMerchantReference", "==", txRef)
-    .where("userId", "==", uid)
-    .get();
-  if (linked.empty) throw new HttpsError("not-found", "No orders for this payment reference.");
-
-  if (linked.docs.every((d) => d.data().paymentStatus === "PAID")) {
-    return { verified: true, paymentStatus: "PAID", txRef };
+  const paymentSnap = await db.collection("chapaPaymentVerifications").doc(txRef).get();
+  if (!paymentSnap.exists) throw new HttpsError("not-found", "No server payment record exists for this reference.");
+  const payment = paymentSnap.data();
+  if (payment.uid !== uid) throw new HttpsError("permission-denied", "This payment does not belong to your account.");
+  const linked = await loadOwnedOrders(uid, payment.orderIds || []);
+  const boundIds = [...(payment.orderIds || [])].sort();
+  if (!boundIds.length || linked.length !== boundIds.length || boundIds.some((id, i) => id !== linked[i].id) ||
+      linked.some((s) => s.data().chapaMerchantReference !== txRef)) {
+    throw new HttpsError("failed-precondition", "The payment is not bound to this exact order set.");
   }
+  if (requested.some((id) => !boundIds.includes(String(id)))) throw new HttpsError("permission-denied", "Requested order is not part of this payment.");
+  const expected = roundMoney(linked.reduce((sum, d) => sum + Number(d.data().total), 0));
+  if (expected !== Number(payment.amount) || payment.currency !== "ETB")
+    throw new HttpsError("failed-precondition", "Server payment record does not match the current order totals.");
 
   const result = await chapaFetch(`/transaction/verify/${encodeURIComponent(txRef)}`);
   const chapaStatus = String(result?.data?.status || "").toUpperCase();
 
-  if (result?.status !== "success" || chapaStatus !== "SUCCESS") {
+  const returnedRef = String(result?.data?.tx_ref || "").trim();
+  if (returnedRef !== txRef) {
+    return { verified: false, paymentStatus: "PENDING", chapaStatus, txRef };
+  }
+  if (result?.status !== "success") {
     const failed = ["FAILED", "CANCELLED", "EXPIRED"].includes(chapaStatus);
+    if (failed) await paymentSnap.ref.set({ status: chapaStatus, lastCheckedAt: FieldValue.serverTimestamp() }, { merge: true });
+    return { verified: false, paymentStatus: failed ? "FAILED" : "PENDING", chapaStatus, txRef };
+  }
+  if (chapaStatus !== "SUCCESS") {
+    const failed = ["FAILED", "CANCELLED", "EXPIRED"].includes(chapaStatus);
+    if (failed) await paymentSnap.ref.set({ status: chapaStatus, lastCheckedAt: FieldValue.serverTimestamp() }, { merge: true });
     return { verified: false, paymentStatus: failed ? "FAILED" : "PENDING", chapaStatus, txRef };
   }
 
-  const expected = linked.docs.reduce((sum, d) => sum + (Number(d.data().total) || 0), 0);
   const paid = Number(result.data.amount);
-  if (String(result.data.currency || "ETB").toUpperCase() !== "ETB" || !(paid + 0.01 >= expected)) {
-    console.error("Chapa amount mismatch", { txRef, paid, expected });
+  if (String(result.data.currency || "").toUpperCase() !== "ETB" || !Number.isFinite(paid) || Math.abs(paid - expected) > 0.01 || Math.abs(paid - Number(payment.amount)) > 0.01) {
+    console.error("Chapa amount or currency mismatch", { txRef, paid, expected });
     return { verified: false, paymentStatus: "AMOUNT_MISMATCH", txRef };
   }
 
   const batch = db.batch();
-  linked.docs.forEach((d) => {
-    if (d.data().paymentStatus === "PAID") return;
+  linked.forEach((d) => {
+    if (d.data().paymentStatus === "PAID") return; // server has re-verified this exact payment and binding
     const cancelled = d.data().status === "CANCELLED";
     batch.update(d.ref, {
       paymentStatus: "PAID",
@@ -494,14 +655,16 @@ exports.verifyChapaPayment = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (requ
       updatedAt: FieldValue.serverTimestamp(),
     });
   });
+  batch.set(paymentSnap.ref, { status: "VERIFIED", verifiedAmount: paid, verifiedCurrency: "ETB", verifiedAt: FieldValue.serverTimestamp() }, { merge: true });
   await batch.commit();
 
   // Tell each store about its newly paid order (same shape the app's NotificationContext reads)
   await Promise.all(
-    linked.docs
+    linked
       .filter((d) => d.data().status === "AWAITING_PAYMENT" && d.data().merchantOwnerUid)
-      .map((d) =>
-        db.collection("notifications").add({
+      .map((d) => {
+        const notificationRef = db.collection("notifications").doc(`chapa_${txRef}_${d.id}`);
+        return notificationRef.create({
           recipientUid: d.data().merchantOwnerUid,
           type: "ORDER_UPDATE",
           category: "ORDER",
@@ -513,10 +676,64 @@ exports.verifyChapaPayment = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (requ
           readAt: null,
           createdAt: FieldValue.serverTimestamp(),
         })
-      )
-  ).catch((e) => console.warn("merchant notify failed", e?.message));
+          .catch((e) => { if (e.code !== 6 && e.code !== "already-exists") console.warn("merchant notify failed", e?.message); });
+      })
+  );
 
   return { verified: true, paymentStatus: "PAID", txRef };
+});
+
+/** Server-side payment check used by a merchant before accepting a legacy app-verified order. */
+exports.checkChapaPaymentForStore = onCall({ secrets: [CHAPA_SECRET_KEY] }, async (request) => {
+  const uid = requireAuth(request);
+  const txRef = String(request.data?.txRef || "").trim();
+  if (!txRef) throw new HttpsError("invalid-argument", "A Chapa transaction reference is required.");
+
+  const profileSnap = await db.collection("user").doc(uid).get();
+  const profile = profileSnap.data() || {};
+  const role = String(profile.role || "").toLowerCase();
+  const isStaff = ["admin", "superadmin", "super_admin", "mini_admin", "miniadmin"].includes(role) ||
+    profile.isAdmin === true || profile.isSuperAdmin === true || profile.isMiniAdmin === true;
+  if (!isStaff && !["restaurant", "shop", "seller"].includes(role)) {
+    throw new HttpsError("permission-denied", "Only the order's merchant can check its payment.");
+  }
+
+  const ordersSnap = await db.collection("orders")
+    .where("chapaMerchantReference", "==", txRef)
+    .limit(20)
+    .get();
+  if (ordersSnap.empty) throw new HttpsError("not-found", "No order was found for this Chapa reference.");
+
+  const ownedIds = new Set([uid, profile.sellerId, profile.restaurantId, profile.shopId].filter(Boolean).map(String));
+  let ownsMatchingOrder = isStaff;
+  for (const orderDoc of ordersSnap.docs) {
+    const order = orderDoc.data();
+    const storeId = String(order.restaurantId || "");
+    if (order.merchantOwnerUid === uid || ownedIds.has(storeId)) {
+      ownsMatchingOrder = true;
+      break;
+    }
+    if (storeId) {
+      const storeDocs = await Promise.all([
+        db.collection("restaurants").doc(storeId).get(),
+        db.collection("shops").doc(storeId).get(),
+      ]);
+      if (storeDocs.some((store) => store.exists && store.data()?.ownerUid === uid)) {
+        ownsMatchingOrder = true;
+        break;
+      }
+    }
+  }
+  if (!ownsMatchingOrder) throw new HttpsError("permission-denied", "This payment reference is not for your store.");
+
+  const result = await chapaFetch(`/transaction/verify/${encodeURIComponent(txRef)}`);
+  const status = String(result?.data?.status || "").toUpperCase();
+  if (result?.status !== "success" || status !== "SUCCESS") {
+    return { ok: false, reason: status ? `Chapa reports this payment as ${status}, not completed.` : "Chapa has no completed payment for this order." };
+  }
+  const currency = String(result.data.currency || "ETB").toUpperCase();
+  if (currency !== "ETB") return { ok: false, reason: `The payment was made in ${currency}, not ETB.` };
+  return { ok: true, amount: Number(result.data.amount) || 0 };
 });
 
 /* ───────────────────────── Driver dispatch ─────────────────────────

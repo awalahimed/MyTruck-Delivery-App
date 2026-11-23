@@ -1,6 +1,6 @@
 const { withAndroidManifest } = require("@expo/config-plugins");
 
-/** Google Maps Android renders map tiles through a hardware-accelerated surface. */
+/** Native map SDKs render their map surface with hardware acceleration. */
 module.exports = function withMapsHardwareAcceleration(config) {
   return withAndroidManifest(config, (config) => {
     const application = config.modResults.manifest.application?.[0];

@@ -15,7 +15,7 @@ import {
 import { WebView } from "react-native-webview";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute } from "@react-navigation/native";
-import { doc, onSnapshot, getDoc, updateDoc, serverTimestamp, runTransaction } from "firebase/firestore";
+import { doc, onSnapshot, getDoc, serverTimestamp, runTransaction } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import SharedMapView from "../components/SharedMapView";
 import { StatusBar } from "expo-status-bar";
@@ -36,6 +36,22 @@ const TEAL = "#179B83";
 const DARK = "#0B2A26";
 const ORANGE = "#F47721";
 
+function timestampMillis(value) {
+  if (typeof value?.toMillis === "function") return value.toMillis();
+  if (typeof value?.seconds === "number") return value.seconds * 1000;
+  const parsed = value instanceof Date ? value.getTime() : Date.parse(value || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatLocationAge(updatedAt, now) {
+  const millis = timestampMillis(updatedAt);
+  if (!millis) return "Waiting for first location";
+  const seconds = Math.max(0, Math.floor((now - millis) / 1000));
+  if (seconds < 10) return "Updated just now";
+  if (seconds < 60) return `Updated ${seconds}s ago`;
+  return `Updated ${Math.floor(seconds / 60)}m ago`;
+}
+
 // High quality cropped assets from attached designs
 const DRIVER_AVATAR = require("../assets/cropped/driver_avatar.png");
 const TRACK_MAP_ROUTE = require("../assets/cropped/track_map_route.png");
@@ -51,7 +67,13 @@ export default function PreparingOrderScreen() {
   const [order, setOrder] = useState(null);
   // Package (courier) orders have no store step: paid/cash packages go straight to drivers
   const isPackage = order?.orderType === "PACKAGE" || order?.orderType === "PACKAGE_DELIVERY" || order?.sellerType === "courier";
-  const [routeInfo, setRouteInfo] = useState({ distanceKm: null, etaMinutes: null });
+  const [routeInfo, setRouteInfo] = useState({ distanceKm: null, etaMinutes: null, source: null });
+  const [trackingClock, setTrackingClock] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setTrackingClock(Date.now()), 15000);
+    return () => clearInterval(timer);
+  }, []);
 
   const restaurantCoord = useMemo(() => ({
     latitude:
@@ -83,7 +105,8 @@ export default function PreparingOrderScreen() {
   // Only a real, reported driver position is shown. (Previously a made-up courier dot was drawn
   // along the route before a driver was assigned.)
   const activeDriverLocation = useMemo(() => {
-    if (order?.driverLat && order?.driverLng && isWithinEthiopia(order?.driverLat, order?.driverLng)) {
+    if (Number.isFinite(Number(order?.driverLat)) && Number.isFinite(Number(order?.driverLng)) &&
+        isWithinEthiopia(order?.driverLat, order?.driverLng)) {
       return {
         latitude: Number(order.driverLat),
         longitude: Number(order.driverLng),
@@ -262,14 +285,6 @@ Save order: ${t.saveMs ?? "-"} ms`
         phone: order?.customerPhone,
         description: `Order ${cleanOrderId.slice(0, 8).toUpperCase()}`,
       });
-      // The server writes the reference itself; the app fallback must save it so payment can be verified
-      if (started.via === "app") {
-        await updateDoc(doc(db, "orders", cleanOrderId), {
-          chapaMerchantReference: started.txRef,
-          chapaCheckoutUrl: started.checkoutUrl,
-          updatedAt: serverTimestamp(),
-        });
-      }
       setOrder((prev) => ({ ...(prev || {}), chapaMerchantReference: started.txRef, chapaCheckoutUrl: started.checkoutUrl }));
       setActiveCheckoutUrl(started.checkoutUrl);
       setChapaModalVisible(true);
@@ -296,7 +311,7 @@ Save order: ${t.saveMs ?? "-"} ms`
 
   const checkPaymentOnce = async (cleanOrderId, attempt = 1) => {
     const snap = await getDoc(doc(db, "orders", cleanOrderId));
-    if (snap.exists() && snap.data()?.paymentStatus === "PAID") {
+    if (snap.exists() && snap.data()?.paymentStatus === "PAID" && snap.data()?.paymentMethod !== "CHAPA") {
       return { state: "paid", data: snap.data(), result: null };
     }
     const txRef = snap.data()?.chapaMerchantReference || order?.chapaMerchantReference || "";
@@ -304,7 +319,11 @@ Save order: ${t.saveMs ?? "-"} ms`
     // request rate reasonable while still handling delayed payment callbacks.
     if (attempt % 3 !== 0) return { state: "pending", data: null, result: null };
     const result = await verifyChapaPayment({ orderId: cleanOrderId, txRef, uid: authUser?.uid });
-    if (result?.verified || result?.paymentStatus === "PAID") return { state: "paid", data: null, result };
+    if (result?.verified === true && result?.paymentStatus === "PAID") {
+      const verifiedSnap = await getDoc(doc(db, "orders", cleanOrderId));
+      if (verifiedSnap.exists() && verifiedSnap.data()?.paymentStatus === "PAID") return { state: "paid", data: verifiedSnap.data(), result };
+      return { state: "pending", data: null, result };
+    }
     if (result?.paymentStatus === "FAILED") return { state: "failed", data: null, result };
     if (result?.paymentStatus === "AMOUNT_MISMATCH") return { state: "mismatch", data: null, result };
     return { state: "pending", data: null, result };
@@ -335,11 +354,7 @@ Save order: ${t.saveMs ?? "-"} ms`
           if (check.data) {
             setOrder((prev) => ({ ...(prev || {}), ...check.data }));
           } else {
-            setOrder((prev) => ({
-              ...(prev || {}),
-              paymentStatus: "PAID",
-              status: prev?.orderType === "PACKAGE" ? "READY" : "PENDING",
-            }));
+            // Chapa PAID state comes from the server-written order snapshot only.
             (check.result?.orders || []).forEach((o) =>
               notifyMerchant(o, "New Paid Order 🛎️", `ETB ${Number(o.total || 0).toFixed(2)} · paid with Chapa`)
             );
@@ -459,23 +474,50 @@ Save order: ${t.saveMs ?? "-"} ms`
             driverLocation={activeDriverLocation}
             orderStatus={order?.status}
             onRouteInfo={(info) => {
-              if (
-                info &&
-                (info.distanceKm !== routeInfo.distanceKm ||
-                  info.etaMinutes !== routeInfo.etaMinutes)
-              ) {
-                setRouteInfo(info);
-              }
+              setRouteInfo(info || { distanceKm: null, etaMinutes: null, source: null });
             }}
             showControls={true}
           />
         </View>
 
+        {order?.driverId && order?.status !== "CANCELLED" ? (() => {
+          const updatedAtMs = timestampMillis(order?.driverLocationUpdatedAt);
+          const ageMs = updatedAtMs ? Math.max(0, trackingClock - updatedAtMs) : Infinity;
+          const trackingLabel = !updatedAtMs
+            ? "Waiting for driver location"
+            : ageMs <= 45000
+            ? "Live driver location"
+            : ageMs <= 120000
+            ? "Location update delayed"
+            : "Driver location is stale";
+          const trackingColor = ageMs <= 45000 ? "#15803D" : ageMs <= 120000 ? "#B45309" : "#64748B";
+          return (
+            <View style={s.trackingStatusCard}>
+              <View style={[s.trackingStatusDot, { backgroundColor: trackingColor }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={[s.trackingStatusTitle, { color: trackingColor }]}>{trackingLabel}</Text>
+                <Text style={s.trackingStatusSub}>{formatLocationAge(order?.driverLocationUpdatedAt, trackingClock)}</Text>
+              </View>
+            </View>
+          );
+        })() : null}
+
         {/* Real Road Route & Distance Badge with Intercity Support */}
         {(() => {
-          // Road distance and time from the map route when available; stored estimate otherwise
-          const distVal = routeInfo.distanceKm || order?.deliveryDistanceKm || null;
-          const etaVal = routeInfo.etaMinutes || order?.deliveryEtaMinutes || null;
+          // Provider routes are current map results; persisted values are older order estimates.
+          const hasCurrentRoute = Boolean(routeInfo.source);
+          const distVal = hasCurrentRoute ? routeInfo.distanceKm : order?.deliveryDistanceKm ?? null;
+          const etaVal = hasCurrentRoute ? routeInfo.etaMinutes : order?.deliveryEtaMinutes ?? null;
+          const distanceLabel = !hasCurrentRoute
+            ? "Order distance estimate"
+            : routeInfo.source === "straight"
+            ? "Straight-line distance estimate"
+            : routeInfo.source === "mapbox"
+            ? "Mapbox road-distance estimate"
+            : "OSRM road-route estimate";
+          const etaLabel = etaVal == null
+            ? "Road ETA unavailable"
+            : `~${etaVal} min estimate`;
           if (!distVal && !etaVal) return null;
 
           return (
@@ -491,15 +533,15 @@ Save order: ${t.saveMs ?? "-"} ms`
                       </View>
                     )}
                   </View>
-                  <Text style={s.metricLbl}>Road Distance</Text>
+                  <Text style={s.metricLbl}>{distanceLabel}</Text>
                 </View>
               </View>
               <View style={s.metricDivider} />
               <View style={s.metricItem}>
                 <MaterialCommunityIcons name="clock-fast" size={20} color={ORANGE} />
                 <View style={{ marginLeft: 8 }}>
-                  <Text style={s.metricVal}>{etaVal} mins</Text>
-                  <Text style={s.metricLbl}>Est. Duration</Text>
+                  <Text style={s.metricVal}>{etaVal == null ? "—" : `${etaVal} min`}</Text>
+                  <Text style={s.metricLbl}>{etaLabel}</Text>
                 </View>
               </View>
             </View>
@@ -1320,6 +1362,33 @@ const s = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     borderColor: "#E2E8F0",
+  },
+  trackingStatusCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#FFFFFF",
+    marginHorizontal: 16,
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  trackingStatusDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+  },
+  trackingStatusTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  trackingStatusSub: {
+    fontSize: 11,
+    color: "#64748B",
+    marginTop: 2,
   },
   metricItem: {
     flexDirection: "row",

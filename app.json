@@ -11,7 +11,7 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Allow MyTruck Delivery to use your location to set your storefront pickup area."
+          "locationWhenInUsePermission": "Allow MyTruck Delivery to use your location while the app is open to set a delivery location and, for drivers, share active delivery progress."
         }
       ],
       [
@@ -36,14 +36,7 @@
       ],
       "./plugins/withMapsHardwareAcceleration",
       "./plugins/withWorkManagerR8Rules",
-      "./plugins/withGradleBinDistribution",
-      [
-        "react-native-maps",
-        {
-          "androidGoogleMapsApiKey": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU",
-          "iosGoogleMapsApiKey": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU"
-        }
-      ]
+      "./plugins/withGradleBinDistribution"
     ],
     "assetBundlePatterns": [
       "**/*"
@@ -51,9 +44,6 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.mytruck.delivery",
-      "config": {
-        "googleMapsApiKey": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU"
-      },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -64,13 +54,8 @@
         "backgroundColor": "#0B2A26"
       },
       "package": "com.mytruck.delivery",
-      "versionCode": 13,
+      "versionCode": 14,
       "softwareKeyboardLayoutMode": "pan",
-      "config": {
-        "googleMaps": {
-          "apiKey": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU"
-        }
-      },
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION",
@@ -94,8 +79,6 @@
         "appId": "1:876531962485:web:609b5d3a3f0a5c30a25e3c",
         "measurementId": "G-82N7CC7L0S"
       },
-      "chapaSecretKey": "",
-      "googleMapsApiKey": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU",
       "perfTimings": false,
       "eas": {
         "projectId": "4e3e9b4f-d20e-4fe5-badc-a8efbcdb7605"

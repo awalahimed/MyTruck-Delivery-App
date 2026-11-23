@@ -10,7 +10,7 @@ import {
   StyleSheet,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { collection, doc, setDoc, getDocs, onSnapshot, query, where, serverTimestamp } from "firebase/firestore";
+import { collection, doc, setDoc, getDocs, onSnapshot, query, where, serverTimestamp, updateDoc } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { useDispatch, useSelector } from "react-redux";
 import { useNavigation, useRoute } from "@react-navigation/native";
@@ -51,7 +51,7 @@ import { reverseGeocodeLocation } from "../utils/mapService";
 import locationService from "../services/locationService";
 import { selectUser } from "../features/userSlice";
 import { usePricingConfig } from "../utils/usePricingConfig";
-import { startChapaCheckout, hasAppChapaKey } from "../services/chapaClient";
+import { startChapaCheckout } from "../services/chapaClient";
 import { presentLocalNotification } from "../services/notificationService";
 
 const TEAL = "#179B83";
@@ -166,7 +166,7 @@ export default function ProductDeliveryScreen() {
       unsubscribeFocus();
     };
   }, [paymentConfig.chapaEnabled, user?.uid, navigation]);
-  const chapaAvailable = paymentConfig.chapaEnabled && (chapaLive !== false || hasAppChapaKey());
+  const chapaAvailable = paymentConfig.chapaEnabled && chapaLive !== false;
   const codAvailable = paymentConfig.codEnabled;
   const noPaymentMethod = !chapaAvailable && !codAvailable;
   useEffect(() => {
@@ -351,42 +351,8 @@ export default function ProductDeliveryScreen() {
       const custPhone = String(dbUser?.phoneNumber || user?.phoneNumber || "").trim();
       const nameParts = custFullName.split(" ");
 
-      // ── Chapa: start the checkout BEFORE writing the order (no order without a payment link) ──
+      const chapaPending = paymentMethod === "CHAPA";
       let chapa = null;
-      if (paymentMethod === "CHAPA") {
-        const rawPhone = custPhone.replace(/\D/g, "");
-        const phone10 = rawPhone.startsWith("251") ? "0" + rawPhone.slice(3) : rawPhone.startsWith("0") ? rawPhone : "0" + rawPhone;
-        let email = String(user?.email || dbUser?.email || "").trim().toLowerCase();
-        if (!email.includes("@") || email.endsWith(".local") || email.endsWith(".et")) {
-          email = phone10.length >= 9 ? `customer${phone10}@gmail.com` : "customer@gmail.com";
-        }
-        let failReason = "";
-        try {
-          const started = await startChapaCheckout({
-            amount: quote.total,
-            email,
-            firstName: nameParts[0] || "Customer",
-            lastName: nameParts.slice(1).join(" ") || "Client",
-            phone: phone10,
-            description: "MyTruck package delivery",
-          });
-          if (started?.checkoutUrl) chapa = { txRef: started.txRef, checkoutUrl: started.checkoutUrl };
-        } catch (initErr) {
-          console.warn("Chapa package checkout error:", initErr?.code, initErr?.message);
-          failReason = String(initErr?.message || "");
-          const code = String(initErr?.code || "");
-          if (code.includes("not-found") || code.includes("unimplemented") || code === "chapa/unavailable") setChapaLive(false);
-        }
-        if (!chapa) {
-          Alert.alert(
-            "Payment Unavailable",
-            `Online payment could not be started.${failReason ? `\n\nReason: ${failReason.slice(0, 200)}` : ""}\n\nPlease try again${
-              codAvailable ? ", or choose Cash on Delivery" : ""
-            }.`
-          );
-          return;
-        }
-      }
 
       const orderRef = doc(collection(db, "orders"));
       const orderId = orderRef.id;
@@ -438,17 +404,10 @@ export default function ProductDeliveryScreen() {
         recipientName: recipientName.trim(),
         recipientPhone: recipientLocalPhone,
         // No store step: cash orders go straight to drivers (READY); Chapa orders wait for payment
-        status: chapa ? "AWAITING_PAYMENT" : "READY",
-        ...(chapa ? {} : { readyAt: serverTimestamp(), dispatchStartedAt: serverTimestamp() }),
+        status: chapaPending ? "AWAITING_PAYMENT" : "READY",
+        ...(chapaPending ? {} : { readyAt: serverTimestamp(), dispatchStartedAt: serverTimestamp() }),
         paymentMethod,
-        paymentStatus: chapa ? "UNPAID" : "PENDING",
-        ...(chapa
-          ? {
-              paymentInitiatedAt: serverTimestamp(),
-              chapaMerchantReference: chapa.txRef,
-              chapaCheckoutUrl: chapa.checkoutUrl,
-            }
-          : {}),
+        paymentStatus: chapaPending ? "UNPAID" : "PENDING",
         // Money — from the admin's package pricing
         subtotal: 0,
         originalSubtotal: 0,
@@ -475,6 +434,24 @@ export default function ProductDeliveryScreen() {
         updatedAt: serverTimestamp(),
       };
       await setDoc(orderRef, order);
+
+      if (chapaPending) {
+        const rawPhone = custPhone.replace(/\D/g, "");
+        const phone10 = rawPhone.startsWith("251") ? "0" + rawPhone.slice(3) : rawPhone.startsWith("0") ? rawPhone : "0" + rawPhone;
+        let email = String(user?.email || dbUser?.email || "").trim().toLowerCase();
+        if (!email.includes("@") || email.endsWith(".local") || email.endsWith(".et")) email = phone10.length >= 9 ? `customer${phone10}@gmail.com` : "customer@gmail.com";
+        try {
+          chapa = await startChapaCheckout({ orderIds: [orderId], email, firstName: nameParts[0] || "Customer",
+            lastName: nameParts.slice(1).join(" ") || "Client", phone: phone10, description: "MyTruck package delivery" });
+        } catch (initErr) {
+          console.warn("Chapa package checkout error:", initErr?.code, initErr?.message);
+          const code = String(initErr?.code || "");
+          if (code.includes("not-found") || code.includes("unimplemented") || code === "chapa/unavailable") setChapaLive(false);
+          await updateDoc(orderRef, { status: "CANCELLED", cancelledBy: "CUSTOMER", cancelReason: "PAYMENT_INITIALIZATION_FAILED", updatedAt: serverTimestamp() }).catch(() => {});
+          Alert.alert("Payment Unavailable", `${initErr?.message || "Secure online payment could not be started."}\n\nPlease try again${codAvailable ? ", or choose Cash on Delivery" : ""}.`);
+          return;
+        }
+      }
 
       if (chapa) {
         navigation.replace("PreparingOrderScreen", {

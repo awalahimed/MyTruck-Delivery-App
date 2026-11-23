@@ -28,8 +28,8 @@ import DeliveryLocationModal from "../components/DeliveryLocationModal";
 import SearchCard from "../components/SearchCard";
 import NotificationBell from "../components/ui/NotificationBell";
 import SmartImage from "../components/ui/SmartImage";
-import { isWithinEthiopia, reverseGeocodeLocation } from "../utils/mapService";
-import locationService from "../services/locationService";
+import { isWithinEthiopia } from "../utils/mapService";
+import { useCustomerLocation } from "../features/location/useCustomerLocation";
 import {
   getItemDiscountInfo,
   getCustomerPrice,
@@ -131,67 +131,19 @@ export default function Home() {
     }
   }, [dbUser]);
 
-  // Automatic Real-Time Customer Location Detection & Continuous Tracking
-  useEffect(() => {
-    let active = true;
-
-    const setupAutoLocation = async () => {
-      // 1. Detect location automatically on startup without requiring manual button tap
-      const res = await locationService.detectCurrentLocation();
-      if (active && res.coords && isWithinEthiopia(res.coords.latitude, res.coords.longitude)) {
-        setCurrentCoords(res.coords);
-        reverseGeocodeLocation(res.coords.latitude, res.coords.longitude)
-          .then((addr) => {
-            if (active && addr) {
-              setCurrentAddress(addr);
-              dispatch(
-                setUser({
-                  ...(reduxUser || {}),
-                  address: addr,
-                  latitude: res.coords.latitude,
-                  longitude: res.coords.longitude,
-                })
-              );
-              if (user?.uid) {
-                locationService.syncLocationToProfile(user.uid, res.coords, addr);
-              }
-            }
-          })
-          .catch(() => {});
-      }
-
-      // 2. Start continuous position tracking (updates on movement >= 15m)
-      await locationService.startContinuousTracking(
-        async (newCoords) => {
-          if (!active) return;
-          setCurrentCoords(newCoords);
-          const addr = await reverseGeocodeLocation(newCoords.latitude, newCoords.longitude);
-          if (active && addr) {
-            setCurrentAddress(addr);
-            dispatch(
-              setUser({
-                ...(reduxUser || {}),
-                address: addr,
-                latitude: newCoords.latitude,
-                longitude: newCoords.longitude,
-              })
-            );
-            if (user?.uid) {
-              locationService.syncLocationToProfile(user.uid, newCoords, addr);
-            }
-          }
-        },
-        { userId: user?.uid }
-      );
-    };
-
-    setupAutoLocation();
-
-    return () => {
-      active = false;
-      locationService.stopContinuousTracking();
-    };
-  }, [user?.uid]);
+  useCustomerLocation({
+    userId: user?.uid,
+    onLocationChange: setCurrentCoords,
+    onAddressChange: (address, coords) => {
+      setCurrentAddress(address);
+      dispatch(setUser({
+        ...(reduxUser || {}),
+        address,
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+      }));
+    },
+  });
 
   // Load Firestore data
   const loadData = useCallback(async () => {
@@ -878,7 +830,7 @@ export default function Home() {
         )}
       </ScrollView>
 
-      {/* Delivery location picker (Google Maps) */}
+      {/* Delivery location picker */}
       {deliveryModalVisible ? (
         <DeliveryLocationModal
           visible={deliveryModalVisible}

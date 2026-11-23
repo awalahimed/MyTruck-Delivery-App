@@ -1725,7 +1725,7 @@ export default function SellerHome() {
                   </Text>
                   <Text style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>
                     {storeCoords
-                      ? `${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)} · to update it, stand in your store and tap here, then Save`
+                      ? `${storeCoords.latitude.toFixed(5)}, ${storeCoords.longitude.toFixed(5)} · used for delivery fees and driver directions`
                       : "Required for correct delivery fees and so drivers find your pickup point"}
                   </Text>
                 </View>
@@ -1766,23 +1766,6 @@ export default function SellerHome() {
           </View>
         )}
       </ScrollView>
-
-      {storeLocationModalVisible ? (
-        <DeliveryLocationModal
-          visible={storeLocationModalVisible}
-          onClose={() => setStoreLocationModalVisible(false)}
-          gpsOnly
-          title="Store Location"
-          gpsHint="Stand inside your store. The location is taken from this phone's GPS and can't be moved by hand."
-          confirmLabel="Use This As My Store Location"
-          initialLocation={storeCoords}
-          onConfirmLocation={(loc) => {
-            setStoreCoords({ latitude: Number(loc.latitude), longitude: Number(loc.longitude) });
-            if (!storeAddress.trim() && loc.address && loc.address !== "My Location, Ethiopia") setStoreAddress(loc.address);
-            Alert.alert("Location Selected", "Tap \"Save Storefront Changes\" to publish your store location.");
-          }}
-        />
-      ) : null}
 
       {/* Add / Edit Product Modal */}
       <Modal

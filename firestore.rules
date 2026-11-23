@@ -14,43 +14,72 @@ service cloud.firestore {
     function profilePath() { return /databases/$(database)/documents/user/$(uid()); }
     function hasProfile() { return signedIn() && exists(profilePath()); }
     function me() { return get(profilePath()).data; }
-    function myRole() { return hasProfile() ? me().get('role', '') : ''; }
+    function myRole() {
+      let profileExists = hasProfile();
+      let profile = profileExists ? me() : {};
+      return profile.get('role', '');
+    }
+
+    function staffProfile(profile) {
+      return profile.get('role', '') in ['superadmin', 'super_admin', 'admin', 'mini_admin', 'miniadmin'] ||
+             profile.get('isAdmin', false) == true ||
+             profile.get('isSuperAdmin', false) == true ||
+             profile.get('isMiniAdmin', false) == true;
+    }
 
     // Platform owner accounts (exact matches — mirrors utils/roles.js)
     function isOwnerAccount() {
-      return signedIn() && request.auth.token.email in [
+      return signedIn() && request.auth.token.get('email', '') in [
         'superadmin@mytruck.et', 'admin@mytruck.et', '251911000001@login.mytruck.local'
       ];
     }
     function isStaff() {
-      return isOwnerAccount() || (hasProfile() && (
-        myRole() in ['superadmin', 'super_admin', 'admin', 'mini_admin', 'miniadmin'] ||
-        me().get('isAdmin', false) == true ||
-        me().get('isSuperAdmin', false) == true ||
-        me().get('isMiniAdmin', false) == true));
+      let profileExists = hasProfile();
+      let profile = profileExists ? me() : {};
+      return isOwnerAccount() || (profileExists && staffProfile(profile));
     }
     function isBlocked() {
-      return hasProfile() && me().get('accountStatus', '') in ['BANNED', 'SUSPENDED'] && !isStaff();
+      let profileExists = hasProfile();
+      let profile = profileExists ? me() : {};
+      let staff = isOwnerAccount() || (profileExists && staffProfile(profile));
+      return profileExists && profile.get('accountStatus', '') in ['BANNED', 'SUSPENDED'] && !staff;
     }
-    function isDriver() { return myRole() == 'driver' && !isBlocked(); }
-    function isSeller() { return myRole() in ['pendingSeller', 'restaurant', 'shop', 'seller'] && !isBlocked(); }
+    function isDriver() {
+      let profileExists = hasProfile();
+      let profile = profileExists ? me() : {};
+      let staff = isOwnerAccount() || (profileExists && staffProfile(profile));
+      let blocked = profileExists && profile.get('accountStatus', '') in ['BANNED', 'SUSPENDED'] && !staff;
+      return profileExists && profile.get('role', '') == 'driver' && !blocked;
+    }
+    function isSeller() {
+      let profileExists = hasProfile();
+      let profile = profileExists ? me() : {};
+      let staff = isOwnerAccount() || (profileExists && staffProfile(profile));
+      let blocked = profileExists && profile.get('accountStatus', '') in ['BANNED', 'SUSPENDED'] && !staff;
+      return profileExists && profile.get('role', '') in ['pendingSeller', 'restaurant', 'shop', 'seller'] && !blocked;
+    }
 
     // A store id this account owns (same ids SellerHome queries with)
     function ownsStoreId(storeId) {
-      return storeId == uid() || (hasProfile() && (
-        storeId == me().get('sellerId', '~') ||
-        storeId == me().get('restaurantId', '~') ||
-        storeId == me().get('shopId', '~')));
+      let profileExists = hasProfile();
+      let profile = profileExists ? me() : {};
+      return storeId == uid() || (profileExists && (
+        storeId == profile.get('sellerId', '~') ||
+        storeId == profile.get('restaurantId', '~') ||
+        storeId == profile.get('shopId', '~')));
     }
     function ownsStoreDoc(storeId) {
-      return (exists(/databases/$(database)/documents/restaurants/$(storeId)) &&
-              get(/databases/$(database)/documents/restaurants/$(storeId)).data.get('ownerUid', '') == uid()) ||
-             (exists(/databases/$(database)/documents/shops/$(storeId)) &&
-              get(/databases/$(database)/documents/shops/$(storeId)).data.get('ownerUid', '') == uid());
+      let restaurantPath = /databases/$(database)/documents/restaurants/$(storeId);
+      let shopPath = /databases/$(database)/documents/shops/$(storeId);
+      let restaurantExists = exists(restaurantPath);
+      let shopExists = exists(shopPath);
+      return (restaurantExists && get(restaurantPath).data.get('ownerUid', '') == uid()) ||
+             (shopExists && get(shopPath).data.get('ownerUid', '') == uid());
     }
 
     function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
     function onlyChanges(keys) { return changed().hasOnly(keys); }
+    function onlyChangedKeys(changes, keys) { return changes.hasOnly(keys); }
 
     // ── User profiles (/user is primary, /users is a legacy mirror) ───────
     // Fields an account may never change about itself
@@ -108,11 +137,16 @@ service cloud.firestore {
     }
 
     // ── Orders ────────────────────────────────────────────────────────────
+    match /orders/{orderId} {
+    // These helpers are scoped to an order document so Firestore binds
+    // request.resource and resource to the current order update.
+    function orderChanged() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
     function isOrderCustomer() { return resource.data.userId == uid(); }
     function isOrderStore() {
       return resource.data.get('merchantOwnerUid', '') == uid() ||
-             ownsStoreId(resource.data.restaurantId) ||
-             ownsStoreDoc(resource.data.restaurantId);
+             ownsStoreId(resource.data.get('restaurantId', '')) ||
+             ownsStoreDoc(resource.data.get('restaurantId', ''));
     }
     function isOrderDriver() { return resource.data.get('driverId', null) == uid(); }
 
@@ -146,7 +180,7 @@ service cloud.firestore {
                  ((d.status == 'READY' && d.paymentMethod == 'COD' && d.paymentStatus == 'PENDING') ||
                   (d.status == 'AWAITING_PAYMENT' && d.paymentMethod == 'CHAPA'))
                : d.status in ['PENDING', 'AWAITING_PAYMENT']) &&
-             feesAtLeastPlatformMinimum(d) &&
+             (d.get('paymentMethod', '') == 'CHAPA' || feesAtLeastPlatformMinimum(d)) &&
              d.paymentStatus in ['PENDING', 'UNPAID'] &&
              d.get('driverId', null) == null &&
              !('cashCollected' in d) && !('refundStatus' in d) && !('paidAt' in d) &&
@@ -158,35 +192,28 @@ service cloud.firestore {
 
     // Customer: cancel before the store accepts (packages: before a driver takes it)
     function customerCancels() {
-      return isOrderCustomer() &&
-             (resource.data.status in ['AWAITING_PAYMENT', 'PENDING', 'AWAITING_MERCHANT', 'MERCHANT_REJECTED'] ||
+      return (resource.data.status in ['AWAITING_PAYMENT', 'PENDING', 'AWAITING_MERCHANT', 'MERCHANT_REJECTED'] ||
               (resource.data.status == 'READY' && isPackageData(resource.data))) &&
              resource.data.get('driverId', null) == null &&
              request.resource.data.status == 'CANCELLED' &&
              request.resource.data.paymentStatus == resource.data.paymentStatus &&
-             onlyChanges(['status', 'cancelledBy', 'cancelReason', 'cancelledAt',
-                          'refundStatus', 'refundAmount', 'updatedAt']) &&
+             onlyChangedKeys(orderChanged(), ['status', 'cancelledBy', 'cancelReason', 'cancelledAt',
+                                         'refundStatus', 'refundAmount', 'updatedAt']) &&
              (!('refundStatus' in request.resource.data) || resource.data.paymentStatus == 'PAID');
     }
-    // Customer: store the Chapa checkout link / reference for an unpaid order
-    function customerSavesCheckout() {
-      return isOrderCustomer() && resource.data.status == 'AWAITING_PAYMENT' &&
-             onlyChanges(['chapaCheckoutUrl', 'chapaMerchantReference', 'updatedAt']);
+
+    // Reject server-owned payment mutations before evaluating the full set of
+    // order actor rules. Admin SDK functions bypass these client rules.
+    function chapaPaymentFieldsUnchanged() {
+      return resource.data.get('paymentMethod', '') != 'CHAPA' ||
+             !orderChanged().hasAny(['paymentStatus', 'paidAt', 'paymentInitiatedAt', 'chapaVerifiedAmount',
+                                     'paymentVerifiedBy', 'chapaMerchantReference', 'chapaCheckoutUrl', 'total', 'currency']);
     }
-    // Customer app (interim, while the server functions aren't deployed): after Chapa verifies a
-    // payment, forward the unpaid Chapa order to the store. Only ever AWAITING_PAYMENT -> PENDING.
-    function customerRecordsChapaPayment() {
-      return isOrderCustomer() &&
-             resource.data.status == 'AWAITING_PAYMENT' &&
-             resource.data.get('paymentMethod', '') == 'CHAPA' &&
-             resource.data.get('chapaMerchantReference', '') != '' &&
-             // packages skip the store and go straight to drivers
-             request.resource.data.status == (isPackageData(resource.data) ? 'READY' : 'PENDING') &&
-             request.resource.data.paymentStatus == 'PAID' &&
-             request.resource.data.chapaVerifiedAmount is number &&
-             request.resource.data.chapaVerifiedAmount + 0.01 >= resource.data.total &&
-             onlyChanges(['status', 'paymentStatus', 'paidAt', 'chapaVerifiedAmount', 'paymentVerifiedBy', 'updatedAt',
-                          'readyAt', 'dispatchStartedAt']);
+
+    // Customers can only reach the customer-order branch for their own order.
+    // Staff roles remain eligible through the separate staff branch.
+    function customerOrderScope() {
+      return !(hasProfile() && myRole() == 'customer' && !isStaff() && !isOrderCustomer());
     }
 
     // Store: accept / decline / prepare / ready, in order
@@ -194,9 +221,8 @@ service cloud.firestore {
       let from = resource.data.status;
       let to = request.resource.data.status;
       let hasDriver = resource.data.get('driverId', null) != null;
-      return isOrderStore() && isSeller() &&
-             onlyChanges(['status', 'acceptedAt', 'preparingAt', 'readyAt', 'dispatchStartedAt', 'updatedAt',
-                          'rejectedByMerchant', 'merchantRejectionReason', 'rejectedAt']) &&
+      return onlyChangedKeys(orderChanged(), ['status', 'acceptedAt', 'preparingAt', 'readyAt', 'dispatchStartedAt', 'updatedAt',
+                                          'rejectedByMerchant', 'merchantRejectionReason', 'rejectedAt']) &&
              ((from in ['PENDING', 'AWAITING_MERCHANT'] && to in ['ACCEPTED', 'MERCHANT_REJECTED']) ||
               (from == 'ACCEPTED' && to == 'PREPARING') ||
               (from == 'PREPARING' && ((!hasDriver && to == 'READY') || (hasDriver && to == 'DRIVERACCEPTED'))));
@@ -208,51 +234,70 @@ service cloud.firestore {
       let offerLive = resource.data.get('offeredDriverId', null) != null &&
                       resource.data.get('offerExpiresAt', null) != null &&
                       resource.data.offerExpiresAt > request.time;
-      return isDriver() &&
-             resource.data.get('driverId', null) == null &&
+      return resource.data.get('driverId', null) == null &&
              from in ['PREPARING', 'READY'] &&
              (!offerLive || resource.data.offeredDriverId == uid()) &&
              request.resource.data.driverId == uid() &&
              request.resource.data.status == (from == 'READY' ? 'DRIVERACCEPTED' : from) &&
-             onlyChanges(['driverId', 'driverName', 'driverPhone', 'status', 'driverAcceptedAt',
-                          'offeredDriverId', 'offerExpiresAt', 'updatedAt']);
+             onlyChangedKeys(orderChanged(), ['driverId', 'driverName', 'driverPhone', 'status', 'driverAcceptedAt',
+                                         'offeredDriverId', 'offerExpiresAt', 'updatedAt']);
     }
     function driverPassesOffer() {
-      return isDriver() && resource.data.get('offeredDriverId', null) == uid() &&
-             onlyChanges(['offeredDriverId', 'offerExpiresAt', 'declinedDriverIds']);
+      return resource.data.get('offeredDriverId', null) == uid() &&
+             onlyChangedKeys(orderChanged(), ['offeredDriverId', 'offerExpiresAt', 'declinedDriverIds']);
     }
     function driverSharesLocation() {
-      return isOrderDriver() &&
-             onlyChanges(['driverLat', 'driverLng', 'driverHeading', 'driverSpeed', 'driverLocationUpdatedAt']);
+      return onlyChangedKeys(orderChanged(), ['driverLat', 'driverLng', 'driverHeading', 'driverSpeed', 'driverLocationUpdatedAt']);
     }
     function driverPicksUp() {
-      return isOrderDriver() &&
-             resource.data.status in ['READY', 'DRIVERACCEPTED'] &&
+      return resource.data.status in ['READY', 'DRIVERACCEPTED'] &&
              request.resource.data.status == 'DRIVERPICKEDUP' &&
-             onlyChanges(['status', 'pickedUpAt', 'updatedAt']);
+             onlyChangedKeys(orderChanged(), ['status', 'pickedUpAt', 'updatedAt']);
     }
     function driverCompletes() {
       let cashOrder = resource.data.get('paymentMethod', '') != 'CHAPA';
-      return isOrderDriver() &&
-             resource.data.status == 'DRIVERPICKEDUP' &&
+      return resource.data.status == 'DRIVERPICKEDUP' &&
              request.resource.data.status == 'COMPLETE' &&
-             onlyChanges(['status', 'deliveredAt', 'updatedAt',
-                          'paymentStatus', 'cashCollected', 'cashCollectedAmount', 'paidAt']) &&
+             onlyChangedKeys(orderChanged(), ['status', 'deliveredAt', 'updatedAt',
+                                         'paymentStatus', 'cashCollected', 'cashCollectedAmount', 'paidAt']) &&
              // only a cash order can be marked paid by the driver
              (request.resource.data.paymentStatus == resource.data.paymentStatus ||
               (cashOrder && request.resource.data.paymentStatus == 'PAID'));
     }
     function driverReleases() {
-      return isOrderDriver() &&
-             resource.data.status in ['PREPARING', 'READY', 'DRIVERACCEPTED'] &&
+      return resource.data.status in ['PREPARING', 'READY', 'DRIVERACCEPTED'] &&
              request.resource.data.get('driverId', null) == null &&
              request.resource.data.status == (resource.data.status == 'PREPARING' ? 'PREPARING' : 'READY') &&
-             onlyChanges(['status', 'driverId', 'driverName', 'driverPhone', 'driverLat', 'driverLng',
-                          'driverAcceptedAt', 'declinedDriverIds', 'dispatchStartedAt',
-                          'driverRejectedAt', 'driverRejectReason', 'updatedAt']);
+             onlyChangedKeys(orderChanged(), ['status', 'driverId', 'driverName', 'driverPhone', 'driverLat', 'driverLng',
+                                         'driverAcceptedAt', 'declinedDriverIds', 'dispatchStartedAt',
+                                         'driverRejectedAt', 'driverRejectReason', 'updatedAt']);
     }
 
-    match /orders/{orderId} {
+    // Staff may manage order operations, but payment authorization fields on a
+    // Chapa order are server-only (Admin SDK bypasses these client rules).
+    function staffOrderUpdate() {
+      return isStaff();
+    }
+
+    function orderUpdateAllowed() {
+      let profileExists = hasProfile();
+      let profile = profileExists ? me() : {};
+      let role = profile.get('role', '');
+      let staff = isOwnerAccount() || (profileExists && staffProfile(profile));
+      let blocked = profileExists && profile.get('accountStatus', '') in ['BANNED', 'SUSPENDED'] && !staff;
+      let isCustomer = resource.data.get('userId', '') == uid();
+      let isAssignedDriver = resource.data.get('driverId', null) == uid();
+      return !blocked &&
+        ((isCustomer && customerCancels()) ||
+         staff ||
+         ((resource.data.get('merchantOwnerUid', '') == uid() ||
+           ownsStoreId(resource.data.get('restaurantId', '')) ||
+           ownsStoreDoc(resource.data.get('restaurantId', ''))) &&
+          role in ['pendingSeller', 'restaurant', 'shop', 'seller'] && storeAdvances()) ||
+         (role == 'driver' && (driverClaims() || driverPassesOffer())) ||
+         (isAssignedDriver && (driverSharesLocation() || driverPicksUp() || driverCompletes() || driverReleases())));
+    }
+
       allow read: if signedIn() && (
         isStaff() ||
         isOrderCustomer() ||
@@ -260,12 +305,10 @@ service cloud.firestore {
         (isDriver() && resource.data.status in ['PREPARING', 'READY']) ||
         isOrderStore());
       allow create: if signedIn() && !isBlocked() && validNewOrder();
-      allow update: if signedIn() && !isBlocked() && (
-        isStaff() ||
-        customerCancels() || customerSavesCheckout() || customerRecordsChapaPayment() ||
-        storeAdvances() ||
-        driverClaims() || driverPassesOffer() || driverSharesLocation() ||
-        driverPicksUp() || driverCompletes() || driverReleases());
+      // Run the small protected-payment guard before role, ownership, and
+      // workflow predicates. Denied Chapa mutations should not evaluate the
+      // large actor authorization tree at all.
+      allow update: if signedIn() && chapaPaymentFieldsUnchanged() && orderUpdateAllowed();
       allow delete: if isStaff();
     }
 
@@ -273,7 +316,9 @@ service cloud.firestore {
     match /orderDishes/{lineId} {
       allow read: if signedIn();
       allow create: if signedIn() && !isBlocked() &&
-        getAfter(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.userId == uid();
+        getAfter(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.userId == uid() &&
+        (getAfter(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.get('paymentMethod', '') != 'CHAPA' ||
+         !('chapaMerchantReference' in getAfter(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data));
       allow update, delete: if isStaff();
     }
 
@@ -360,8 +405,8 @@ service cloud.firestore {
     }
 
     // ── Money ─────────────────────────────────────────────────────────────
-    // How much of each Chapa payment has been used to accept orders (written by the store
-    // app after it confirms the payment with Chapa). Customers can't read or change it.
+    // Merchant settlement allocations. Verification records live in a separate
+    // server-only collection and are written by Admin SDK functions.
     match /chapaPayments/{txRef} {
       allow read: if isSeller() || isStaff();
       allow create, update: if (isSeller() || isStaff()) &&

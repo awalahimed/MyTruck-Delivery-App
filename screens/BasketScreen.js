@@ -50,7 +50,7 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { notifyMerchant } from "../services/orderNotifications";
-import { startChapaCheckout, hasAppChapaKey } from "../services/chapaClient";
+import { startChapaCheckout } from "../services/chapaClient";
 import { startTimer } from "../utils/perf";
 import DeliveryLocationModal from "../components/DeliveryLocationModal";
 import BackButton from "../components/ui/BackButton";
@@ -186,7 +186,7 @@ export default function BasketScreen() {
       unsubscribeFocus();
     };
   }, [paymentConfig.chapaEnabled, user?.uid, navigation]);
-  const chapaAvailable = paymentConfig.chapaEnabled && (chapaLive !== false || hasAppChapaKey());
+  const chapaAvailable = paymentConfig.chapaEnabled && chapaLive !== false;
   const chapaOffline = paymentConfig.chapaEnabled && !chapaAvailable;
 
   // Keep the chosen payment method valid when the admin turns a method on/off
@@ -525,7 +525,7 @@ export default function BasketScreen() {
     });
   };
 
-  const writeOrders = async (plans, chapa) => {
+  const writeOrders = async (plans, chapaPending) => {
     const batch = writeBatch(db);
     const created = [];
     const custFullName = String(dbUser?.fullName || user.displayName || "Customer").trim();
@@ -577,16 +577,9 @@ export default function BasketScreen() {
         deliveryEtaMinutes: quote.etaMinutes,
         isIntercity: quote.isIntercity,
         // AWAITING_PAYMENT orders are not forwarded to the store until Chapa confirms payment
-        status: chapa ? "AWAITING_PAYMENT" : "PENDING",
+        status: chapaPending ? "AWAITING_PAYMENT" : "PENDING",
         paymentMethod,
-        paymentStatus: chapa ? "UNPAID" : "PENDING",
-        ...(chapa
-          ? {
-              paymentInitiatedAt: serverTimestamp(),
-              chapaMerchantReference: chapa.txRef,
-              chapaCheckoutUrl: chapa.checkoutUrl,
-            }
-          : {}),
+        paymentStatus: chapaPending ? "UNPAID" : "PENDING",
         subtotal: fin.subtotal,
         originalSubtotal: Number(pl.origSubtotal.toFixed(2)),
         discountedSubtotal: fin.subtotal,
@@ -703,71 +696,50 @@ export default function BasketScreen() {
 
     try {
       const plans = buildOrderPlans();
-      const grandTotal = Number(plans.reduce((sum, pl) => sum + pl.fin.total, 0).toFixed(2));
       let chapa = null;
+      let chapaEmail = "";
+      let cleanPhone10 = "";
 
-      // ─── STEP 1: For CHAPA – initialize payment FIRST (before creating orders) ──
+      // Persist awaiting-payment drafts first; the callable validates catalog prices and
+      // recomputes fees before it asks Chapa to charge the customer.
       if (paymentMethod === "CHAPA") {
         setPaymentInitializing(true); // blocks empty-cart flash
-
-        const txRef = `MT${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
         const rawPhone = String(dbUser?.phoneNumber || user?.phoneNumber || "").replace(/\D/g, "");
-        const cleanPhone10 = rawPhone.startsWith("251")
+        cleanPhone10 = rawPhone.startsWith("251")
           ? "0" + rawPhone.slice(3)
           : rawPhone.startsWith("0") ? rawPhone : "0" + rawPhone;
-        let chapaEmail = String(user?.email || dbUser?.email || "").trim().toLowerCase();
+        chapaEmail = String(user?.email || dbUser?.email || "").trim().toLowerCase();
         if (!chapaEmail || !chapaEmail.includes("@") || chapaEmail.endsWith(".local") || chapaEmail.endsWith(".et")) {
           chapaEmail = cleanPhone10.length >= 9 ? `customer${cleanPhone10}@gmail.com` : "customer@gmail.com";
         }
 
-        let checkoutUrl = null;
-        let usedTxRef = txRef;
-        let chapaErrorText = "";
+      }
+
+      const endSave = startTimer("payment:save-orders");
+      const created = await writeOrders(plans, paymentMethod === "CHAPA");
+      timing.saveMs = endSave();
+      const createdOrderIds = created.map((o) => o.id);
+
+      if (paymentMethod === "CHAPA") {
         try {
-          // Server functions first (secret stays off the phone); falls back to the app key if not deployed
           const fullName = String(dbUser?.fullName || user?.displayName || "Customer User");
           const endInit = startTimer("payment:init-chapa");
-          const started = await startChapaCheckout({
-            amount: grandTotal,
-            txRef,
-            email: chapaEmail,
-            firstName: fullName.split(" ")[0] || "Customer",
-            lastName: fullName.split(" ").slice(1).join(" ") || "Client",
-            phone: cleanPhone10,
-            description: `Payment for ${plans.map((pl) => pl.group.merchantName).join(", ")}`,
-          });
-          checkoutUrl = started.checkoutUrl;
-          usedTxRef = started.txRef;
+          chapa = await startChapaCheckout({ orderIds: createdOrderIds, email: chapaEmail,
+            firstName: fullName.split(" ")[0] || "Customer", lastName: fullName.split(" ").slice(1).join(" ") || "Client",
+            phone: cleanPhone10, description: `Payment for ${plans.map((pl) => pl.group.merchantName).join(", ")}` });
           timing.initMs = endInit();
         } catch (initErr) {
           console.warn("Chapa init error:", initErr?.code, initErr?.message);
-          chapaErrorText = String(initErr?.message || "");
           const code = String(initErr?.code || "");
           if (code.includes("not-found") || code.includes("unimplemented") || code === "chapa/unavailable") setChapaLive(false);
-        }
-
-        if (!checkoutUrl) {
+          await Promise.all(createdOrderIds.map((id) => updateDoc(doc(db, "orders", id), {
+            status: "CANCELLED", cancelledBy: "CUSTOMER", cancelReason: "PAYMENT_INITIALIZATION_FAILED", updatedAt: serverTimestamp(),
+          }).catch(() => {})));
           setPaymentInitializing(false);
-          setIsSubmitting(false);
-          Alert.alert(
-            "Payment Unavailable",
-            `Online payment could not be started.${chapaErrorText ? `
-
-Reason: ${chapaErrorText.slice(0, 200)}` : ""}
-
-Please try again, or choose Cash on Delivery.`,
-            [{ text: "Retry", onPress: handlePlaceOrder }, { text: "Cancel", style: "cancel" }]
-          );
+          Alert.alert("Payment Unavailable", `${initErr?.message || "Secure online payment could not be started."}\n\nPlease try again, or choose Cash on Delivery.`);
           return;
         }
-        chapa = { txRef: usedTxRef, checkoutUrl };
       }
-
-      // ─── STEP 2: Create one order per store (AWAITING_PAYMENT for Chapa, PENDING for COD) ──
-      const endSave = startTimer("payment:save-orders");
-      const created = await writeOrders(plans, chapa);
-      timing.saveMs = endSave();
-      const createdOrderIds = created.map((o) => o.id);
 
       if (chapa) {
         navigation.replace("PreparingOrderScreen", {

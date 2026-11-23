@@ -1,19 +1,26 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { ActivityIndicator, AppState, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
+import Constants from "expo-constants";
 import * as Location from "expo-location";
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
-import { DEFAULT_COORDS, getRoute, straightLineKm } from "../utils/mapService";
+import { DEFAULT_COORDS } from "../utils/mapService";
+import { getRoute, getStraightLineRouteEstimate, isValidRoutePoint } from "../services/maps/routingService";
 
 const TEAL = "#179B83";
 const ORANGE = "#F47721";
 const BLUE = "#2563EB";
 const DARK = "#0B2A26";
+const MAP_READY_TIMEOUT_MS = 15000;
+const isExpoGo = Constants.appOwnership === "expo" || Constants.executionEnvironment === "storeClient";
+const mapConfig = Constants.expoConfig?.extra?.maps || Constants.manifest?.extra?.maps || {};
+const androidGoogleMapsConfigured = mapConfig.androidKeyConfigured === true;
+const missingAndroidKey = Platform.OS === "android" && !isExpoGo && !androidGoogleMapsConfigured;
 
 const toRegion = (value) => {
   const latitude = Number(value?.latitude);
   const longitude = Number(value?.longitude);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  if (!isValidRoutePoint({ latitude, longitude })) return null;
   return {
     latitude,
     longitude,
@@ -26,6 +33,12 @@ const toCoordinate = (value) => {
   const region = toRegion(value);
   return region ? { latitude: region.latitude, longitude: region.longitude } : null;
 };
+
+const MapPin = ({ color, name }) => (
+  <View style={styles.marker} collapsable={false}>
+    <MaterialCommunityIcons name={name} size={36} color={color} />
+  </View>
+);
 
 const SharedMapView = forwardRef(function SharedMapView(
   {
@@ -41,11 +54,13 @@ const SharedMapView = forwardRef(function SharedMapView(
     onPress,
     onRegionChangeComplete,
     onLocationChange,
+    selectedCoordinate,
+    onMarkerDragEnd,
+    onUserPan,
     onRouteInfo,
     showControls = true,
     onRecenter,
     recenterLoading = false,
-    // locked: the map only shows a location; touching it can't move or change anything
     locked = false,
     children,
   },
@@ -55,6 +70,11 @@ const SharedMapView = forwardRef(function SharedMapView(
   const [route, setRoute] = useState(null);
   const [routing, setRouting] = useState(false);
   const [hasLocationPermission, setHasLocationPermission] = useState(false);
+  const [driverMarkerPosition, setDriverMarkerPosition] = useState(null);
+  const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState(null);
+  const previousDriverCoordinate = useRef(null);
+  const animationFrame = useRef(null);
   const onRouteInfoRef = useRef(onRouteInfo);
   onRouteInfoRef.current = onRouteInfo;
 
@@ -79,193 +99,250 @@ const SharedMapView = forwardRef(function SharedMapView(
     };
   }, []);
 
+  useEffect(() => () => {
+    if (animationFrame.current != null) cancelAnimationFrame(animationFrame.current);
+  }, []);
+
+  useEffect(() => {
+    if (missingAndroidKey || mapReady) return undefined;
+    const timer = setTimeout(() => {
+      setMapError("Google Maps did not finish loading. Check your connection and Android Maps key restrictions.");
+    }, MAP_READY_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [missingAndroidKey, mapReady]);
+
   const from = routeFrom !== undefined ? routeFrom : origin;
   const to = routeTo !== undefined && routeTo !== null ? routeTo : destination;
   const isRoute = mode === "route" || Boolean(from && to);
-  const routeKey =
-    isRoute && toCoordinate(from) && toCoordinate(to)
-      ? `${Number(from.latitude).toFixed(3)},${Number(from.longitude).toFixed(3)}>${Number(to.latitude).toFixed(3)},${Number(to.longitude).toFixed(3)}`
-      : null;
+  const routeKey = isRoute && isValidRoutePoint(from) && isValidRoutePoint(to)
+    ? `${from.latitude.toFixed(3)},${from.longitude.toFixed(3)}>${to.latitude.toFixed(3)},${to.longitude.toFixed(3)}`
+    : null;
   const activeRegion = toRegion(region) || toRegion(initialRegion) || toRegion(DEFAULT_COORDS);
+  const pickerCoordinate = toCoordinate(selectedCoordinate) || toCoordinate(activeRegion);
+  const driverCoordinate = toCoordinate(driverLocation);
+  const pickupCoordinate = toCoordinate(origin) || toCoordinate(from);
+  const dropoffCoordinate = toCoordinate(destination) || toCoordinate(to);
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      animateToRegion: (next, duration = 600) => {
-        const normalized = toRegion(next);
-        if (normalized) mapRef.current?.animateToRegion(normalized, duration);
-      },
-      fitToCoordinates: (coords, options) => {
-        if (coords?.length) mapRef.current?.fitToCoordinates(coords, options);
-      },
-      toggleLayer: () => {},
-    }),
-    []
-  );
+  useEffect(() => {
+    if (!driverCoordinate) {
+      if (animationFrame.current != null) cancelAnimationFrame(animationFrame.current);
+      animationFrame.current = null;
+      previousDriverCoordinate.current = null;
+      setDriverMarkerPosition(null);
+      return undefined;
+    }
+    const previous = previousDriverCoordinate.current;
+    previousDriverCoordinate.current = driverCoordinate;
+    if (!previous) {
+      setDriverMarkerPosition(driverCoordinate);
+      return undefined;
+    }
+    if (previous.latitude === driverCoordinate.latitude && previous.longitude === driverCoordinate.longitude) return undefined;
+    if (animationFrame.current != null) cancelAnimationFrame(animationFrame.current);
+    const startedAt = Date.now();
+    const animate = () => {
+      const progress = Math.min(1, (Date.now() - startedAt) / 900);
+      const eased = progress * (2 - progress);
+      setDriverMarkerPosition({
+        latitude: previous.latitude + (driverCoordinate.latitude - previous.latitude) * eased,
+        longitude: previous.longitude + (driverCoordinate.longitude - previous.longitude) * eased,
+      });
+      if (progress < 1) animationFrame.current = requestAnimationFrame(animate);
+      else animationFrame.current = null;
+    };
+    animationFrame.current = requestAnimationFrame(animate);
+    return () => {
+      if (animationFrame.current != null) cancelAnimationFrame(animationFrame.current);
+      animationFrame.current = null;
+    };
+  }, [driverCoordinate?.latitude, driverCoordinate?.longitude]);
+
+  useImperativeHandle(ref, () => ({
+    animateToRegion: (next, duration = 600) => {
+      const normalized = toRegion(next);
+      if (normalized) mapRef.current?.animateToRegion(normalized, duration);
+    },
+    fitToCoordinates: (coordinates, options = {}) => {
+      const points = (coordinates || []).map(toCoordinate).filter(Boolean);
+      if (points.length < 2) return;
+      mapRef.current?.fitToCoordinates(points, {
+        edgePadding: {
+          top: options.edgePadding?.top || 70,
+          right: options.edgePadding?.right || 50,
+          bottom: options.edgePadding?.bottom || 70,
+          left: options.edgePadding?.left || 50,
+        },
+        animated: options.animated !== false,
+      });
+    },
+    toggleLayer: () => {},
+  }), []);
 
   useEffect(() => {
     if (!routeKey) {
       setRoute(null);
       setRouting(false);
+      onRouteInfoRef.current?.(null);
       return undefined;
     }
     let active = true;
     setRouting(true);
     (async () => {
-      const realRoute = await getRoute(from, to);
+      let realRoute = null;
+      try { realRoute = await getRoute(from, to); } catch (_) {}
       if (!active) return;
-      const km =
-        realRoute?.distanceKm ??
-        straightLineKm(from.latitude, from.longitude, to.latitude, to.longitude) ??
-        0;
-      const next = {
-        points: realRoute?.points || [toCoordinate(from), toCoordinate(to)].filter(Boolean),
-        distanceKm: km,
-        etaMinutes: realRoute?.etaMinutes ?? Math.max(15, Math.round(15 + km * 2.5)),
-        source: realRoute?.source || (realRoute ? "road" : "straight"),
-      };
+      const next = realRoute || getStraightLineRouteEstimate(from, to);
+      if (!next) {
+        setRoute(null);
+        setRouting(false);
+        onRouteInfoRef.current?.(null);
+        return;
+      }
       setRoute(next);
       setRouting(false);
       onRouteInfoRef.current?.({
         distanceKm: next.distanceKm,
         etaMinutes: next.etaMinutes,
         source: next.source,
+        etaBasis: realRoute?.etaBasis || null,
       });
-      if (next.points.length > 1) {
-        mapRef.current?.fitToCoordinates(next.points, {
+      if (realRoute?.points?.length > 1) {
+        mapRef.current?.fitToCoordinates(realRoute.points, {
           edgePadding: { top: 70, right: 50, bottom: 70, left: 50 },
           animated: true,
         });
       }
     })();
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [routeKey]);
 
-  const handleRegionChangeComplete = (r) => {
-    if (locked) return;
-    const c = { latitude: r.latitude, longitude: r.longitude };
-    onLocationChange?.(c);
-    onRegionChangeComplete?.(c);
+  const handleRegionChangeComplete = (nextRegion, details) => {
+    const coordinate = toCoordinate(nextRegion);
+    if (!coordinate) return;
+    onLocationChange?.(coordinate);
+    onRegionChangeComplete?.(coordinate);
+    if (details?.isGesture) onUserPan?.();
   };
 
-  const handlePress = (e) => {
+  const handleMapPress = (event) => {
     if (locked) return;
-    const coords = e?.nativeEvent?.coordinate;
-    if (coords && Number.isFinite(coords.latitude) && Number.isFinite(coords.longitude) && !isRoute) {
-      mapRef.current?.animateToRegion(
-        {
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-          latitudeDelta: activeRegion?.latitudeDelta || 0.015,
-          longitudeDelta: activeRegion?.longitudeDelta || 0.015,
-        },
-        300
-      );
-    }
-    onPress?.(e);
+    const coordinate = toCoordinate(event?.nativeEvent?.coordinate);
+    if (!coordinate) return;
+    onPress?.({ nativeEvent: { coordinate } });
   };
 
-  const routeColor = route?.source === "road" || route?.source === "google" ? TEAL : "#64748B";
+  const handlePickerMarkerDragEnd = (event) => {
+    const coordinate = toCoordinate(event?.nativeEvent?.coordinate);
+    if (!coordinate) return;
+    if (onMarkerDragEnd) onMarkerDragEnd(coordinate);
+    else onLocationChange?.(coordinate);
+  };
+
+  const routeColor = route?.source === "osrm" || route?.source === "road" || route?.source === "mapbox" ? TEAL : "#64748B";
+  const showMapError = missingAndroidKey || Boolean(mapError);
 
   return (
     <View style={[styles.container, style]}>
-      <MapView
-        ref={mapRef}
-        style={StyleSheet.absoluteFillObject}
-        provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
-        mapType="standard"
-        showsBuildings={true}
-        showsIndoors={true}
-        showsCompass={true}
-        showsScale={true}
-        loadingEnabled={true}
-        loadingIndicatorColor={TEAL}
-        loadingBackgroundColor="#F8FAFC"
-        initialRegion={activeRegion}
-        region={toRegion(region) || undefined}
-        showsUserLocation={hasLocationPermission}
-        showsMyLocationButton={false}
-        toolbarEnabled={false}
-        onPress={handlePress}
-        onRegionChangeComplete={handleRegionChangeComplete}
-        {...(locked ? { scrollEnabled: false, zoomEnabled: false, rotateEnabled: false, pitchEnabled: false } : {})}
-      >
-        {isRoute && toCoordinate(from) ? (
-          <Marker
-            coordinate={toCoordinate(from)}
-            title={from.title || "Pickup"}
-            pinColor={TEAL}
-          />
-        ) : null}
-        {isRoute && toCoordinate(to) ? (
-          <Marker
-            coordinate={toCoordinate(to)}
-            title={to.title || "Drop-off"}
-            pinColor={ORANGE}
-          />
-        ) : null}
-        {toCoordinate(driverLocation) ? (
-          <Marker
-            coordinate={toCoordinate(driverLocation)}
-            title={driverLocation.title || "Your driver"}
-            pinColor={BLUE}
-          />
-        ) : null}
-        {route?.points?.length > 1 ? (
-          <Polyline
-            coordinates={route.points}
-            strokeColor={routeColor}
-            strokeWidth={5}
-          />
-        ) : null}
-        {children}
-      </MapView>
+      {!missingAndroidKey ? (
+        <MapView
+          ref={mapRef}
+          style={StyleSheet.absoluteFillObject}
+          provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
+          mapType="standard"
+          initialRegion={activeRegion}
+          region={toRegion(region) || undefined}
+          showsBuildings
+          showsPointsOfInterest
+          showsUserLocation={hasLocationPermission}
+          showsMyLocationButton={false}
+          showsCompass
+          onPress={handleMapPress}
+          onMapReady={() => {
+            setMapReady(true);
+            setMapError(null);
+          }}
+          onRegionChangeComplete={handleRegionChangeComplete}
+          onPanDrag={() => onUserPan?.()}
+          scrollEnabled={!locked}
+          zoomEnabled={!locked}
+          rotateEnabled={!locked}
+          pitchEnabled={!locked}
+          toolbarEnabled={false}
+          loadingEnabled
+          loadingBackgroundColor="#E8EEF3"
+          loadingIndicatorColor={TEAL}
+        >
+          {!isRoute && pickerCoordinate ? (
+            <Marker
+              identifier="mytruck-location-picker"
+              coordinate={pickerCoordinate}
+              anchor={{ x: 0.5, y: 1 }}
+              draggable={!locked}
+              onDragEnd={locked ? undefined : handlePickerMarkerDragEnd}
+            >
+              <View style={styles.pickerMarker} collapsable={false}>
+                <View style={styles.pinTooltip}><Text style={styles.pinTooltipTxt}>{locked ? "Your location" : "Drag to choose"}</Text></View>
+                <MaterialCommunityIcons name="map-marker" size={46} color={ORANGE} />
+              </View>
+            </Marker>
+          ) : null}
+          {isRoute && pickupCoordinate ? (
+            <Marker identifier="pickup" coordinate={pickupCoordinate} anchor={{ x: 0.5, y: 1 }}>
+              <MapPin color={TEAL} name="map-marker" />
+            </Marker>
+          ) : null}
+          {isRoute && dropoffCoordinate ? (
+            <Marker identifier="dropoff" coordinate={dropoffCoordinate} anchor={{ x: 0.5, y: 1 }}>
+              <MapPin color={ORANGE} name="map-marker" />
+            </Marker>
+          ) : null}
+          {driverMarkerPosition ? (
+            <Marker identifier="driver" coordinate={driverMarkerPosition} anchor={{ x: 0.5, y: 1 }}>
+              <MapPin color={BLUE} name="truck" />
+            </Marker>
+          ) : null}
+          {route?.points?.length > 1 ? (
+            <Polyline coordinates={route.points} strokeColor={routeColor} strokeWidth={5} lineCap="round" lineJoin="round" />
+          ) : null}
+          {children}
+        </MapView>
+      ) : null}
 
-      {!isRoute ? (
-        <View pointerEvents="none" style={styles.centerPin}>
-          <View style={styles.pinTooltip}>
-            <Text style={styles.pinTooltipTxt}>Delivery Location</Text>
-          </View>
-          <MaterialCommunityIcons name="map-marker" size={46} color={ORANGE} />
-          <View style={styles.pinDot} />
+      {showMapError ? (
+        <View pointerEvents="none" style={styles.mapFallbackNotice}>
+          <MaterialCommunityIcons name="map-marker-alert-outline" size={22} color="#64748B" />
+          <Text style={styles.unavailableTitle}>{missingAndroidKey ? "Google Maps key not configured" : "Google Maps unavailable"}</Text>
+          <Text style={styles.mapFallbackText}>
+            {missingAndroidKey
+              ? "Add GOOGLE_MAPS_ANDROID_API_KEY to the build environment, then rebuild the Android app."
+              : mapError}
+          </Text>
         </View>
       ) : null}
+
+      {/* Google basemap branding is supplied by the native SDK. Show OSM credit
+          only when the visible route geometry actually comes from OSRM. */}
+      {route?.source === "osrm" ? (
+        <View pointerEvents="none" style={styles.osmAttribution}>
+          <Text style={styles.osmAttributionText}>Route data © OpenStreetMap contributors</Text>
+        </View>
+      ) : null}
+
       {isRoute ? (
         <View pointerEvents="none" style={styles.badge}>
           <MaterialCommunityIcons name="map-marker-distance" size={14} color={DARK} />
           <Text style={styles.badgeTxt}>
             {route
-              ? `${route.distanceKm} km · ${route.etaMinutes} min${
-                  route.source === "google"
-                    ? " by Google Maps"
-                    : route.source === "road"
-                    ? " by road"
-                    : " (straight line)"
-                }`
-              : !from
-              ? "Turn on location to see your route"
-              : routing
-              ? "Finding the road route…"
-              : "Route unavailable"}
+              ? route.source === "straight"
+                ? `${route.distanceKm ?? "—"} km straight-line · no road ETA`
+                : `${route.distanceKm} km · ~${route.etaMinutes} min · road estimate`
+              : !from ? "Turn on location to see your route" : routing ? "Finding the road route…" : "Choose valid pickup and drop-off locations"}
           </Text>
         </View>
       ) : null}
       {showControls && onRecenter ? (
-        <TouchableOpacity
-          style={styles.recenter}
-          onPress={onRecenter}
-          disabled={recenterLoading}
-          accessibilityRole="button"
-          accessibilityLabel="Use my current location"
-          activeOpacity={0.8}
-        >
-          {recenterLoading ? (
-            <ActivityIndicator size="small" color={TEAL} />
-          ) : (
-            <MaterialCommunityIcons name="crosshairs-gps" size={22} color={TEAL} />
-          )}
+        <TouchableOpacity style={styles.recenter} onPress={onRecenter} disabled={recenterLoading} accessibilityRole="button" accessibilityLabel="Use my current location" activeOpacity={0.8}>
+          {recenterLoading ? <ActivityIndicator size="small" color={TEAL} /> : <MaterialCommunityIcons name="crosshairs-gps" size={22} color={TEAL} />}
         </TouchableOpacity>
       ) : null}
     </View>
@@ -274,70 +351,18 @@ const SharedMapView = forwardRef(function SharedMapView(
 
 const styles = StyleSheet.create({
   container: { flex: 1, overflow: "hidden", backgroundColor: "#E8EEF3" },
-  centerPin: {
-    position: "absolute",
-    left: "50%",
-    top: "50%",
-    marginLeft: -60,
-    marginTop: -68,
-    width: 120,
-    alignItems: "center",
-  },
-  pinTooltip: {
-    backgroundColor: DARK,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-    marginBottom: 2,
-    elevation: 3,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
-    shadowOffset: { width: 0, height: 1 },
-  },
-  pinTooltipTxt: {
-    color: "#FFFFFF",
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 0.3,
-  },
-  pinDot: {
-    width: 8,
-    height: 4,
-    borderRadius: 4,
-    backgroundColor: "rgba(0,0,0,0.25)",
-    marginTop: -3,
-  },
-  recenter: {
-    position: "absolute",
-    right: 16,
-    bottom: 16,
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "white",
-    elevation: 4,
-    shadowColor: "#000",
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  badge: {
-    position: "absolute",
-    top: 12,
-    alignSelf: "center",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.94)",
-    elevation: 3,
-  },
+  marker: { width: 42, height: 46, alignItems: "center", justifyContent: "center" },
+  pickerMarker: { alignItems: "center", justifyContent: "flex-end", minWidth: 120, height: 72 },
+  pinTooltip: { backgroundColor: DARK, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, marginBottom: 2, elevation: 3 },
+  pinTooltipTxt: { color: "#FFFFFF", fontSize: 10, fontWeight: "800", letterSpacing: 0.3 },
+  recenter: { position: "absolute", right: 16, bottom: 16, width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: "white", elevation: 4 },
+  badge: { position: "absolute", top: 12, alignSelf: "center", flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 18, backgroundColor: "rgba(255,255,255,0.94)", elevation: 3 },
   badgeTxt: { color: DARK, fontSize: 12, fontWeight: "700" },
+  mapFallbackNotice: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", paddingHorizontal: 28, backgroundColor: "#E8EEF3" },
+  unavailableTitle: { color: DARK, fontSize: 15, fontWeight: "800", marginTop: 10, textAlign: "center" },
+  mapFallbackText: { color: "#475569", fontSize: 12, marginTop: 6, textAlign: "center", lineHeight: 18 },
+  osmAttribution: { position: "absolute", right: 6, bottom: 4, paddingHorizontal: 4, paddingVertical: 2, borderRadius: 3, backgroundColor: "rgba(255,255,255,0.9)" },
+  osmAttributionText: { color: "#334155", fontSize: 9 },
 });
 
 export default SharedMapView;

@@ -24,10 +24,9 @@ import {
   reverseGeocodeLocation,
   searchLocalPlaces,
   searchPlaces,
-  requestGpsLocation,
-  getRealGpsLocation,
   isWithinEthiopia,
 } from "../utils/mapService";
+import { requestGpsLocation, getRealGpsLocation } from "../services/gpsService";
 
 const { width, height } = Dimensions.get("window");
 const TEAL = "#179B83";
@@ -60,6 +59,13 @@ export default function DeliveryLocationModal({
   };
 
   const [selectedCoords, setSelectedCoords] = useState(safeInitCoords);
+  const [hasLocationSelection, setHasLocationSelection] = useState(() => {
+    const lat = Number(initialLocation?.latitude);
+    const lon = Number(initialLocation?.longitude);
+    // DEFAULT_COORDS initializes the map only; it is not an implicit user selection.
+    return isWithinEthiopia(lat, lon) &&
+      (lat !== DEFAULT_COORDS.latitude || lon !== DEFAULT_COORDS.longitude);
+  });
   const [resolvedAddress, setResolvedAddress] = useState(
     initialLocation?.address && !initialLocation.address.includes("Montana") && !initialLocation.address.includes("Cascade")
       ? initialLocation.address
@@ -74,6 +80,7 @@ export default function DeliveryLocationModal({
   // gpsOnly: the real position once the phone has found it, and why it couldn't if it failed
   const [gpsFix, setGpsFix] = useState(null);
   const [gpsError, setGpsError] = useState("");
+  const [gpsFallbackManual, setGpsFallbackManual] = useState(false);
 
   const locateReal = async () => {
     setGpsLoading(true);
@@ -83,11 +90,14 @@ export default function DeliveryLocationModal({
       const coords = { latitude: fix.latitude, longitude: fix.longitude };
       setGpsFix(coords);
       setSelectedCoords(coords);
+      setHasLocationSelection(true);
+      setGpsFallbackManual(false);
       mapRef.current?.animateToRegion({ ...coords, latitudeDelta: 0.006, longitudeDelta: 0.006 });
       await updateAddressFromCoords(coords.latitude, coords.longitude);
     } catch (err) {
       setGpsFix(null);
       setGpsError(err?.message || "We couldn't find your location. Please try again.");
+      setGpsFallbackManual(true);
     } finally {
       setGpsLoading(false);
     }
@@ -123,16 +133,18 @@ export default function DeliveryLocationModal({
 
   const handleMapPress = (e) => {
     const coords = e?.nativeEvent?.coordinate;
-    if (coords && coords.latitude && coords.longitude) {
+    if (coords && isWithinEthiopia(coords.latitude, coords.longitude)) {
       setSelectedCoords(coords);
+      setHasLocationSelection(true);
       setSelectedZoneId(null);
     }
   };
 
   const handleMarkerDragEnd = (e) => {
-    const coords = e?.nativeEvent?.coordinate;
-    if (coords && coords.latitude && coords.longitude) {
+    const coords = e?.nativeEvent?.coordinate || e;
+    if (coords && isWithinEthiopia(coords.latitude, coords.longitude)) {
       setSelectedCoords(coords);
+      setHasLocationSelection(true);
       setSelectedZoneId(null);
       updateAddressFromCoords(coords.latitude, coords.longitude);
     }
@@ -143,6 +155,7 @@ export default function DeliveryLocationModal({
     try {
       const coords = await requestGpsLocation();
       setSelectedCoords(coords);
+      setHasLocationSelection(true);
       setSelectedZoneId(null);
       if (mapRef.current) {
         mapRef.current.animateToRegion({
@@ -154,7 +167,7 @@ export default function DeliveryLocationModal({
       }
       await updateAddressFromCoords(coords.latitude, coords.longitude);
     } catch (err) {
-      Alert.alert("GPS Error", err.message || "Could not retrieve your location.");
+      Alert.alert("GPS Location Unavailable", err.message || "Could not retrieve your location. Choose your location manually on the map.");
     } finally {
       setGpsLoading(false);
     }
@@ -163,7 +176,9 @@ export default function DeliveryLocationModal({
   const handleSelectZone = (zone) => {
     setSelectedZoneId(zone.id);
     const coords = { latitude: zone.latitude, longitude: zone.longitude };
+    if (!isWithinEthiopia(coords.latitude, coords.longitude)) return;
     setSelectedCoords(coords);
+    setHasLocationSelection(true);
     setResolvedAddress(`${zone.name}${zone.sub ? ` (${zone.sub})` : ""}`);
     if (mapRef.current) {
       mapRef.current.animateToRegion({
@@ -198,7 +213,9 @@ export default function DeliveryLocationModal({
       latitude: place.latitude,
       longitude: place.longitude,
     };
+    if (!isWithinEthiopia(coords.latitude, coords.longitude)) return;
     setSelectedCoords(coords);
+    setHasLocationSelection(true);
     setSelectedZoneId(null);
     setResolvedAddress(place.title);
     setSearchResults([]);
@@ -214,13 +231,11 @@ export default function DeliveryLocationModal({
   };
 
   const handleConfirm = () => {
-    if (gpsOnly && !gpsFix) return;
-    const safeLat = isWithinEthiopia(selectedCoords.latitude, selectedCoords.longitude)
-      ? selectedCoords.latitude
-      : DEFAULT_COORDS.latitude;
-    const safeLon = isWithinEthiopia(selectedCoords.latitude, selectedCoords.longitude)
-      ? selectedCoords.longitude
-      : DEFAULT_COORDS.longitude;
+    if (gpsOnly && !gpsFix && !gpsFallbackManual) return;
+    if (!hasLocationSelection || !isWithinEthiopia(selectedCoords.latitude, selectedCoords.longitude)) {
+      Alert.alert("Choose a Location", "Use your current GPS location or select a valid location on the map before continuing.");
+      return;
+    }
     const safeAddr =
       resolvedAddress && !resolvedAddress.includes("Montana") && !resolvedAddress.includes("Cascade")
         ? resolvedAddress
@@ -228,8 +243,8 @@ export default function DeliveryLocationModal({
 
     onConfirmLocation({
       address: safeAddr,
-      latitude: safeLat,
-      longitude: safeLon,
+      latitude: Number(selectedCoords.latitude),
+      longitude: Number(selectedCoords.longitude),
     });
     onClose();
   };
@@ -257,7 +272,7 @@ export default function DeliveryLocationModal({
                 <View>
                   <Text style={s.title}>{title || (gpsOnly ? "Your Current Location" : "Choose Delivery Location")}</Text>
                   <Text style={s.subtitle}>
-                    {gpsOnly ? "Found automatically from your phone's GPS" : "Tap map or drag pin to your exact spot"}
+                    {gpsOnly && !gpsFallbackManual ? "Found automatically from your phone's GPS" : "Tap the map or search to choose your delivery location"}
                   </Text>
                 </View>
                 <TouchableOpacity onPress={onClose} style={s.closeBtn}>
@@ -267,7 +282,7 @@ export default function DeliveryLocationModal({
             </TouchableWithoutFeedback>
 
             {/* Search section — stays visible above keyboard */}
-            {gpsOnly ? null : (
+            {gpsOnly && !gpsFallbackManual ? null : (
             <View style={s.searchSection}>
               {/* Search bar */}
               <View style={s.searchWrap}>
@@ -326,7 +341,7 @@ export default function DeliveryLocationModal({
             )}
 
             {/* Quick Delivery Zone Pills */}
-            {gpsOnly ? null : (
+            {gpsOnly && !gpsFallbackManual ? null : (
             <View style={s.zoneBar}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.zoneScroll} keyboardShouldPersistTaps="handled">
                 {ADDIS_DELIVERY_ZONES.map((zone) => {
@@ -364,15 +379,20 @@ export default function DeliveryLocationModal({
                     latitudeDelta: 0.02,
                     longitudeDelta: 0.02,
                   }}
-                  locked={gpsOnly}
+                  selectedCoordinate={selectedCoords}
+                  onMarkerDragEnd={handleMarkerDragEnd}
+                  locked={gpsOnly && !gpsFallbackManual}
                   onLocationChange={(coords) => {
-                    if (!gpsOnly && coords?.latitude && coords?.longitude) {
+                    if ((!gpsOnly || gpsFallbackManual) && isWithinEthiopia(coords?.latitude, coords?.longitude)) {
                       setSelectedCoords(coords);
                       setSelectedZoneId(null);
                       updateAddressFromCoords(coords.latitude, coords.longitude);
                     }
                   }}
-                  onPress={gpsOnly ? undefined : handleMapPress}
+                  onPress={gpsOnly && !gpsFallbackManual ? undefined : handleMapPress}
+                  onUserPan={() => {
+                    if (!gpsOnly || gpsFallbackManual) setHasLocationSelection(true);
+                  }}
                   onRecenter={gpsOnly ? locateReal : handleUseGps}
                   recenterLoading={gpsLoading}
                 />
@@ -403,7 +423,7 @@ export default function DeliveryLocationModal({
                 </View>
               </View>
 
-              {gpsOnly ? (
+              {gpsOnly && !gpsFallbackManual ? (
                 <>
                   <Text style={s.gpsHint}>{gpsHint}</Text>
                   <TouchableOpacity style={s.refreshBtn} onPress={locateReal} disabled={gpsLoading} activeOpacity={0.85}>
@@ -420,9 +440,9 @@ export default function DeliveryLocationModal({
               ) : null}
 
               <TouchableOpacity
-                style={[s.confirmBtn, gpsOnly && (!gpsFix || gpsLoading) && { opacity: 0.45 }]}
+                style={[s.confirmBtn, gpsOnly && !gpsFallbackManual && (!gpsFix || gpsLoading) && { opacity: 0.45 }]}
                 onPress={handleConfirm}
-                disabled={gpsOnly && (!gpsFix || gpsLoading)}
+                disabled={gpsOnly && !gpsFallbackManual && (!gpsFix || gpsLoading)}
                 activeOpacity={0.85}
               >
                 <Text style={s.confirmBtnTxt}>

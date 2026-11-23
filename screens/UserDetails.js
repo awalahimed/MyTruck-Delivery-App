@@ -23,10 +23,8 @@ import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import BackButton from "../components/ui/BackButton";
 import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
-import {
-  getRealGpsLocation,
-  reverseGeocodeLocation,
-} from "../utils/mapService";
+import { reverseGeocodeLocation } from "../utils/mapService";
+import { getRealGpsLocation } from "../services/gpsService";
 
 const TEAL = "#179B83";
 const DARK = "#0B2A26";

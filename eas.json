@@ -7,6 +7,7 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "environment": "development",
       "android": {
         "buildType": "apk"
       }
@@ -14,39 +15,39 @@
     "preview": {
       "credentialsSource": "remote",
       "distribution": "internal",
+      "environment": "preview",
       "android": {
         "buildType": "apk"
       },
       "env": {
         "NPM_FLAGS": "--legacy-peer-deps",
-        "PERF_TIMINGS": "1",
-        "GOOGLE_MAPS_API_KEY": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU",
-        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU"
+        "PERF_TIMINGS": "0",
+        "MYTRUCK_ANDROID_ABIS": "arm64-v8a",
+        "MYTRUCK_ANDROID_SHRINK_RESOURCES": "true",
+        "MYTRUCK_ANDROID_COMPRESS_LIBS": "true"
       }
     },
     "ios-preview": {
       "credentialsSource": "remote",
       "distribution": "internal",
+      "environment": "preview",
       "ios": {
         "simulator": true
       },
       "env": {
-        "NPM_FLAGS": "--legacy-peer-deps",
-        "GOOGLE_MAPS_API_KEY": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU",
-        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU"
+        "NPM_FLAGS": "--legacy-peer-deps"
       }
     },
     "production": {
       "credentialsSource": "remote",
       "distribution": "internal",
+      "environment": "production",
       "android": {
         "buildType": "apk"
       },
       "env": {
         "NPM_FLAGS": "--legacy-peer-deps",
-        "PERF_TIMINGS": "1",
-        "GOOGLE_MAPS_API_KEY": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU",
-        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyBQP-h2NxxB3HqrQeraeUq5UNayFn9oxYU"
+        "PERF_TIMINGS": "1"
       }
     }
   }

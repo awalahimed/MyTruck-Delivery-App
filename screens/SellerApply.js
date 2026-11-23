@@ -25,7 +25,8 @@ import { auth, db, storage } from "../firebase";
 import { UserAuth, normalizeEthiopianPhone, formatAuthError } from "../contexts/AuthContext";
 import { verifySignupCode } from "../services/otpClient";
 import BackButton from "../components/ui/BackButton";
-import { getRealGpsLocation, isWithinEthiopia, reverseGeocodeLocation } from "../utils/mapService";
+import { isWithinEthiopia, reverseGeocodeLocation } from "../utils/mapService";
+import { getRealGpsLocation } from "../services/gpsService";
 
 const ETHIOPIAN_CITIES = [
   "Addis Ababa",

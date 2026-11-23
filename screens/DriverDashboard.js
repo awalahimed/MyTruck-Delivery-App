@@ -40,6 +40,7 @@ import {
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import NotificationBell from "../components/ui/NotificationBell";
 import SharedMapView from "../components/SharedMapView";
+import { useDriverTracking } from "../features/location/useDriverTracking";
 import { notifyCustomer } from "../services/orderNotifications";
 import SmartImage from "../components/ui/SmartImage";
 
@@ -123,19 +124,27 @@ export default function DriverDashboard() {
   const [loadingAvailable, setLoadingAvailable] = useState(false);
   const [loadingActive, setLoadingActive] = useState(true);
   const [activeError, setActiveError] = useState("");
-  // Real road distance/time for the leg the driver is on now (from Google Directions)
+  // Current road distance/time for the driver's active route leg.
   const [missionRoute, setMissionRoute] = useState(null);
   const [activeRetry, setActiveRetry] = useState(0);
   const [pickingUp, setPickingUp] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [gpsActive, setGpsActive] = useState(false);
   const [rawOpenOrders, setRawOpenOrders] = useState([]);
-  const [driverPos, setDriverPos] = useState(
+  const initialDriverPos =
     Number.isFinite(Number(dbUser?.driverLat)) && Number.isFinite(Number(dbUser?.driverLng)) && dbUser?.driverLat
       ? { latitude: Number(dbUser.driverLat), longitude: Number(dbUser.driverLng) }
-      : null
-  );
+      : null;
+  const activeTrackingOrderId = Boolean(activeOrder?.id) && DRIVER_ACTIVE_STATUSES.includes(activeOrder.status)
+    ? activeOrder.id
+    : null;
+  const { driverPos, gpsActive, locationTrackingStatus, driverLocationUpdatedAtMs } = useDriverTracking({
+    userId: user?.uid,
+    isOnline,
+    activeOrderId: activeTrackingOrderId,
+    initialLocation: initialDriverPos,
+    initialUpdatedAtMs: tsMillis(dbUser?.driverLocationUpdatedAt),
+  });
   const [nowMs, setNowMs] = useState(Date.now());
 
   // Modals state
@@ -271,8 +280,6 @@ export default function DriverDashboard() {
     }
   };
 
-  const pollRef = useRef(null);
-
   // Intercept hardware back button to prevent accidental app exit
   useEffect(() => {
     const onBackPress = () => {
@@ -295,71 +302,8 @@ export default function DriverDashboard() {
     return () => sub.remove();
   }, [otpModalVisible, rejectModalVisible, navigation]);
 
-  // Stream live GPS coordinates to Firestore while on active delivery
-  useEffect(() => {
-    let watcher = null;
-    let isSubscribed = true;
-    if (activeOrder && activeOrder.id && DRIVER_ACTIVE_STATUSES.includes(activeOrder.status)) {
-      (async () => {
-        try {
-          const { status } = await Location.requestForegroundPermissionsAsync();
-          if (status === "granted" && isSubscribed) {
-            setGpsActive(true);
-            watcher = await Location.watchPositionAsync(
-              {
-                accuracy: Location.Accuracy.High,
-                timeInterval: 4000,
-                distanceInterval: 6,
-              },
-              (loc) => {
-                if (loc?.coords?.latitude && loc?.coords?.longitude) {
-                  setDriverPos({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
-                  updateDoc(doc(db, "orders", activeOrder.id), {
-                    driverLat: loc.coords.latitude,
-                    driverLng: loc.coords.longitude,
-                    driverHeading: loc.coords.heading || 0,
-                    driverSpeed: loc.coords.speed || 0,
-                    driverLocationUpdatedAt: serverTimestamp(),
-                  }).catch(() => {});
-                }
-              }
-            );
-          }
-        } catch (e) {
-          console.warn("DriverDashboard GPS stream note:", e?.message);
-        }
-      })();
-    } else {
-      setGpsActive(false);
-    }
-    return () => {
-      isSubscribed = false;
-      if (watcher?.remove) watcher.remove();
-    };
-  }, [activeOrder?.id, activeOrder?.status]);
-
   // Toggle online status
   // Share the driver's position while online so dispatch can offer the nearest orders.
-  const reportDriverLocation = useCallback(async () => {
-    if (!user?.uid) return;
-    try {
-      const { status } = await Location.getForegroundPermissionsAsync();
-      if (status !== "granted") return;
-      const loc =
-        (await Location.getLastKnownPositionAsync({ maxAge: 60000 })) ||
-        (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }));
-      if (!loc?.coords) return;
-      setDriverPos({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
-      await updateDoc(doc(db, "user", user.uid), {
-        driverLat: loc.coords.latitude,
-        driverLng: loc.coords.longitude,
-        driverLocationUpdatedAt: serverTimestamp(),
-      });
-    } catch (e) {
-      console.warn("DriverDashboard: location report note:", e?.message);
-    }
-  }, [user?.uid]);
-
   const toggleOnline = async (value) => {
     setIsOnline(value);
     try {
@@ -376,7 +320,6 @@ export default function DriverDashboard() {
         isOnline: value,
         updatedAt: serverTimestamp(),
       });
-      if (value) reportDriverLocation();
     } catch (e) {
       Alert.alert("Could not update status", e?.message || "Try again.");
       setIsOnline(!value);
@@ -414,14 +357,6 @@ export default function DriverDashboard() {
     );
     return unsub;
   }, [isOnline]);
-
-  // Heartbeat: keep location fresh every 25s while online
-  useEffect(() => {
-    if (!isOnline) return;
-    reportDriverLocation();
-    pollRef.current = setInterval(reportDriverLocation, 25000);
-    return () => clearInterval(pollRef.current);
-  }, [isOnline, reportDriverLocation]);
 
   // Tick once a second only while some offer is counting down (drives countdown + expiry)
   const hasLiveOffer = rawOpenOrders.some((o) => o.offeredDriverId && tsMillis(o.offerExpiresAt) > nowMs);
@@ -492,10 +427,8 @@ export default function DriverDashboard() {
     setAvailableOrders(visible);
   }, [rawOpenOrders, nowMs, user?.uid, dbUser?.city, driverPos]);
 
-  // Pull-to-refresh: the list itself is live, so just refresh our location
-  const fetchAvailable = useCallback(async () => {
-    await reportDriverLocation();
-  }, [reportDriverLocation]);
+  // Pull-to-refresh: the list is live and the foreground location watcher is active.
+  const fetchAvailable = useCallback(async () => {}, []);
 
   // Listen for active delivery in real-time
   // (No orderBy: the project has no composite index for driverId+status+updatedAt,
@@ -881,7 +814,7 @@ export default function DriverDashboard() {
     }
   };
 
-  // Turn-by-turn directions in Google Maps (app if installed, otherwise browser)
+  // Hand off directions to the platform's available mapping app.
   const openDirections = (lat, lng, label) => {
     const la = Number(lat);
     const ln = Number(lng);
@@ -889,7 +822,9 @@ export default function DriverDashboard() {
       Alert.alert("Location Unavailable", `${label || "This place"} has no map location. Use the address or call instead.`);
       return;
     }
-    const url = `https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=driving`;
+    const url = Platform.OS === "ios"
+      ? `http://maps.apple.com/?daddr=${la},${ln}&dirflg=d`
+      : `geo:${la},${ln}?q=${la},${ln}`;
     Linking.openURL(url).catch(() => Alert.alert("Maps Unavailable", "Could not open maps on this phone."));
   };
 
@@ -1328,6 +1263,26 @@ export default function DriverDashboard() {
                     </View>
                   );
                 })()}
+                <View style={s.locationTrackingNotice}>
+                  <MaterialCommunityIcons
+                    name={locationTrackingStatus === "live" ? "crosshairs-gps" : locationTrackingStatus === "connection-delayed" ? "cloud-alert-outline" : "map-marker-alert-outline"}
+                    size={16}
+                    color={locationTrackingStatus === "live" ? "#15803D" : locationTrackingStatus === "connection-delayed" ? "#B45309" : "#64748B"}
+                  />
+                  <Text style={s.locationTrackingNoticeText}>
+                    {locationTrackingStatus === "live"
+                      ? `Location shared · ${driverLocationUpdatedAtMs ? `${Math.max(0, Math.floor((Date.now() - driverLocationUpdatedAtMs) / 1000))}s ago` : "just now"}`
+                      : locationTrackingStatus === "connection-delayed"
+                      ? "Network interrupted · location will retry"
+                      : locationTrackingStatus === "permission-denied"
+                      ? "Allow location access to share your route"
+                      : locationTrackingStatus === "gps-disabled"
+                      ? "Turn on GPS to share your location"
+                      : locationTrackingStatus === "waiting-for-gps" || locationTrackingStatus === "requesting-permission"
+                      ? "Waiting for a GPS location…"
+                      : "Location sharing is off"}
+                  </Text>
+                </View>
 
                 {/* Pickup Details Section */}
                 <View style={s.missionSection}>
@@ -1410,9 +1365,25 @@ export default function DriverDashboard() {
                     ? activeOrder.recipientPhone || ""
                     : activeOrder.customerPhone || activeOrder.userPhoneNumber || activeOrder.phone || "";
                   const dropAddress = activeOrder.dropoffAddress || activeOrder.deliveryAddress || activeOrder.userAddress || "Standard delivery address";
-                  // Road figures for the current leg when the map has them; otherwise the stored estimate
-                  const tripDistance = missionRoute ? missionRoute.distanceKm : activeOrder.deliveryDistanceKm != null ? activeOrder.deliveryDistanceKm : "—";
-                  const tripEta = missionRoute ? missionRoute.etaMinutes : activeOrder.deliveryEtaMinutes != null ? activeOrder.deliveryEtaMinutes : "—";
+                  // Provider results describe this map leg. Stored order figures are unverified estimates.
+                  const tripDistance = missionRoute
+                    ? missionRoute.distanceKm ?? "—"
+                    : activeOrder.deliveryDistanceKm != null ? activeOrder.deliveryDistanceKm : "—";
+                  const tripEta = missionRoute
+                    ? missionRoute.etaMinutes ?? "—"
+                    : activeOrder.deliveryEtaMinutes != null ? activeOrder.deliveryEtaMinutes : "—";
+                  const tripDistanceLabel = missionRoute?.source === "mapbox"
+                    ? `Distance ${legLabel} · Mapbox road route`
+                    : missionRoute?.source === "osrm"
+                    ? `Distance ${legLabel} · OSRM road estimate`
+                    : missionRoute?.source === "straight"
+                    ? `Distance ${legLabel} · straight-line estimate`
+                    : `Distance ${legLabel} · order estimate`;
+                  const tripEtaLabel = missionRoute?.source === "straight"
+                    ? "Road ETA unavailable"
+                    : missionRoute?.etaMinutes != null
+                    ? `Travel time · ${missionRoute.source === "mapbox" ? "Mapbox route estimate" : "OSRM road estimate"}`
+                    : "Saved time estimate";
                   const legLabel = isAwaitingPickup(activeOrder) ? "to store" : "to customer";
                   const deliveryFeeVal = Number(activeOrder.deliveryFee || 60);
                   const commVal = Number(activeOrder.deliveryCommission != null ? activeOrder.deliveryCommission : (deliveryFeeVal * 0.20));
@@ -1493,12 +1464,12 @@ export default function DriverDashboard() {
                         <View style={{ flexDirection: "row", justifyContent: "space-around", paddingTop: 4 }}>
                           <View style={{ alignItems: "center" }}>
                             <Text style={{ fontSize: 14, fontWeight: "800", color: TEAL }}>{tripDistance} km</Text>
-                            <Text style={{ fontSize: 11, color: "#64748B" }}>{`Distance ${legLabel}${missionRoute ? " (by road)" : ""}`}</Text>
+                            <Text style={{ fontSize: 11, color: "#64748B" }}>{tripDistanceLabel}</Text>
                           </View>
                           <View style={{ width: 1, backgroundColor: "#E2E8F0" }} />
                           <View style={{ alignItems: "center" }}>
-                            <Text style={{ fontSize: 14, fontWeight: "800", color: ORANGE }}>{tripEta} mins</Text>
-                            <Text style={{ fontSize: 11, color: "#64748B" }}>{missionRoute ? "Travel time (by road)" : "Est. duration"}</Text>
+                            <Text style={{ fontSize: 14, fontWeight: "800", color: ORANGE }}>{tripEta === "—" ? "—" : `~${tripEta} min`}</Text>
+                            <Text style={{ fontSize: 11, color: "#64748B" }}>{tripEtaLabel}</Text>
                           </View>
                         </View>
                       </View>
@@ -2110,6 +2081,24 @@ const s = StyleSheet.create({
     fontWeight: "700",
     color: "#166534",
     marginLeft: 6,
+  },
+  locationTrackingNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: "#F8FAFC",
+  },
+  locationTrackingNoticeText: {
+    flex: 1,
+    fontSize: 11,
+    color: "#475569",
+    fontWeight: "700",
   },
   kpiRow: {
     flexDirection: "row",
