@@ -72,7 +72,12 @@ const SharedMapView = forwardRef(function SharedMapView(
   const [hasLocationPermission, setHasLocationPermission] = useState(false);
   const [driverMarkerPosition, setDriverMarkerPosition] = useState(null);
   const [mapReady, setMapReady] = useState(false);
+  const [mapLoaded, setMapLoaded] = useState(false);
   const [mapError, setMapError] = useState(null);
+  // Measured size of the container. On React Native 0.88 (New Architecture) the
+  // native Google map got 0px height from absoluteFill and stayed invisible, so
+  // the MapView is given an explicit width/height from this measurement.
+  const [mapBox, setMapBox] = useState(null);
   const previousDriverCoordinate = useRef(null);
   const animationFrame = useRef(null);
   const onRouteInfoRef = useRef(onRouteInfo);
@@ -103,13 +108,20 @@ const SharedMapView = forwardRef(function SharedMapView(
     if (animationFrame.current != null) cancelAnimationFrame(animationFrame.current);
   }, []);
 
+  // Two separate checks so the on-screen message says where the map stopped:
+  // never started (native map view problem) vs started but no tiles arrived
+  // (Google refused the key: Maps SDK disabled, billing, or key restrictions).
   useEffect(() => {
-    if (missingAndroidKey || mapReady) return undefined;
+    if (missingAndroidKey || mapLoaded) return undefined;
     const timer = setTimeout(() => {
-      setMapError("Google Maps did not finish loading. Check your connection and Android Maps key restrictions.");
+      setMapError(
+        mapReady
+          ? "The map started, but Google sent no map tiles. Check that Maps SDK for Android is enabled, billing is active, and the key allows this app."
+          : "The map could not start on this phone. Check your internet connection and that Google Play services is up to date."
+      );
     }, MAP_READY_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [missingAndroidKey, mapReady]);
+  }, [missingAndroidKey, mapReady, mapLoaded]);
 
   const from = routeFrom !== undefined ? routeFrom : origin;
   const to = routeTo !== undefined && routeTo !== null ? routeTo : destination;
@@ -242,11 +254,17 @@ const SharedMapView = forwardRef(function SharedMapView(
   const showMapError = missingAndroidKey || Boolean(mapError);
 
   return (
-    <View style={[styles.container, style]}>
-      {!missingAndroidKey ? (
+    <View
+      style={[styles.container, style]}
+      onLayout={(event) => {
+        const { width, height } = event.nativeEvent.layout;
+        setMapBox((prev) => (prev && prev.width === width && prev.height === height ? prev : { width, height }));
+      }}
+    >
+      {!missingAndroidKey && mapBox ? (
         <MapView
           ref={mapRef}
-          style={StyleSheet.absoluteFillObject}
+          style={{ position: "absolute", top: 0, left: 0, width: mapBox.width, height: mapBox.height }}
           provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
           mapType="standard"
           initialRegion={activeRegion}
@@ -259,6 +277,9 @@ const SharedMapView = forwardRef(function SharedMapView(
           onPress={handleMapPress}
           onMapReady={() => {
             setMapReady(true);
+          }}
+          onMapLoaded={() => {
+            setMapLoaded(true);
             setMapError(null);
           }}
           onRegionChangeComplete={handleRegionChangeComplete}
@@ -268,9 +289,6 @@ const SharedMapView = forwardRef(function SharedMapView(
           rotateEnabled={!locked}
           pitchEnabled={!locked}
           toolbarEnabled={false}
-          loadingEnabled
-          loadingBackgroundColor="#E8EEF3"
-          loadingIndicatorColor={TEAL}
         >
           {!isRoute && pickerCoordinate ? (
             <Marker

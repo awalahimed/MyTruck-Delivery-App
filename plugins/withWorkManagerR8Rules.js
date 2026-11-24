@@ -6,6 +6,10 @@ const KEEP_RULES = [
   "# Keep constructors used reflectively by AndroidX WorkManager/Room on SDK 58.",
   "-keep class * extends androidx.room.RoomDatabase { <init>(); }",
   "-keep class * extends androidx.work.InputMerger { <init>(); }",
+  "# Keep react-native-maps and Google Maps classes intact under R8 (defensive; they use reflection).",
+  "-keep class com.rnmaps.** { *; }",
+  "-keep class com.google.android.gms.maps.** { *; }",
+  "-keep interface com.google.android.gms.maps.** { *; }",
 ].join("\n");
 
 module.exports = function withWorkManagerR8Rules(config) {

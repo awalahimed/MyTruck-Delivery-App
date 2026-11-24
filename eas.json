@@ -23,7 +23,7 @@
         "NPM_FLAGS": "--legacy-peer-deps",
         "PERF_TIMINGS": "0",
         "MYTRUCK_ANDROID_ABIS": "arm64-v8a",
-        "MYTRUCK_ANDROID_SHRINK_RESOURCES": "true",
+        "MYTRUCK_ANDROID_SHRINK_RESOURCES": "false",
         "MYTRUCK_ANDROID_COMPRESS_LIBS": "true"
       }
     },
